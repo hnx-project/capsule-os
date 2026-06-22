@@ -1,0 +1,13 @@
+[package]
+name = "shared"
+version = "0.1.0"
+edition = "2021"
+description = "Shared types for Capsule OS (kernel and userspace)"
+
+[features]
+default = []
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"

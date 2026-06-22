@@ -1,0 +1,26 @@
+[workspace]
+members = [
+    "hal",
+    "shared",
+    "kernel",
+    "userspace/libc",
+    "userspace/services/vfs",
+    "userspace/services/loader",
+    "userspace/services/init",
+    "userspace/programs/shell",
+    "gui/compositor",
+    "gui/renderer",
+    "gui/client",
+    "tools/xtask",
+]
+resolver = "2"
+
+[profile.dev]
+panic = "abort"
+lto = false
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+codegen-units = 1

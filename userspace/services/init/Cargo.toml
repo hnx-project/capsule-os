@@ -1,0 +1,19 @@
+[package]
+name = "hnx-init"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "init"
+path = "src/main.rs"
+
+[dependencies]
+hnx-libc = { path = "../../libc" }
+
+[build]
+rustflags = ["-C", "link-arg=-Tinit.ld"]
+
+[profile.dev]
+panic = "abort"
+codegen-units = 1
+debug = 0
