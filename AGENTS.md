@@ -3,20 +3,17 @@
 ## Build Commands
 
 ```bash
-# Build workspace (uses host target, for libs only)
+# Build workspace (libs only - userspace binaries have linking issues)
 cargo build --workspace
 
-# Build kernel for bare metal (AArch64)
+# Build kernel for bare metal (AArch64) - ✅ Works
 cargo build --target aarch64-unknown-none -p kernel
 
-# Build kernel for bare metal (X86_64)
-cargo build --target x86_64-unknown-none -p kernel
+# Build kernel release
+cargo build --target aarch64-unknown-none -p kernel --release
 
-# Build userspace services
-cargo build --workspace
-
-# Full release build
-cargo build --workspace --release
+# Check kernel compiles
+cargo check --target aarch64-unknown-none -p kernel
 ```
 
 ## Target Triple
@@ -29,7 +26,7 @@ cargo build --workspace --release
 ```
 capsule-os/
 ├── hal/                    # Hardware Abstraction Layer (no_std)
-│   └── src/                # Traits only, no implementations
+│   └── src/               # Traits only, no implementations
 ├── shared/                 # Shared types (no_std)
 │   └── src/
 │       ├── status.rs       # Status/Result types
@@ -42,17 +39,17 @@ capsule-os/
 │       ├── task/           # Scheduler, Thread, Process
 │       ├── mm/             # VMO, VMAR, physical memory
 │       ├── ipc/            # Channel, Port
-│       ├── object/         # Handle, HandleTable
-│       ├── syscall/        # Syscall dispatch
-│       └── kcore/          # Kernel core utilities
+│       ├── object/          # Handle, HandleTable
+│       ├── syscall/         # Syscall dispatch
+│       └── kcore/           # Kernel core utilities
 ├── userspace/              # User space programs
 │   ├── libc/               # Syscall wrappers
-│   ├── services/           # init, vfs, loader
-│   └── programs/           # shell
+│   ├── services/           # init, vfs, loader (need linker scripts)
+│   └── programs/          # shell
 └── gui/                    # Desktop environment
-    ├── compositor/         # Window compositor
-    ├── renderer/           # 2D rendering
-    └── client/             # GUI client library
+    ├── compositor/         # Window compositor (stub)
+    ├── renderer/           # 2D rendering (stub)
+    └── client/            # GUI client library (stub)
 ```
 
 ## Key Conventions
@@ -63,8 +60,8 @@ capsule-os/
 
 ### No_std Crates
 - `hal/`, `shared/`, `kernel/` are all `#![no_std]`
+- Userspace binaries are also `#![no_std]` with `_start` entry point
 - No `std`, no `alloc` (except where explicitly needed)
-- `#[global_allocator]` exists in `kernel/src/kcore/alloc.rs`
 
 ### Kernel Entry Point
 - `_start()` in `kernel/src/lib.rs`
@@ -74,44 +71,51 @@ capsule-os/
 - `shared::status::Status` enum with error codes
 - `shared::status::Result<T> = core::result::Result<T, Status>`
 
-## Development Workflow
+## Development Status
 
-1. **Phase 0**: Build workspace libs first, verify they compile
-2. **Phase 1**: Get kernel running in QEMU (bare metal target)
-3. **Phase 2-5**: Incremental feature development
+### Phase 0 (Current) - Complete ✅
+- Project skeleton created
+- HAL traits defined
+- Kernel skeleton compiles
+- Userspace skeleton compiles (linking pending linker scripts)
 
-## QEMU Testing (Planned)
+### Phase 1 - Pending
+- AArch64 boot code
+- UART console
+- QEMU testing
+
+## QEMU Testing (Requires QEMU installation)
 
 ```bash
-# Expected run command (not yet implemented)
+# Install QEMU first
+brew install qemu
+
+# Build kernel
+cargo build --target aarch64-unknown-none -p kernel --release
+
+# Link kernel (requires linker script)
+ld.lld -T kernel/kernel.ld build/target/aarch64-unknown-none/release/libkernel.a -o kernel.elf
+
+# Run in QEMU
 qemu-system-aarch64 -machine virt -cpu cortex-a57 -nographic \
-  -kernel build/target/aarch64-unknown-none/release/kernel
+  -kernel kernel.elf
 ```
-
-## Important Files
-
-| File | Purpose |
-|------|---------|
-| `Cargo.toml` | Workspace root, all members listed |
-| `.cargo/config.toml` | Target linker configuration |
-| `config/machine/aarch64/default.conf` | Memory layout, toolchain settings |
-| `TODO.md` | Development phases and progress |
 
 ## Known Issues
 
-- `kernel/` has compilation errors being fixed in Phase 0
-- Userspace `no_std` binaries need linker scripts (not yet created)
-- GUI components are stubs, need full implementation
+- Userspace binaries need linker scripts for bare metal
+- QEMU not installed on development machine
+- GUI components are stubs
 
 ## Verification Commands
 
 ```bash
-# Check kernel compiles
+# Check kernel compiles (no linking needed)
 cargo check --target aarch64-unknown-none -p kernel
 
-# Check workspace compiles (host target)
-cargo check --workspace
+# Build kernel (produces libkernel.a)
+cargo build --target aarch64-unknown-none -p kernel --release
 
-# Run clippy
-cargo clippy --workspace -D warnings 2>/dev/null || true
+# Full workspace check
+cargo check --workspace
 ```

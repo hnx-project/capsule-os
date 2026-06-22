@@ -1,16 +1,17 @@
 #![no_std]
+#![crate_type = "staticlib"]
 
 extern crate hal;
 extern crate shared;
 
-mod arch;
-mod task;
-mod mm;
-mod ipc;
-mod object;
-mod syscall;
-mod sync;
-mod kcore;
+pub mod arch;
+pub mod task;
+pub mod mm;
+pub mod ipc;
+pub mod object;
+pub mod syscall;
+pub mod sync;
+pub mod kcore;
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {

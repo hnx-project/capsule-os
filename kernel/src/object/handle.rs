@@ -11,7 +11,7 @@ impl Handle {
     pub fn new(object_type: ObjectType, rights: u32) -> Self {
         Handle { value: HandleValue::INVALID, object_type, rights }
     }
-    pub fn check_rights(&self, _required: u32) -> bool {
-        (self.rights & _required) == _required
+    pub fn check_rights(&self, required: u32) -> bool {
+        (self.rights & required) == required
     }
 }

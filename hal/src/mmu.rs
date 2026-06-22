@@ -1,4 +1,6 @@
-use shared::status::{Result, Status};
+#![allow(dead_code)]
+
+use shared::status::Result;
 
 pub trait PageFlags: Clone + Copy {
     fn read() -> Self;

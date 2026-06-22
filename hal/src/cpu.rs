@@ -1,4 +1,4 @@
-use shared::Status;
+use shared::status::Result;
 
 #[derive(Debug, Clone, Copy)]
 pub struct CpuFeatures {
