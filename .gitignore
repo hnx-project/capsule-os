@@ -31,3 +31,5 @@ Thumbs.db
 qemu_pids/
 *.img
 *.dtb
+*.ohc
+*.ohlib

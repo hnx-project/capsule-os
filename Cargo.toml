@@ -11,7 +11,7 @@ members = [
     "gui/compositor",
     "gui/renderer",
     "gui/client",
-    "tools/xtask",
+    "tools/ohc-tool",
 ]
 resolver = "2"
 
