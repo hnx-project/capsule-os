@@ -33,22 +33,7 @@ fn print_hex(n: usize) {
 
 #[no_mangle]
 pub extern "C" fn _start() {
-    arch::early_init();
-
-    print_str("Capsule OS booting...\r\n");
-
-    kcore::init();
-    mm::init();
-
-    print_str("Kernel initialized.\r\n");
-    print_str("Creating scheduler...\r\n");
-
-    let scheduler = task::scheduler::Scheduler::new();
-    let init_thread = task::create_init_thread();
-    scheduler.add(init_thread);
-
-    print_str("Starting scheduler...\r\n");
-    scheduler.run();
-
+    print_str("CapsuleOS booting...\r\n");
+    print_str("Hello from kernel!\r\n");
     loop {}
 }

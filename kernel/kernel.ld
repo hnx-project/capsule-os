@@ -7,6 +7,7 @@ ENTRY(_start)
 SECTIONS {
     .text 0x40080000 : {
         *(.text.boot)
+        *(.text._start)
         *(.text)
         *(.rodata)
     } > RAM

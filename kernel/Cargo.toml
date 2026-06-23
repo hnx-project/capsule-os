@@ -16,9 +16,8 @@ lto = false
 
 [profile.release]
 panic = "abort"
-opt-level = "z"
-lto = true
-codegen-units = 1
+opt-level = 0
+lto = false
 
 [dependencies]
 hal = { path = "../hal" }
