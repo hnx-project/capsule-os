@@ -1,36 +1,30 @@
+.PHONY: all build kernel kernel-release run clean
+
 ARCH ?= aarch64
-BOARD ?= qemu
-MODE ?= release
+RUST_TARGET = aarch64-unknown-none
+KERNEL_ARTIFACT = build/target/$(RUST_TARGET)/release/libkernel.a
+KERNEL_ELF = kernel.elf
+LINKER_SCRIPT = kernel/kernel.ld
+LDD = ~/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/rust-lld
 
-CARGO = cargo
-RUST_TARGET = $(shell cat config/machine/$(ARCH)/default.conf 2>/dev/null | grep rust_target | cut -d= -f2)
-
-.PHONY: all build run clean test
-
-all: build
+all: kernel
 
 build:
-	@echo "Building Capsule OS for $(ARCH)..."
-	$(CARGO) build --workspace --target $(RUST_TARGET) --release
-	@echo "Build complete."
+	cargo build --target $(RUST_TARGET) -p kernel
 
-run:
-	@echo "Running in QEMU..."
-	qemu-system-aarch64 \
-		-machine virt \
-		-cpu cortex-a57 \
-		-nographic \
-		-kernel build/target/$(RUST_TARGET)/release/libhnx_kernel.a \
-		-device virtio-serial-device \
-		-serial mon:stdio
+kernel: build
+	$(LDD) -flavor gnu -T $(LINKER_SCRIPT) $(KERNEL_ARTIFACT) -o $(KERNEL_ELF)
+
+kernel-release:
+	cargo build --target $(RUST_TARGET) -p kernel --release
+	$(LDD) -flavor gnu -T $(LINKER_SCRIPT) $(KERNEL_ARTIFACT) -o $(KERNEL_ELF)
+
+run: kernel
+	qemu-system-aarch64 -machine virt -cpu cortex-a57 -nographic -kernel $(KERNEL_ELF)
 
 clean:
-	rm -rf build/
-	$(CARGO) clean --workspace
-
-test:
-	$(CARGO) test --workspace
+	rm -rf build/ target/ $(KERNEL_ELF)
 
 check:
-	$(CARGO) check --workspace
-	$(CARGO) clippy --workspace -D warnings 2>/dev/null || true
+	cargo check --target $(RUST_TARGET) -p kernel
+	cargo check --workspace

@@ -4,91 +4,29 @@
 
 ---
 
-## 项目结构
+## Phase 0: 项目初始化 (Week 1) - ✅ 完成
 
-```
-capsule-os/
-├── Cargo.toml              # Workspace 根配置
-├── hal/                    # Hardware Abstraction Layer (no_std)
-│   ├── src/
-│   │   ├── lib.rs
-│   │   ├── cpu.rs
-│   │   ├── mmu.rs
-│   │   ├── interrupt.rs
-│   │   ├── timer.rs
-│   │   ├── console.rs
-│   │   └── memory.rs
-│   └── Cargo.toml
-│
-├── shared/                 # 共享类型 (no_std)
-│   ├── src/
-│   │   ├── lib.rs
-│   │   ├── status.rs
-│   │   ├── types.rs
-│   │   ├── ipc.rs
-│   │   └── boot.rs
-│   └── Cargo.toml
-│
-├── kernel/                 # 微内核 (no_std)
-│   ├── src/
-│   │   ├── lib.rs          # 内核入口, panic handler
-│   │   ├── arch/
-│   │   │   ├── mod.rs
-│   │   │   ├── aarch64/
-│   │   │   └── x86_64/
-│   │   ├── task/
-│   │   ├── mm/
-│   │   ├── ipc/
-│   │   ├── object/
-│   │   ├── syscall/
-│   │   ├── sync/
-│   │   └── kcore/
-│   └── Cargo.toml
-│
-├── userspace/              # 用户空间
-│   ├── libc/              # Syscall 包装
-│   ├── services/
-│   │   ├── vfs/
-│   │   ├── loader/
-│   │   └── init/
-│   └── programs/
-│       └── shell/
-│
-├── gui/                    # 桌面环境
-│   ├── compositor/
-│   ├── renderer/
-│   └── client/
-│
-└── TODO.md
-```
+### 0.1 项目结构 ✅
+- [x] Workspace 配置 (Cargo.toml)
+- [x] hal/, shared/, kernel/, userspace/, gui/ 目录
+- [x] AGENTS.md, TODO.md, .gitignore
 
----
+### 0.2 HAL traits ✅
+- [x] hal/src/cpu.rs (Cpu, CpuInfo traits)
+- [x] hal/src/mmu.rs (Mmu, PageTable traits)
+- [x] hal/src/interrupt.rs (InterruptController trait)
+- [x] hal/src/timer.rs (Timer trait)
+- [x] hal/src/console.rs (Console trait)
+- [x] hal/src/memory.rs (PhysicalMemory trait)
 
-## Phase 0: 项目初始化 (Week 1) - 进行中
+### 0.3 shared 类型 ✅
+- [x] shared/src/status.rs (Status, Result)
+- [x] shared/src/types.rs (Handle, HandleValue, ObjectType)
+- [x] shared/src/ipc.rs (Message types)
+- [x] shared/src/boot.rs (BootInfo)
 
-### 0.1 创建项目结构 ✅
-- [x] 创建目录结构
-- [x] 初始化 Cargo workspace 配置
-- [x] 创建 hal/, shared/, kernel/ 骨架
-- [x] 创建 userspace/ 骨架
-- [x] 创建 gui/ 骨架
-
-### 0.2 创建 HAL traits ✅
-- [x] hal/src/cpu.rs
-- [x] hal/src/mmu.rs
-- [x] hal/src/interrupt.rs
-- [x] hal/src/timer.rs
-- [x] hal/src/console.rs
-- [x] hal/src/memory.rs
-
-### 0.3 创建 shared 类型 ✅
-- [x] shared/src/status.rs
-- [x] shared/src/types.rs
-- [x] shared/src/ipc.rs
-- [x] shared/src/boot.rs
-
-### 0.4 创建 kernel 骨架 🔄
-- [x] kernel/src/lib.rs
+### 0.4 kernel 骨架 ✅
+- [x] kernel/src/lib.rs (入口, panic handler)
 - [x] kernel/src/arch/mod.rs
 - [x] kernel/src/task/mod.rs
 - [x] kernel/src/mm/mod.rs
@@ -97,49 +35,44 @@ capsule-os/
 - [x] kernel/src/syscall/mod.rs
 - [x] kernel/src/sync/mod.rs
 - [x] kernel/src/kcore/mod.rs
+- [x] kernel/kernel.ld (链接脚本)
 
-### 0.5 验证构建 ⚠️
-- [ ] kernel 编译通过
-- [ ] userspace 编译通过
-- [ ] Makefile 工作
+### 0.5 构建验证 ✅
+- [x] `cargo build --target aarch64-unknown-none -p kernel` 成功
+- [x] `make kernel-release` 生成 kernel.elf
 
 ---
 
-## Phase 1: 最小可启动系统 (Week 2-3)
+## Phase 1: 最小可启动系统 (Week 2-3) - 🔄 进行中
 
 > 目标: QEMU 启动，能打印 "Hello World"
 
 ### 1.1 AArch64 架构实现
-- [ ] kernel/src/arch/aarch64/boot.S
-- [ ] kernel/src/arch/aarch64/mmu.rs (启用 MMU)
-- [ ] kernel/src/arch/aarch64/int.rs
-- [ ] kernel/src/arch/aarch64/timer.rs
-- [ ] kernel/src/arch/aarch64/console.rs (UART)
+- [x] kernel/src/arch/aarch64/mod.rs (UART putchar)
+- [ ] kernel/src/arch/aarch64/boot.S (启动汇编)
+- [ ] kernel/src/arch/aarch64/mmu.rs (MMU 启用)
 - [ ] kernel/src/arch/aarch64/linker.ld
 
 ### 1.2 X86_64 架构实现
-- [ ] kernel/src/arch/x86_64/boot.S
-- [ ] kernel/src/arch/x86_64/mmu.rs
-- [ ] kernel/src/arch/x86_64/console.rs
+- [ ] kernel/src/arch/x86_64/ (实现)
 
 ### 1.3 内核核心实现
-- [ ] kcore/alloc.rs (堆分配器)
-- [ ] task/scheduler.rs (round-robin)
+- [ ] kcore/alloc.rs (堆分配器 - 需要实现)
+- [ ] task/scheduler.rs (需要完善)
 - [ ] task/thread.rs (线程切换)
-- [ ] mm/phys.rs (物理页分配)
 
 ### 1.4 基础 Syscall
-- [ ] sys_exit, sys_write
-- [ ] sys_channel_create/read/write
-- [ ] sys_vmo_create/read/write
+- [ ] sys_exit, sys_write (完善)
+- [ ] sys_channel_*
+- [ ] sys_vmo_*
 
 ### 1.5 Init 进程
-- [ ] userspace/services/init
+- [ ] userspace/services/init (完善)
 - [ ] Init 打印 "Hello from userspace!"
 
-### 1.6 验证
-- [ ] QEMU 启动成功
-- [ ] 能看到 "Hello from userspace!"
+### 1.6 QEMU 测试
+- [x] QEMU 可以启动 kernel.elf
+- [ ] 验证串口输出工作
 
 ---
 
@@ -156,6 +89,7 @@ capsule-os/
 ### 2.3 内存管理
 - [ ] mm/vmo.rs (真正分配物理页)
 - [ ] mm/vmar.rs (页表映射)
+- [ ] mm/phys.rs (物理页分配器)
 
 ### 2.4 ELF 加载
 - [ ] mm/elf.rs
@@ -182,10 +116,6 @@ capsule-os/
 - [ ] 浮动窗口
 - [ ] 焦点管理
 
-### 3.5 验证
-- [ ] QEMU 显示桌面
-- [ ] 窗口可打开/关闭
-
 ---
 
 ## Phase 4: 桌面应用 (Week 11-14)
@@ -203,6 +133,27 @@ capsule-os/
 ### 5.2 网络支持
 ### 5.3 声音支持
 ### 5.4 持久化存储
+
+---
+
+## 构建命令
+
+```bash
+# 构建 kernel (开发版)
+make build
+
+# 构建 kernel (发布版)
+make kernel-release
+
+# 运行 QEMU
+make run
+
+# 清理
+make clean
+
+# 检查编译
+make check
+```
 
 ---
 

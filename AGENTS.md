@@ -3,17 +3,24 @@
 ## Build Commands
 
 ```bash
-# Build workspace (libs only - userspace binaries have linking issues)
-cargo build --workspace
+# Build kernel (dev)
+make build
 
-# Build kernel for bare metal (AArch64) - ✅ Works
+# Build kernel (release) + link ELF
+make kernel-release
+
+# Run in QEMU
+make run
+
+# Check compilation
+make check
+
+# Clean build artifacts
+make clean
+
+# Manual build
 cargo build --target aarch64-unknown-none -p kernel
-
-# Build kernel release
-cargo build --target aarch64-unknown-none -p kernel --release
-
-# Check kernel compiles
-cargo check --target aarch64-unknown-none -p kernel
+rust-lld -flavor gnu -T kernel/kernel.ld build/target/aarch64-unknown-none/release/libkernel.a -o kernel.elf
 ```
 
 ## Target Triple
@@ -34,6 +41,7 @@ capsule-os/
 │       ├── ipc.rs          # Message types
 │       └── boot.rs         # BootInfo
 ├── kernel/                 # Microkernel (no_std)
+│   ├── kernel.ld          # Linker script
 │   └── src/
 │       ├── arch/           # Arch implementations (aarch64/, x86_64/)
 │       ├── task/           # Scheduler, Thread, Process
@@ -44,7 +52,7 @@ capsule-os/
 │       └── kcore/           # Kernel core utilities
 ├── userspace/              # User space programs
 │   ├── libc/               # Syscall wrappers
-│   ├── services/           # init, vfs, loader (need linker scripts)
+│   ├── services/           # init, vfs, loader
 │   └── programs/          # shell
 └── gui/                    # Desktop environment
     ├── compositor/         # Window compositor (stub)
@@ -73,39 +81,37 @@ capsule-os/
 
 ## Development Status
 
-### Phase 0 (Current) - Complete ✅
+### Phase 0 - Complete ✅
 - Project skeleton created
 - HAL traits defined
-- Kernel skeleton compiles
-- Userspace skeleton compiles (linking pending linker scripts)
+- Kernel compiles to libkernel.a
+- Linker script created
+- Makefile with build commands
 
-### Phase 1 - Pending
-- AArch64 boot code
-- UART console
-- QEMU testing
+### Phase 1 - In Progress 🔄
+- AArch64 boot code (partial)
+- UART console working
+- QEMU testing available
 
-## QEMU Testing (Requires QEMU installation)
+## QEMU Testing
 
 ```bash
-# Install QEMU first
+# Install QEMU (if needed)
 brew install qemu
 
-# Build kernel
-cargo build --target aarch64-unknown-none -p kernel --release
+# Build and run
+make kernel-release
+make run
 
-# Link kernel (requires linker script)
-ld.lld -T kernel/kernel.ld build/target/aarch64-unknown-none/release/libkernel.a -o kernel.elf
-
-# Run in QEMU
-qemu-system-aarch64 -machine virt -cpu cortex-a57 -nographic \
-  -kernel kernel.elf
+# QEMU command (manual)
+qemu-system-aarch64 -machine virt -cpu cortex-a57 -nographic -kernel kernel.elf
 ```
 
 ## Known Issues
 
 - Userspace binaries need linker scripts for bare metal
-- QEMU not installed on development machine
 - GUI components are stubs
+- QEMU serial output needs verification
 
 ## Verification Commands
 

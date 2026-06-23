@@ -23,6 +23,10 @@ Thumbs.db
 *.rlib
 *.a
 
+# Build output
+*.elf
+*.bin
+
 # QEMU
 qemu_pids/
 *.img

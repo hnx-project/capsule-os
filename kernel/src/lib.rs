@@ -18,16 +18,36 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
+fn print_str(s: &str) {
+    for byte in s.bytes() {
+        arch::console_putchar(byte);
+    }
+}
+
+fn print_hex(n: usize) {
+    let hex = b"0123456789abcdef";
+    for i in (0..16).rev() {
+        arch::console_putchar(hex[(n >> (i * 4)) & 0xf]);
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn _start() {
     arch::early_init();
+
+    print_str("Capsule OS booting...\r\n");
+
     kcore::init();
     mm::init();
+
+    print_str("Kernel initialized.\r\n");
+    print_str("Creating scheduler...\r\n");
 
     let scheduler = task::scheduler::Scheduler::new();
     let init_thread = task::create_init_thread();
     scheduler.add(init_thread);
 
+    print_str("Starting scheduler...\r\n");
     scheduler.run();
 
     loop {}
