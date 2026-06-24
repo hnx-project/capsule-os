@@ -1,0 +1,3 @@
+[submodule "capsule-bootloader"]
+	path = capsule-bootloader
+	url = git@gitcode.com:hnx-project/capsule-bootloader.git

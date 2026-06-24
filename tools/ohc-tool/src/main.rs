@@ -65,7 +65,7 @@ enum Command {
         input: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
-        #[arg(short, long, default_value = "0x40080000")]
+        #[arg(short, long, default_value_t = 0x40080000)]
         entry: u64,
     },
     Unpack {

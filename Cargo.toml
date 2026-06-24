@@ -3,6 +3,7 @@ members = [
     "hal",
     "shared",
     "kernel",
+    "capsule-bootloader",
     "userspace/libc",
     "userspace/services/vfs",
     "userspace/services/loader",
