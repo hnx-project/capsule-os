@@ -1,7 +1,7 @@
 # Build artifacts
 build/
 target/
-
+dist/
 # Cargo
 Cargo.lock
 
@@ -26,6 +26,7 @@ Thumbs.db
 # Build output
 *.elf
 *.bin
+*.o
 
 # QEMU
 qemu_pids/

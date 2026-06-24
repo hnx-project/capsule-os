@@ -18,22 +18,25 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
-fn print_str(s: &str) {
-    for byte in s.bytes() {
-        arch::console_putchar(byte);
-    }
-}
-
-fn print_hex(n: usize) {
-    let hex = b"0123456789abcdef";
-    for i in (0..16).rev() {
-        arch::console_putchar(hex[(n >> (i * 4)) & 0xf]);
-    }
-}
-
 #[no_mangle]
-pub extern "C" fn _start() {
-    print_str("CapsuleOS booting...\r\n");
-    print_str("Hello from kernel!\r\n");
+pub extern "C" fn kernel_main() {
+    // Print "OK\r\n" using inline assembly
+    unsafe {
+        core::arch::asm!(
+            r"
+            movz x0, #0x0000
+            movk x0, #0x0900, lsl #16
+            movz w1, #0x4F
+            strb w1, [x0]
+            movz w1, #0x4B
+            strb w1, [x0]
+            movz w1, #0x0D
+            strb w1, [x0]
+            movz w1, #0x0A
+            strb w1, [x0]
+            ",
+            options(nostack)
+        );
+    }
     loop {}
 }
