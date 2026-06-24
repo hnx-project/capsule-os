@@ -4,7 +4,7 @@ cargo-features = ["profile-rustflags"]
 target-dir = "build/target"
 
 [target.aarch64-unknown-none]
-linker = "ld.lld"
+linker = "rust-lld"
 
 [target.x86_64-unknown-none]
 linker = "ld.lld"

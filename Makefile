@@ -1,4 +1,4 @@
-.PHONY: all build kernel kernel-release stage1 capsule-os.bin clean check help run
+.PHONY: all build kernel kernel-release stage1 capsule-os.bin clean check help run bootloader run-ohc
 
 ARCH ?= aarch64
 RUST_TARGET = aarch64-unknown-none
@@ -21,6 +21,8 @@ OHC_TOOL = cargo run -p ohc-tool --
 
 STAGE1_LOAD_ADDR = 0x40080000
 KERNEL_LOAD_ADDR = 0x40081000
+KERNEL_ENTRY = 1074266112
+KERNEL_RAW = dist/kernel/kernel.raw
 
 all: capsule-os.bin
 
@@ -80,5 +82,20 @@ check:
 	cargo check --target $(RUST_TARGET) -p kernel
 	cargo check --workspace
 
-ohc: kernel
-	$(OHC_TOOL) pack --input $(KERNEL_ELF) --output $(OHC_FILE) --entry 1076075520
+$(KERNEL_RAW): kernel
+	$(OBJCOPY) -O binary $(KERNEL_ELF) $(KERNEL_RAW)
+
+ohc: $(KERNEL_RAW)
+	$(OHC_TOOL) pack --input $(KERNEL_RAW) --output $(OHC_FILE) --entry $(KERNEL_ENTRY)
+
+bootloader:
+	rustup run stable cargo build --release -p capsule-bootloader --target aarch64-unknown-none
+
+run-ohc: ohc bootloader
+	@echo "Running CapsuleOS with bootloader..."
+	@echo "Use Ctrl+A, X to exit"
+	qemu-system-aarch64 \
+		-M virt -cpu cortex-a72 -m 512M -nographic \
+		-kernel build/target/aarch64-unknown-none/release/capsule-bootloader \
+		-device loader,file=$(OHC_FILE),addr=0x40700000,force-raw=on \
+		-semihosting
