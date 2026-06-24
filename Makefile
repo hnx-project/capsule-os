@@ -65,11 +65,11 @@ capsule-os.bin: stage1 $(KERNEL_BIN) | dist
 	dd if=$(STAGE1_BIN) of=$(CAPSULE_OS) conv=notrunc bs=1 seek=$(STAGE1_LOAD_ADDR)
 	dd if=$(KERNEL_BIN) of=$(CAPSULE_OS) conv=notrunc bs=1 seek=$(KERNEL_LOAD_ADDR)
 
-run: capsule-os.bin
+run: kernel
 	@echo "Running CapsuleOS on QEMU..."
 	@echo "Use Ctrl+A, X to exit"
 	qemu-system-aarch64 -M virt -cpu cortex-a72 -nographic \
-		-kernel $(CAPSULE_OS) \
+		-kernel $(KERNEL_ELF) \
 		-dtb $(DTB) \
 		-semihosting
 
