@@ -18,25 +18,22 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
+pub static mut DTB_POINTER: *const u8 = core::ptr::null();
+
 #[no_mangle]
-pub extern "C" fn kernel_main() {
-    // Print "OK\r\n" using inline assembly
+pub extern "C" fn kernel_main(dtb_ptr: *const u8) {
     unsafe {
-        core::arch::asm!(
-            r"
-            movz x0, #0x0000
-            movk x0, #0x0900, lsl #16
-            movz w1, #0x4F
-            strb w1, [x0]
-            movz w1, #0x4B
-            strb w1, [x0]
-            movz w1, #0x0D
-            strb w1, [x0]
-            movz w1, #0x0A
-            strb w1, [x0]
-            ",
-            options(nostack)
-        );
+        DTB_POINTER = dtb_ptr;
     }
+
+    arch::early_init();
+
+    for c in b"CapsuleOS v0.1.0\r\n" {
+        arch::console_putchar(*c);
+    }
+    for c in b"OK\r\n" {
+        arch::console_putchar(*c);
+    }
+
     loop {}
 }

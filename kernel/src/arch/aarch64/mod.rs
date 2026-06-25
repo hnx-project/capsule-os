@@ -7,6 +7,19 @@ const UART0_DR: *mut u8 = UART0_BASE as *mut u8;
 const UART0_FR: *const u8 = (UART0_BASE + 0x18) as *const u8;
 
 pub fn early_init() {
+    let uart = UART0_BASE as *mut u32;
+    unsafe {
+        // Disable UART
+        uart.add(0x30 / 4).write_volatile(0);
+        // Set baud rate (integer)
+        uart.add(0x24 / 4).write_volatile(13);
+        // Set baud rate (fractional)
+        uart.add(0x28 / 4).write_volatile(2);
+        // Line control (8-bit, FIFO enabled)
+        uart.add(0x2c / 4).write_volatile(0x70);
+        // Control register (enable UART, RX, TX)
+        uart.add(0x30 / 4).write_volatile(0x301);
+    }
 }
 
 pub fn console_putchar(c: u8) {
