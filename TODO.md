@@ -132,7 +132,7 @@
 ## 开发规则
 
 1. **内核极简**: 只做调度 + IPC + 内存
-2. **GUI 不在内核**: compositor 是用户空间服务
+2. **DISPLAY 不在内核**: compositor 是用户空间服务
 3. **HAL 抽象**: traits 定义在 hal/，实现放 kernel/src/arch/
 4. **syscall handler 拆分**: 禁止巨大 match
 5. **no_std**: 内核和 HAL 禁止 unsafe_code

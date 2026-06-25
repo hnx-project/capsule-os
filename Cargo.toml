@@ -1,17 +1,21 @@
 [workspace]
 members = [
+    "capsule-bootloader",
+    # kernel | HNX
     "hal",
     "shared",
     "kernel",
-    "capsule-bootloader",
+    # userspace | capsuleOS
     "userspace/libc",
     "userspace/services/vfs",
     "userspace/services/loader",
     "userspace/services/init",
     "userspace/programs/shell",
-    "gui/compositor",
-    "gui/renderer",
-    "gui/client",
+    # userspace - display | capsuleOS
+    "display/compositor",
+    "display/renderer",
+    "display/client",
+    # tools | HNX
     "tools/ohc-tool",
 ]
 resolver = "2"

@@ -160,7 +160,7 @@ capsule-os/
 brew install qemu
 
 # 运行 .ohc
-make run
+make run-ohc
 
 # 运行 ELF (直接)
 qemu-system-aarch64 -machine virt -cpu cortex-a57 -nographic -kernel kernel.elf

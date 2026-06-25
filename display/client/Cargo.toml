@@ -1,5 +1,5 @@
 [package]
-name = "gui-client"
+name = "display-client"
 version = "0.1.0"
 edition = "2021"
 
