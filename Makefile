@@ -91,11 +91,26 @@ ohc: $(KERNEL_RAW)
 bootloader:
 	rustup run stable cargo build --release -p capsule-bootloader --target aarch64-unknown-none
 
-run-ohc: ohc bootloader
+DTB_FILE = dist/qemu.dtb
+DTB_ADDR = 0x42000000
+
+run-ohc: ohc bootloader $(DTB_FILE)
 	@echo "Running CapsuleOS with bootloader..."
 	@echo "Use Ctrl+A, X to exit"
 	qemu-system-aarch64 \
 		-M virt -cpu cortex-a72 -m 512M -nographic \
 		-kernel build/target/aarch64-unknown-none/release/capsule-bootloader \
 		-device loader,file=$(OHC_FILE),addr=0x40700000,force-raw=on \
+		-device loader,file=$(DTB_FILE),addr=$(DTB_ADDR),force-raw=on \
 		-semihosting
+
+$(DTB_FILE):
+	@echo "Generating QEMU DTB..."
+	@qemu-system-aarch64 -M virt,dumpdtb=$(DTB_FILE) -cpu cortex-a72 -m 512M > /dev/null 2>&1
+	@python3 -c "import struct,sys; \
+d=open('$(DTB_FILE)','rb').read(); \
+p=d.find(b'\x00\x00\x00\x09'); \
+sz=(p+4+3)&~3; \
+nd=bytearray(d[:sz]); \
+nd[4:8]=struct.pack('>I',sz); \
+open('$(DTB_FILE)','wb').write(bytes(nd))"

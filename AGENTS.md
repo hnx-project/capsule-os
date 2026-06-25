@@ -47,14 +47,20 @@
 
 ### 启动流程
 ```
-QEMU firmware
+QEMU (-kernel capsule-bootloader)
     ↓
-stage1boot (汇编, ~100 bytes) - 设置 SP, 跳转 ⭐ 待实现
+capsule-bootloader (submodule, 解析 OHC + 拷贝到 entry)
     ↓
-hnxcore.ohc (内核)
+hnxcore.ohc (内核, entry = 0x40080000)
     ↓
-打印: "CapsuleOS v0.1.0"
+boot_asm.S: DTB ptr -> x19, 动态栈/BSS 初始化
+    ↓
+kernel_main(dtb_ptr) (lib.rs)
+    ↓
+打印: "CapsuleOS v0.1.0" + "OK"
 ```
+
+> **重要**: 不再使用 stage1 直接引导。统一通过 capsule-bootloader 加载 OHC 镜像。
 
 ## 构建命令
 
@@ -66,13 +72,16 @@ cargo build --target aarch64-unknown-none -p kernel --release
 rust-lld -flavor gnu -T kernel/kernel.ld libkernel.a -o kernel.elf
 
 # 打包 .ohc (使用 ohc-tool)
-cargo run -p ohc-tool -- pack --input kernel.elf --output hnxcore.ohc --entry 1076075520
+cargo run -p ohc-tool -- pack --input kernel.raw --output hnxcore.ohc --entry 1074266112
 
 # 快速构建 (make ohc)
 make ohc
 
-# 运行
-make run
+# 运行 (bootloader + OHC 流程)
+make run-ohc
+
+# 编译 capsule-bootloader
+make bootloader
 
 # 打包完整系统 (v1.0.0)
 cargo run -p capsule-pack -- --kernel hnxcore.ohc --rootfs rootfs/ --output capsule-os.img
@@ -85,6 +94,8 @@ make build          # 编译 kernel
 make kernel        # 编译 + 链接 ELF
 make ohc           # 生成 hnxcore.ohc
 make run           # 在 QEMU 运行
+make bootloader    # 编译 capsule-bootloader
+make run-ohc       # 通过 bootloader 启动 OHC
 make clean         # 清理
 make check         # 检查编译
 ```
@@ -106,10 +117,9 @@ capsule-os/
 │   ├── kernel.ld         # 链接脚本
 │   └── src/
 │       └── arch/aarch64/
-│           ├── stage1.S  # stage1 bootloader ⭐ 待实现
-│           ├── boot.S     # 启动汇编
-│           ├── console.rs # UART 驱动
-│           └── mmu.rs    # MMU 初始化
+│           ├── boot_asm.S  # 启动汇编 (动态栈/BSS 初始化)
+│           ├── mod.rs      # 平台初始化 + UART
+│           └── mmu.rs      # MMU 初始化 ⭐ 待实现
 ├── userspace/              # 用户态程序
 │   ├── libc/             # C 库
 │   └── services/         # 系统服务
@@ -142,16 +152,16 @@ capsule-os/
 - `shared::status::Status` 枚举
 - `shared::status::Result<T> = core::result::Result<T, Status>`
 
-## Phase 1 实现清单 (v0.1.0)
+## Phase 1 实现清单 (v0.1.0) ✅ 已完成
 
 | 任务 | 优先级 | 状态 |
 |------|--------|------|
-| stage1.S | P0 | 待实现 |
+| capsule-bootloader | P0 | ✅ 已实现 |
 | ohc-tool | P0 | ✅ 已实现 |
 | kernel.ld | P0 | ✅ 已实现 |
-| 内核入口 + print | P1 | 待完善 |
-| UART 驱动 | P1 | 部分完成 |
-| MMU 初始化 | P2 | 待实现 |
+| 内核入口 + print | P1 | ✅ 已完成 |
+| UART 驱动 | P1 | ✅ 已完成 |
+| MMU 初始化 | P2 | 待实现 (Phase 2) |
 
 ## QEMU 测试
 
@@ -168,7 +178,6 @@ qemu-system-aarch64 -machine virt -cpu cortex-a57 -nographic -kernel kernel.elf
 
 ## 已知问题
 
-- stage1boot 尚未实现
 - capsule-pack 尚未实现
 - 用户态程序需要 .ohc 打包支持
 
