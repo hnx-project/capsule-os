@@ -1,160 +1,85 @@
-# CapsuleOS 开发计划
+# CapsuleOS 开发计划 (与时俱进整理版)
 
-> 目标: 快速出成果，先能用再完善
-
----
-
-## Phase 1: v0.1.0 Pangu - 可启动内核 ⭐
-
-> 目标: hnxcore.ohc 能启动并打印 "CapsuleOS v0.1.0"
-
-### 1.1 stage1boot
-- [ ] kernel/src/arch/aarch64/stage1.S (设置 SP，跳转内核)
-- [ ] 更新 kernel/kernel.ld (stage1 入口点)
-
-### 1.2 ohc-tool
-- [ ] tools/ohc-tool/Cargo.toml
-- [ ] tools/ohc-tool/src/main.rs
-- [ ] 实现 .ohc 头部写入
-- [ ] 实现 CRC32 校验
-- [ ] 实现 payload 打包
-
-### 1.3 kernel 入口
-- [ ] kernel/src/lib.rs (_start, panic_handler)
-- [ ] 打印 "CapsuleOS v0.1.0"
-- [ ] 串口初始化
-
-### 1.4 AArch64 架构
-- [ ] boot.S (异常向量表)
-- [ ] console.rs (PL011 UART)
-- [ ] mmu.rs (段映射)
-
-### 1.5 构建验证
-- [ ] `cargo build --target aarch64-unknown-none -p kernel`
-- [ ] `rust-lld -flavor gnu -T kernel.ld libkernel.a -o kernel.elf`
-- [ ] `cargo run -p ohc-tool -- --input kernel.elf --output hnxcore.ohc`
-- [ ] `qemu-system-aarch64 -kernel hnxcore.ohc` 成功启动
+> 目标: 快速出成果，结合 capsule-bootloader 现代特性，先通后精
 
 ---
 
-## Phase 2: v0.2.0 Pangu - 内存管理
+## 🟢 Phase 1: v0.1.0 Pangu - 可启动内核与引导对接 (已圆满完成) ✅
 
-### 2.1 MMU 分页
-- [ ] 实现页表结构
-- [ ] 实现分页内存分配
-- [ ] VMO/VMAR 真正实现
+> 目标: hnxcore.ohc 能够通过 capsule-bootloader 安全加载，动态初始化栈和 BSS，接收 DTB 指针并打印 "CapsuleOS v0.1.0" 与 "OK"
 
-### 2.2 物理页分配器
-- [ ] buddy system 或 bitmap 分配器
-- [ ] 物理页映射
+### 1.1 OHC 包打包工具 (`ohc-tool`) ✅
+- [x] tools/ohc-tool: 实现 OHC 头部写入、CRC32 校验、Payload 打包
+- [x] Makefile: 集成 `make ohc` 支持一键将内核 Raw Binary 打包为 `.ohc` 格式
 
----
+### 1.2 capsule-bootloader 引导层对接 ✅
+- [x] 集成 capsule-bootloader 子模块，完成多核屏蔽（CPU 0 引导，其余进入 wfi 睡眠）、关闭早期中断及 FPU (FP/SIMD) 初始化
+- [x] 实现 Bootloader 对 OHC 格式的安全解析、校验与物理地址解包（`0x4008_0000`）
+- [x] 实现了 Bootloader 将 FDT (Device Tree Blob) 物理地址通过 `x0` 寄存器透传给内核
 
-## Phase 3: v0.3.0 Pangu - 多任务调度
+### 1.3 内核底层加载与 C ABI 对齐 ✅
+- [x] `boot_asm.S`: 移除硬编码内存地址，**改用链接脚本符号 `__boot_stack_top` 与 `_bss_start` / `_bss_end`** 进行动态物理栈分配与 BSS 段自动清零
+- [x] `boot_asm.S`: 接收并暂存 `dtb_ptr` (`x0`) 到 callee-saved 寄存器 (`x19`)，并在调用 `kernel_main` 前恢复到首参寄存器 `x0`
+- [x] `kernel_main`: 修改签名，接收 `dtb_ptr` 并将其存入全局静态变量 `DTB_POINTER` 供后续模块使用
+- [x] 异常向量表: 加载基础异常向量表（VBAR_EL1 注册），处理 `sync` / `irq` 等基础挂起和桩输出
 
-### 3.1 调度器
-- [ ] Round-robin 调度
-- [ ] 线程创建/切换
-- [ ] 时间片管理
-
-### 3.2 进程管理
-- [ ] Process 结构
-- [ ] 进程创建/销毁
-
----
-
-## Phase 4: v0.4.0 Pangu - IPC
-
-### 4.1 Channel
-- [ ] Channel 创建/读写
-- [ ] Handle 传递
-
-### 4.2 Port
-- [ ] Port 消息队列
-- [ ] 异步通知
+### 1.4 控制台驱动重构 ✅
+- [x] `arch/aarch64/mod.rs`: 实现纯 Rust 的 PL011 早期寄存器级波特率等参数初始化（`early_init()`）
+- [x] `lib.rs`: 移除硬编码的 inline 汇编字符打印，使用统一的 `arch::console_putchar` 输出标准 boot 消息
+- [x] `make run-ohc`: 完整联调测试，Bootloader 正确加载解包并平滑跳转至 CapsuleOS 打印成功
 
 ---
 
-## Phase 5: v0.5.0 Pangu - 用户态 devmgr
+## 🟡 Phase 2: v0.2.0 Pangu - 动态外设探测与内存管理 (当前重点) 🚀
 
-### 5.1 Device Manager
-- [ ] devhost 服务
-- [ ] 驱动加载框架
+> 目标: 激活 MMU 4级页表建立段/页级映射，实现物理内存管理与虚拟地址空间管理 (VMAR/VMO)
 
----
+### 2.1 动态外设与内存范围探测 (FDT 联动) ── 🌟 新增
+- [ ] 引用或编写轻量 FDT 树解析，基于全局 `DTB_POINTER` 动态定位物理 RAM 的首尾物理地址（替换硬编码内存范围）
+- [ ] 动态定位 chosen 标准控制台 PL011 的 MMIO 基地址（为多板支持解耦硬编码 `0x09000000`）
 
-## Phase 6: v0.6.0 Pangu - POSIX 兼容层
+### 2.2 物理页分配器 (Physical Page Allocator)
+- [ ] 实现物理页面管理机制（如 Buddy System 伙伴算法、或 Bitmap 分配器）
+- [ ] 实现 `allocate_page()` / `free_page()` 底层原子物理页分配接口
 
-### 6.1 POSIX API
-- [ ] open/close/read/write
-- [ ] fork/exec
-- [ ] pipe/socket
+### 2.3 MMU 分页系统与页表管理 (AArch64 Page Table)
+- [ ] 实现 4 级页表建立（支持 4KB 页），支持设置 `AArch64PageFlags`（内核/用户态、读/写/执行属性、Device 属性）
+- [ ] 建立内核早期虚拟地址映射：
+  - 恒等映射（Identity Mapping）或高地址内核映射（如偏移 `0xFFFF_0000_0000_0000` 虚拟空间）
+  - 硬件 PL011 MMIO 区间的 Device-Memory 属性映射（解决 MMU 开启后访问外设踩崩溃的问题）
+- [ ] 激活 MMU（配置 `SCTLR_EL1`，`TCR_EL1`，`MAIR_EL1` 和 `TTBRx_EL1` 寄存器并刷新 TLB）
 
----
-
-## Phase 7: v0.7.0 Pangu - 文件系统服务
-
-### 7.1 VFS
-- [ ] 虚拟文件系统
-- [ ] ramfs 实现
-
-### 7.2 文件系统
-- [ ] 简单文件系统驱动
+### 2.4 虚拟地址空间管理 (VMAR & VMO)
+- [ ] **VMO (Virtual Memory Object)**: 真正实现物理页分配与延迟分配（Lazy Allocation）
+- [ ] **VMAR (Virtual Memory Address Range)**: 真正实现虚拟区间分配、保护属性修改与页表映射关联
 
 ---
 
-## Phase 8: v0.8.0 Pangu - 网络栈服务
+## 🔵 Phase 3: v0.3.0 Pangu - 多任务调度与中断管理
 
-### 8.1 网络协议栈
-- [ ] TCP/IP 基础
-- [ ] 网络接口驱动
+> 目标: 结合 Bootloader 多核状态，完成 GIC 中断控制、时间片Tick时钟、线程创建切换与调度器
 
----
+### 3.1 真正中断管理器 (Interrupt Handler & GIC)
+- [ ] 实现 AArch64 真正的高效异常处理上下文保存与恢复（`TrapFrame` 保存 31 个寄存器）
+- [ ] 编写 GIC (Generic Interrupt Controller) 驱动，接管定时器 Tick 中断
+- [ ] 完善 `vector_table`，打通中断分发到 Rust 内核 `irq_handler`
 
-## Phase 9: v0.9.0 Pangu - 服务集成
+### 3.2 进程与线程管理 (Task & Thread)
+- [ ] 实现 `Thread` 控制块（状态：Ready, Running, Blocked, Exited）与内核栈分配
+- [ ] 实现 `Process` 控制块（共享地址空间 VMAR、句柄表 HandleTable）
 
-### 9.1 系统集成
-- [ ] 所有服务集成
-- [ ] 启动流程完善
-
----
-
-## Phase 10: v1.0.0 - 完整系统
-
-### 10.1 capsule-os.img
-- [ ] 系统打包工具 capsule-pack
-- [ ] Shell 实现
-- [ ] 根文件系统
-- [ ] 包管理
+### 3.3 调度器 (Scheduler)
+- [ ] 实现简单的优先级时间片轮转（Round-Robin）调度算法
+- [ ] 实现上下文切换（`switch_to` 汇编保存 `x19-x29`，`sp`，`lr` 等 callee-saved 寄存器）
+- [ ] 计时器 Tick 支持：每次时钟中断自动触发调度
 
 ---
 
-## 开发规则
-
-1. **内核极简**: 只做调度 + IPC + 内存
-2. **DISPLAY 不在内核**: compositor 是用户空间服务
-3. **HAL 抽象**: traits 定义在 hal/，实现放 kernel/src/arch/
-4. **syscall handler 拆分**: 禁止巨大 match
-5. **no_std**: 内核和 HAL 禁止 unsafe_code
-6. **二进制格式**: 使用自定义 .ohc 格式
-
----
-
-## 构建命令
-
-```bash
-# 开发构建
-make build
-
-# 发布构建
-make kernel-release
-
-# 打包 .ohc
-make ohc
-
-# 运行
-make run
-
-# 清理
-make clean
-```
+## 🟣 Phase 4 至 Phase 10 (后续路线图)
+- **Phase 4: v0.4.0 IPC** (Channel 创建/读写，Port 消息队列，异步通知)
+- **Phase 5: v0.5.0 用户态 devmgr** (用户态驱动框架与设备管理器 devhost)
+- **Phase 6: v0.6.0 POSIX 兼容层** (Syscall 映射，标准 I/O 接口支持)
+- **Phase 7: v0.7.0 文件系统服务** (VFS 虚拟文件系统、ramfs 内存文件系统)
+- **Phase 8: v0.8.0 网络栈服务** (TCP/IP 协议栈服务、网络接口驱动)
+- **Phase 9: v0.9.0 所有用户态服务集成**
+- **Phase 10: v1.0.0 完整 capsule-os.img 制作**

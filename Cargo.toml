@@ -18,6 +18,10 @@ members = [
     # tools | HNX
     "tools/ohc-tool",
 ]
+
+[workspace.package]
+version = "0.1.0-pangu"
+
 resolver = "2"
 
 [profile.dev]
