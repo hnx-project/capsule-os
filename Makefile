@@ -106,11 +106,7 @@ run-ohc: ohc bootloader $(DTB_FILE)
 
 $(DTB_FILE):
 	@echo "Generating QEMU DTB..."
-	@qemu-system-aarch64 -M virt,dumpdtb=$(DTB_FILE) -cpu cortex-a72 -m 512M > /dev/null 2>&1
-	@python3 -c "import struct,sys; \
-d=open('$(DTB_FILE)','rb').read(); \
-p=d.find(b'\x00\x00\x00\x09'); \
-sz=(p+4+3)&~3; \
-nd=bytearray(d[:sz]); \
-nd[4:8]=struct.pack('>I',sz); \
-open('$(DTB_FILE)','wb').write(bytes(nd))"
+	@qemu-system-aarch64 -M virt -cpu cortex-a72 -m 512M -machine dumpdtb=/tmp/qemu_raw.dtb -display none > /dev/null 2>&1
+	@dtc -I dtb -O dts /tmp/qemu_raw.dtb -o /tmp/qemu.dts
+	@dtc -I dts -O dtb /tmp/qemu.dts -o $(DTB_FILE)
+	@rm -f /tmp/qemu_raw.dtb /tmp/qemu.dts
