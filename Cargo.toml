@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "capsule-bootloader",
+    "bootloader",
     # userspace | capsuleOS
     "userspace/libc",
     "userspace/services/vfs",
