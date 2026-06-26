@@ -7,4 +7,4 @@ edition = "2021"
 crate-type = ["rlib"]
 
 [dependencies]
-shared = { path = "../../../hnx-core/shared" }
+shared = { path = "../../hnx-core/shared" }

@@ -49,16 +49,16 @@ build:
 
 clean:
 	rm -rf dist/ build/ target/ hnxcore.ohc
-	$(MAKE) -C ../hnx-core clean
+	$(MAKE) -C hnx-core clean
 
 check:
 	cargo check --workspace
-	$(MAKE) -C ../hnx-core check
+	$(MAKE) -C hnx-core check
 
 ohc: dist
 	@echo "Delegating kernel build to hnx-core..."
-	$(MAKE) -C ../hnx-core ohc ARCH=$(ARCH)
-	cp ../hnx-core/dist/kernel/hnxcore.ohc dist/kernel/hnxcore.ohc
+	$(MAKE) -C hnx-core ohc ARCH=$(ARCH)
+	cp hnx-core/dist/kernel/hnxcore.ohc dist/kernel/hnxcore.ohc
 
 bootloader:
 	rustup run stable cargo build --release -p capsule-bootloader --target $(BOOT_TARGET)
