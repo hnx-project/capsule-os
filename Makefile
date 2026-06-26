@@ -13,8 +13,8 @@ ifeq ($(ARCH),aarch64)
     DTB_ADDR = 0x42000000
     OHC_ADDR = 0x40700000
 else ifeq ($(ARCH),riscv64)
-    BOOT_TARGET = riscv64gc-unknown-none-elf
-    BOOTLOADER_DIR = build/target/riscv64gc-unknown-none-elf/release
+    BOOT_TARGET = riscv64imac-unknown-none-elf
+    BOOTLOADER_DIR = build/target/riscv64imac-unknown-none-elf/release
     QEMU_ARCH = riscv64
     QEMU_MACHINE = virt
     QEMU_CPU = rv64
