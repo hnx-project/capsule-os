@@ -1,9 +1,8 @@
-#![no_std]
-
 use core::fmt;
 
 pub struct BootInfo {
     pub uart_base: usize,
+    pub uart_type: heapless::String<16>,
     pub ram_base: usize,
     pub ram_size: usize,
 }
@@ -12,6 +11,7 @@ impl BootInfo {
     pub const fn empty() -> Self {
         BootInfo {
             uart_base: 0,
+            uart_type: heapless::String::new(),
             ram_base: 0,
             ram_size: 0,
         }
@@ -21,6 +21,7 @@ impl BootInfo {
 impl fmt::Display for BootInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "  UART base : {:#x}", self.uart_base)?;
+        writeln!(f, "  UART type : {}", self.uart_type.as_str())?;
         writeln!(f, "  RAM base  : {:#x}", self.ram_base)?;
         writeln!(f, "  RAM size  : {:#x} ({} MB)", self.ram_size, self.ram_size / 1024 / 1024)
     }
@@ -40,11 +41,6 @@ const DEFAULT_UART_BASE: usize = 0x09000000;
 #[inline(always)]
 unsafe fn read_u32(p: *const u8) -> u32 {
     core::ptr::read_volatile(p as *const u32)
-}
-
-#[inline(always)]
-unsafe fn read_u64(p: *const u8) -> u64 {
-    core::ptr::read_volatile(p as *const u64)
 }
 
 fn align4(len: usize) -> usize {
@@ -211,6 +207,7 @@ pub fn parse(dtb_ptr: *const u8) -> Result<BootInfo, &'static str> {
 
     let mut boot = BootInfo {
         uart_base: DEFAULT_UART_BASE,
+        uart_type: heapless::String::new(),
         ram_base: DEFAULT_RAM_BASE,
         ram_size: DEFAULT_RAM_SIZE,
     };
@@ -226,12 +223,46 @@ pub fn parse(dtb_ptr: *const u8) -> Result<BootInfo, &'static str> {
         }
     }
 
+    let mut uart_node = "";
     if let Some(reg) = parser.find_node_property("pl011", "reg") {
         if reg.len() >= 16 {
-            let addr = u64::from_be_bytes([reg[0], reg[1], reg[2], reg[3],
-                                           reg[4], reg[5], reg[6], reg[7]]) as usize;
-            boot.uart_base = addr;
+            boot.uart_base = u64::from_be_bytes([reg[0], reg[1], reg[2], reg[3],
+                                                 reg[4], reg[5], reg[6], reg[7]]) as usize;
+            uart_node = "pl011";
         }
+    } else if let Some(reg) = parser.find_node_property("uart", "reg") {
+        if reg.len() >= 16 {
+            boot.uart_base = u64::from_be_bytes([reg[0], reg[1], reg[2], reg[3],
+                                                 reg[4], reg[5], reg[6], reg[7]]) as usize;
+            uart_node = "uart";
+        }
+    } else if let Some(reg) = parser.find_node_property("serial", "reg") {
+        if reg.len() >= 16 {
+            boot.uart_base = u64::from_be_bytes([reg[0], reg[1], reg[2], reg[3],
+                                                 reg[4], reg[5], reg[6], reg[7]]) as usize;
+            uart_node = "serial";
+        }
+    }
+
+    if !uart_node.is_empty() {
+        if let Some(comp_bytes) = parser.find_node_property(uart_node, "compatible") {
+            if let Ok(comp_str) = core::str::from_utf8(comp_bytes) {
+                if comp_str.contains("pl011") {
+                    let _ = boot.uart_type.push_str("pl011");
+                } else if comp_str.contains("16550") {
+                    let _ = boot.uart_type.push_str("ns16550");
+                }
+            }
+        }
+    }
+
+    if boot.uart_type.is_empty() {
+        #[cfg(target_arch = "aarch64")]
+        let _ = boot.uart_type.push_str("pl011");
+        #[cfg(target_arch = "riscv64")]
+        let _ = boot.uart_type.push_str("ns16550");
+        #[cfg(target_arch = "x86_64")]
+        let _ = boot.uart_type.push_str("pl011");
     }
 
     Ok(boot)

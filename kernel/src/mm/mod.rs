@@ -7,4 +7,4 @@ pub use vmo::Vmo;
 pub use vmar::Vmar;
 pub use elf::ElfLoader;
 
-pub fn init() { phys::init(); }
+pub fn init(ram_base: usize, ram_size: usize) { phys::init(ram_base, ram_size); }

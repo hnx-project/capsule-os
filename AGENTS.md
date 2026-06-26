@@ -4,7 +4,7 @@
 
 **CapsuleOS** 是一个从零构建的微内核操作系统，代号 **Pangu**（开天辟地）。
 - 内核: HNX 微内核 (hnxcore.ohc)
-- 架构: aarch64-unknown-none
+- 架构: `aarch64-unknown-none` / `riscv64gc-unknown-none-elf` (多架构支持)
 - 语言: Rust only (no_std)
 
 ## 版本路线图
@@ -12,7 +12,7 @@
 | 版本 | 代号 | 里程碑 |
 |------|------|--------|
 | v0.1.0 | Pangu | hnxcore.ohc 能启动打印 "CapsuleOS v0.1.0" |
-| v0.2.0 | Pangu | 内存管理 (MMU 分页) |
+| v0.2.0 | Pangu | 内存管理 (MMU 分页 + 物理页分配器) |
 | v0.3.0 | Pangu | 多任务调度 |
 | v0.4.0 | Pangu | IPC (进程间通信) |
 | v0.5.0 | Pangu | 用户态 devmgr 服务 |
@@ -51,13 +51,15 @@ QEMU (-kernel capsule-bootloader)
     ↓
 capsule-bootloader (submodule, 解析 OHC + 拷贝到 entry)
     ↓
-hnxcore.ohc (内核, entry = 0x40080000)
+hnxcore.ohc (内核, entry = 0x40080000 on aarch64 / 0x80080000 on riscv64)
     ↓
-boot_asm.S: DTB ptr -> x19, 动态栈/BSS 初始化
+boot_asm.S: DTB ptr -> x19/a1, 动态栈/BSS 初始化
     ↓
 kernel_main(dtb_ptr) (lib.rs)
     ↓
-打印: "CapsuleOS v0.1.0" + "OK"
+根据 DTB 中的 compatible 属性匹配并动态加载对应的串口驱动（pl011 / ns16550）
+    ↓
+打印: "CapsuleOS v0.2.0-dev" + "OK"
 ```
 
 > **重要**: 不再使用 stage1 直接引导。统一通过 capsule-bootloader 加载 OHC 镜像。
@@ -65,26 +67,17 @@ kernel_main(dtb_ptr) (lib.rs)
 ## 构建命令
 
 ```bash
-# 编译内核
-cargo build --target aarch64-unknown-none -p kernel --release
+# 编译 AArch64 内核 (默认)
+make ohc ARCH=aarch64
+make run-ohc ARCH=aarch64
 
-# 链接 ELF
-rust-lld -flavor gnu -T kernel/kernel.ld libkernel.a -o kernel.elf
+# 编译 RISC-V 64 内核
+make ohc ARCH=riscv64
+make run-ohc ARCH=riscv64
 
-# 打包 .ohc (使用 ohc-tool)
-cargo run -p ohc-tool -- pack --input kernel.raw --output hnxcore.ohc --entry 1074266112
-
-# 快速构建 (make ohc)
-make ohc
-
-# 运行 (bootloader + OHC 流程)
-make run-ohc
-
-# 编译 capsule-bootloader
-make bootloader
-
-# 打包完整系统 (v1.0.0)
-cargo run -p capsule-pack -- --kernel hnxcore.ohc --rootfs rootfs/ --output capsule-os.img
+# 编译 capsule-bootloader (支持多架构)
+make bootloader ARCH=aarch64
+make bootloader ARCH=riscv64
 ```
 
 ## Makefile 目标
@@ -93,7 +86,7 @@ cargo run -p capsule-pack -- --kernel hnxcore.ohc --rootfs rootfs/ --output caps
 make build          # 编译 kernel
 make kernel        # 编译 + 链接 ELF
 make ohc           # 生成 hnxcore.ohc
-make run           # 在 QEMU 运行
+make run           # 在 QEMU 运行 ELF (直接)
 make bootloader    # 编译 capsule-bootloader
 make run-ohc       # 通过 bootloader 启动 OHC
 make clean         # 清理
@@ -102,7 +95,8 @@ make check         # 检查编译
 
 ## 目标三元组
 
-- Kernel: `aarch64-unknown-none` (bare metal, no_std)
+- Kernel (AArch64): `aarch64-unknown-none` (bare metal, no_std)
+- Kernel (RISC-V 64): `riscv64gc-unknown-none-elf` (bare metal, no_std)
 - Userspace: `aarch64-unknown-none` (最终目标)
 
 ## Workspace 结构
@@ -116,10 +110,13 @@ capsule-os/
 ├── kernel/                 # HNX 微内核
 │   ├── kernel.ld         # 链接脚本
 │   └── src/
-│       └── arch/aarch64/
-│           ├── boot_asm.S  # 启动汇编 (动态栈/BSS 初始化)
-│           ├── mod.rs      # 平台初始化 + UART
-│           └── mmu.rs      # MMU 初始化 ⭐ 待实现
+│       ├── arch/           # 📂 CPU 架构层
+│       │   ├── aarch64/    # ARM64 CPU 级逻辑与引导
+│       │   ├── riscv64/    # RISC-V 64 CPU 级逻辑与引导
+│       │   └── x86_64/     # x86_64 架构桩
+│       ├── board/          # 📂 开发板/主板级初始化与参数路由层
+│       ├── drivers/        # 📂 动态匹配外设驱动层 (pl011 / ns16550 串口)
+│       └── mm/             # 📂 内存管理层 (含物理页隐式链表分配器)
 ├── userspace/              # 用户态程序
 │   ├── libc/             # C 库
 │   └── services/         # 系统服务
@@ -136,7 +133,7 @@ capsule-os/
 
 ### HAL 设计
 - Traits 定义在 `hal/`
-- 实现放在 `kernel/src/arch/<arch>/`
+- 实现放在 `kernel/src/arch/<arch>/` 或 `kernel/src/drivers/`
 - 禁止在 `hal/` 中实现
 
 ### No_std 约定
@@ -145,7 +142,7 @@ capsule-os/
 - 入口点: `_start()`
 
 ### 内核入口点
-- `_start()` 在 `kernel/src/lib.rs`
+- `_start()` 在 `kernel/src/lib.rs` (由 boot_asm.S 引导跳转)
 - 需要: `#[panic_handler] fn panic(info: &PanicInfo) -> !`
 
 ### 错误处理
