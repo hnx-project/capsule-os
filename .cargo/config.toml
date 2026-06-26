@@ -12,6 +12,6 @@ rustflags = ["-A", "warnings"]
 linker = "rust-lld"
 rustflags = ["-A", "warnings"]
 
-[target.riscv64gc-unknown-none-elf]
+[target.riscv64imac-unknown-none-elf]
 linker = "rust-lld"
 rustflags = ["-A", "warnings"]

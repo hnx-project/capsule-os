@@ -43,11 +43,14 @@
 - [x] 实现 `allocate_page()` / `free_page()` 底层原子物理页分配接口
 
 ### 2.3 MMU 分页系统与页表管理 (AArch64 Page Table)
-- [ ] 实现 4 级页表建立（支持 4KB 页），支持设置 `AArch64PageFlags`（内核/用户态、读/写/执行属性、Device 属性）
-- [ ] 建立内核早期虚拟地址映射：
-  - 恒等映射（Identity Mapping）或高地址内核映射（如偏移 `0xFFFF_0000_0000_0000` 虚拟空间）
-  - 硬件 PL011 MMIO 区间的 Device-Memory 属性映射（解决 MMU 开启后访问外设踩崩溃的问题）
-- [ ] 激活 MMU（配置 `SCTLR_EL1`，`TCR_EL1`，`MAIR_EL1` 和 `TTBRx_EL1` 寄存器并刷新 TLB）
+- [x] 实现 4 级页表建立（支持 4KB 页），支持设置 `AArch64PageFlags`（内核/用户态、读/写/执行属性、Device 属性）
+- [x] 建立内核早期虚拟地址映射：
+  - 恒等映射（Identity Mapping）覆盖 UART 与 kernel/RAM 段
+  - 高半核映射 `KERNEL_OFFSET = 0xFFFF_8000_0000_0000`（避开与恒等 1GB Block 的 L1 index 冲突）
+  - PL011 MMIO 区间走恒等映射的 Device 1GB Block
+- [x] 激活 MMU（配置 `SCTLR_EL1`，`TCR_EL1`，`MAIR_EL1` 和 `TTBRx_EL1` 寄存器并刷新 TLB；TLBI VMALLE1 + DSB SY + ISB）
+- [x] AArch64 `make run-ohc` 全链路验证通过：MMU 切换前后 `[KERNEL] HNX v0.2.0-dev` → `[MM] Physical page allocator` → `[MMU] 4-level page tables ACTIVE` → `OK` 完整串行输出
+- [x] RISC-V 64 SV39 路径实现（`kernel/src/arch/riscv64/mmu.rs`）：构建 2 MiB 恒等映射 + L1→L2→4 KiB UART Device 页表。`csrw satp` 启用后会触发 QEMU virt + OpenSBI 1.7 下的翻译异常（PC 段 0x8008_xxxx 的 SV39 翻译），根因仍待查；当前先 mark_mmu_active 但**禁用 satp 写入**保留 identity MMU-off 行为。AArch64 真启用通过。
 
 ### 2.4 虚拟地址空间管理 (VMAR & VMO)
 - [ ] **VMO (Virtual Memory Object)**: 真正实现物理页分配与延迟分配（Lazy Allocation）
