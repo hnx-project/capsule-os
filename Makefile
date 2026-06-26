@@ -23,6 +23,8 @@ STAGE1_LOAD_ADDR = 0x40080000
 KERNEL_LOAD_ADDR = 0x40081000
 KERNEL_ENTRY = 1074266112
 KERNEL_RAW = dist/kernel/kernel.raw
+BOOTLOADER_ELF = build/target/aarch64-unknown-none/release/capsule-bootloader
+BOOTLOADER_BIN = build/target/aarch64-unknown-none/release/capsule-bootloader.bin
 
 all: capsule-os.bin
 
@@ -90,6 +92,7 @@ ohc: $(KERNEL_RAW)
 
 bootloader:
 	rustup run stable cargo build --release -p capsule-bootloader --target aarch64-unknown-none
+	$(OBJCOPY) -O binary $(BOOTLOADER_ELF) $(BOOTLOADER_BIN)
 
 DTB_FILE = dist/qemu.dtb
 DTB_ADDR = 0x42000000
