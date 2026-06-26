@@ -35,12 +35,12 @@
 > 目标: 激活 MMU 4级页表建立段/页级映射，实现物理内存管理与虚拟地址空间管理 (VMAR/VMO)
 
 ### 2.1 动态外设与内存范围探测 (FDT 联动) ── 🌟 新增
-- [ ] 引用或编写轻量 FDT 树解析，基于全局 `DTB_POINTER` 动态定位物理 RAM 的首尾物理地址（替换硬编码内存范围）
-- [ ] 动态定位 chosen 标准控制台 PL011 的 MMIO 基地址（为多板支持解耦硬编码 `0x09000000`）
+- [x] 引用或编写轻量 FDT 树解析，基于全局 `DTB_POINTER` 动态定位物理 RAM 的首尾物理地址（替换硬编码内存范围）
+- [x] 动态定位 chosen 标准控制台 PL011 的 MMIO 基地址（为多板支持解耦硬编码 `0x09000000`）
 
-### 2.2 物理页分配器 (Physical Page Allocator)
-- [ ] 实现物理页面管理机制（如 Buddy System 伙伴算法、或 Bitmap 分配器）
-- [ ] 实现 `allocate_page()` / `free_page()` 底层原子物理页分配接口
+### 2.2 物理页分配器 (Physical Page Allocator) ✅
+- [x] 实现物理页面管理机制（如 Buddy System 伙伴算法、或 Bitmap 分配器）
+- [x] 实现 `allocate_page()` / `free_page()` 底层原子物理页分配接口
 
 ### 2.3 MMU 分页系统与页表管理 (AArch64 Page Table)
 - [ ] 实现 4 级页表建立（支持 4KB 页），支持设置 `AArch64PageFlags`（内核/用户态、读/写/执行属性、Device 属性）
