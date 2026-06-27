@@ -30,7 +30,7 @@
 
 ---
 
-## 🟡 Phase 2: v0.2.0 Pangu - 动态外设探测与内存管理 (当前重点) 🚀
+## 🟡 Phase 2: v0.2.0 Pangu - 动态外设探测与内存管理 ✅
 
 > 目标: 激活 MMU 4级页表建立段/页级映射，实现物理内存管理与虚拟地址空间管理 (VMAR/VMO)
 
@@ -52,9 +52,15 @@
 - [x] AArch64 `make run-ohc` 全链路验证通过：MMU 切换前后 `[KERNEL] HNX v0.2.0-dev` → `[MM] Physical page allocator` → `[MMU] 4-level page tables ACTIVE` → `OK` 完整串行输出
 - [x] RISC-V 64 SV39 路径实现（`kernel/src/arch/riscv64/mmu.rs`）：构建 2 MiB 恒等映射 + L1→L2→4 KiB UART Device 页表。`csrw satp` 启用后会触发 QEMU virt + OpenSBI 1.7 下的翻译异常（PC 段 0x8008_xxxx 的 SV39 翻译），根因仍待查；当前先 mark_mmu_active 但**禁用 satp 写入**保留 identity MMU-off 行为。AArch64 真启用通过。
 
-### 2.4 虚拟地址空间管理 (VMAR & VMO)
-- [ ] **VMO (Virtual Memory Object)**: 真正实现物理页分配与延迟分配（Lazy Allocation）
-- [ ] **VMAR (Virtual Memory Address Range)**: 真正实现虚拟区间分配、保护属性修改与页表映射关联
+### 2.4 虚拟地址空间管理 (VMAR & VMO) ✅
+- [x] **VMO (Virtual Memory Object)**: 真正实现物理页分配与延迟分配（Lazy Allocation）─ 4 KiB granularity；metadata 存于独立 page（4 KiB，含 magic/version + `[Option<PhysAddr>; 512]`）；API: `create_with_size / commit_page / commit_all / read / write / get_page_phys`；`read` 在 uncommitted page 处返回 0
+- [x] **VMAR (Virtual Memory Address Range)**: 真正实现虚拟区间分配、保护属性修改与页表映射关联 ─ 树形结构（root + sub-region）；metadata 存于独立 page（4 KiB，static-asserted 容纳 32 children + 32 mappings）；API: `create / allocate_subregion / map / unmap / protect`；`map` 4 KiB 一页一页调 `arch_mmu::map_page` 安装页表项
+- [x] **AArch64 4 KiB 页表 + L1/L2 Block shatter**: `arch::aarch64::mmu::map_page` 走 L0→L1→L2→L3；遇 L1 1 GiB Block 或 L2 2 MiB Block 时 **shatter** ─ 分配新的下一级表，把原 512 entries 重写为带原属性位的细粒度映射；`tlbi vaae1` 单条 TLB invalidate
+- [x] **RISC-V SV39 4 KiB 页表 + L1 Megapage shatter**: `arch::riscv64::mmu::map_page` 走 L1→L2→L3；shatter 2 MiB Megapage 为 L2；ROOT_PA 静态缓存避免反复读 satp；`sfence.vma` 刷新
+- [x] **跨架构统一 MMU 接口**: `arch::mmu` 暴露 `MapFlags` (kernel_rw/ro/rx, user_rw/ro, device_rw) + `map_page / unmap_page / pa_to_kernel_va`；`zero_page / read_pte / write_pte` 通过 `phys::mmu_is_active()` 在 pre-MMU (PA) / post-MMU (`pa_to_kernel_va`) 之间切换
+- [x] **物理分配器重构**: linked-list → bump allocator ─ 解决 post-MMU 下 free-list 节点处于未映射物理页的访问违例
+- [x] **x86_64 路径全部移除**: arch/bootloader/Cargo target/FDT 路径一并清理；capsule-os 现为 AArch64 + RISC-V 64 双架构微内核
+- [x] **跨架构 smoke 验证**: `lib.rs::vmo_vmar_smoke_test()` ─ AArch64 通过 MMU 翻译路径读到 VMO 内容 (MATCH via MMU)；RISC-V MMU 仍 off (Phase 2.3 遗留的 OpenSBI satp 翻译问题)，通过 `pa_to_kernel_va` 直接读 VMO 物理页验证 (MATCH via VMO PA)
 
 ---
 
