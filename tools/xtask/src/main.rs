@@ -1,6 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+const BOLD_GREEN: &str = "\x1b[1;32m";
+const BOLD_BLUE: &str = "\x1b[1;34m";
+const BOLD_CYAN: &str = "\x1b[1;36m";
+const GRAY: &str = "\x1b[90m";
+const RESET: &str = "\x1b[0m";
+
 struct Platform {
     arch: &'static str,
     rust_target: &'static str,
@@ -138,10 +144,10 @@ fn find_objcopy() -> PathBuf {
 }
 
 fn build(plat: &Platform) {
-    println!("[Xtask] Building CapsuleOS Ecosystem ({})", plat.arch);
+    println!("{}    Building{} CapsuleOS Ecosystem ({})", BOLD_CYAN, RESET, plat.arch);
 
     // 1. Compile HNX Core Kernel Submodule
-    println!("[Xtask] 1. Compiling hnx-core (kernel)...");
+    println!("{}     Compile{} hnx-core (kernel) in release mode...", BOLD_GREEN, RESET);
     let status = Command::new("cargo")
         .args(["build", "--target", plat.rust_target, "-p", "kernel", "--release"])
         .current_dir("kernel")
@@ -155,7 +161,7 @@ fn build(plat: &Platform) {
     std::fs::create_dir_all("dist/kernel").unwrap();
 
     // 3. Link Kernel ELF using rust-lld
-    println!("[Xtask] 2. Linking kernel.elf...");
+    println!("{}        Link{} dist/kernel/kernel.elf...", BOLD_GREEN, RESET);
     let lld = find_rust_lld();
     let status = Command::new(lld)
         .args([
@@ -175,7 +181,7 @@ fn build(plat: &Platform) {
     }
 
     // 4. Convert ELF to Raw Binary using llvm-objcopy
-    println!("[Xtask] 3. Extracting raw kernel.raw...");
+    println!("{}     Extract{} dist/kernel/kernel.raw...", BOLD_GREEN, RESET);
     let objcopy = find_objcopy();
     let status = Command::new(&objcopy)
         .args(["-O", "binary", "dist/kernel/kernel.elf", "dist/kernel/kernel.raw"])
@@ -186,7 +192,7 @@ fn build(plat: &Platform) {
     }
 
     // 5. Pack Kernel to OHC format using ohc-tool
-    println!("[Xtask] 4. Packaging kernel to hnxcore.ohc...");
+    println!("{}     Package{} dist/kernel/hnxcore.ohc...", BOLD_GREEN, RESET);
     let status = Command::new("cargo")
         .args([
             "run",
@@ -205,7 +211,7 @@ fn build(plat: &Platform) {
     }
 
     // 6. Build capsule-bootloader
-    println!("[Xtask] 5. Compiling capsule-bootloader...");
+    println!("{}     Compile{} capsule-bootloader in release mode...", BOLD_GREEN, RESET);
     let status = Command::new("cargo")
         .args(["build", "--release", "-p", "capsule-bootloader", "--target", plat.rust_target])
         .status()
@@ -227,14 +233,32 @@ fn build(plat: &Platform) {
         panic!("failed to extract raw bootloader");
     }
 
-    println!("[Xtask] Build Succeeded!");
+    // Report sizes dynamically with safe border alignments
+    println!("\n{}+─────────────────────────────────────────────────────────────+{}", GRAY, RESET);
+    let print_line = |label: &str, file: &str, size_kb: f64| {
+        let content = format!("{}  {} [{:.1} KB]", label, file, size_kb);
+        let padded_content = format!("{:<57}", content);
+        println!("{}|{} {}{} {}|{}", GRAY, BOLD_GREEN, padded_content, RESET, GRAY, RESET);
+    };
+
+    if let Ok(meta) = std::fs::metadata("dist/kernel/hnxcore.ohc") {
+        let size_kb = meta.len() as f64 / 1024.0;
+        print_line("     Created", "dist/kernel/hnxcore.ohc", size_kb);
+    }
+    if let Ok(meta) = std::fs::metadata(format!("build/target/{}/release/capsule-bootloader.bin", plat.rust_target)) {
+        let size_kb = meta.len() as f64 / 1024.0;
+        print_line("     Created", "capsule-bootloader.bin", size_kb);
+    }
+    println!("{}+─────────────────────────────────────────────────────────────+{}", GRAY, RESET);
+
+    println!("\n{}     Success{} CapsuleOS built successfully! ✨\n", BOLD_GREEN, RESET);
 }
 
 fn run(plat: &Platform) {
-    println!("[Xtask] Launching CapsuleOS in QEMU...");
+    println!("{}     Booting{} Launching CapsuleOS in QEMU Emulator...", BOLD_CYAN, RESET);
 
     // 1. Generate QEMU DTB dynamically
-    println!("[Xtask] Generating QEMU DTB...");
+    println!("{}    Generate{} QEMU Device Tree Blob (DTB)...", BOLD_BLUE, RESET);
     let mut dump_cmd = Command::new(format!("qemu-system-{}", plat.qemu_arch));
     dump_cmd.args([
         "-M", "virt",
@@ -271,7 +295,7 @@ fn run(plat: &Platform) {
     let _ = std::fs::remove_file("/tmp/qemu.dts");
 
     // 2. Launch QEMU
-    println!("[Xtask] Running QEMU emulator (Ctrl+A, X to exit)");
+    println!("{}     Running{} QEMU virtual machine. {}[Ctrl+A, X to exit]{}", BOLD_GREEN, RESET, GRAY, RESET);
     let mut qemu = Command::new(format!("qemu-system-{}", plat.qemu_arch));
     qemu.args([
         "-M", "virt",
