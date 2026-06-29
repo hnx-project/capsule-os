@@ -26,7 +26,7 @@
 
 ### 1.4 控制台驱动重构 ✅
 - [x] `arch/aarch64/mod.rs`: 实现纯 Rust 的 PL011 早期寄存器级波特率等参数初始化（`early_init()`）
-- [x] `lib.rs`: 移除硬编码的 inline 汇编字符打印，使用统一的 `arch::console_putchar` 输出标准 boot 消息
+- [x] `lib.rs`: 移除硬编码的 inline 汇编字符打印，使用统一 of `arch::console_putchar` 输出标准 boot 消息
 - [x] `cargo run-ohc`: 完整联调测试，Bootloader 正确加载解包并平滑跳转至 CapsuleOS 打印成功
 
 ---
@@ -48,12 +48,12 @@
 - [x] 建立内核早期虚拟地址映射：
   - 恒等映射（Identity Mapping）覆盖 UART 与 kernel/RAM 段
   - 高半核映射 `KERNEL_OFFSET = 0xFFFF_8000_0000_0000`（避开与恒等 1GB Block 的 L1 index 冲突）
-  - PL011 MMIO 区间走恒等映射的 Device 1GB Block
+  - PL011 MMIO 区间走恒等映射 of Device 1GB Block
 - [x] 激活 MMU（配置 `SCTLR_EL1`，`TCR_EL1`，`MAIR_EL1` 和 `TTBRx_EL1` 寄存器并刷新 TLB；TLBI VMALLE1 + DSB SY + ISB）
 - [x] AArch64 `cargo run-ohc` 全链路验证通过：MMU 开启，虚拟地址运行通畅。
 - [x] RISC-V 64 SV39 路径实现（`kernel/src/arch/riscv64/mmu.rs`）：构建 2 MiB 恒等映射 + L1→L2→4 KiB UART Device 页表。为了对齐 soft-float ABI，统一采用 `riscv64imac-unknown-none-elf` 目标。
 
-### 2.4 虚拟地址空间管理 (VMAR & VMO) ✅
+### 2.4 虚拟地址空间管理器 (VMAR & VMO) ✅
 - [x] **VMO (Virtual Memory Object)**: 真正实现物理页分配与延迟分配（Lazy Allocation）─ 4 KiB granularity；metadata 存于独立 page；API: `create_with_size / commit_page / commit_all / read / write / get_page_phys`；`read` 在 uncommitted page 处返回 0
 - [x] **VMAR (Virtual Memory Address Range)**: 真正实现虚拟区间分配、保护属性修改与页表映射关联 ─ 树形结构（root + sub-region）；metadata 存于独立 page；API: `create / allocate_subregion / map / unmap / protect`；`map` 4 KiB 一页一页调 `arch_mmu::map_page` 安装页表项
 - [x] **AArch64 4 KiB 页表 + L1/L2 Block shatter**: `arch::aarch64::mmu::map_page` 走 L0→L1→L2→L3；遇 L1 1 GiB Block 或 L2 2 MiB Block 时 **shatter** ─ 分配新的下一级表，把原 512 entries 重写为带原属性位的细粒度映射
@@ -105,19 +105,24 @@
 
 ---
 
-## 🔵 Phase 5: v0.5.0 Pangu - 用户态常驻服务与 ELF 装载器
+## 🔵 Phase 5: v0.5.0 Pangu - 统一 OHC/std 工具链生态与用户态装载
 
-> 目标: 真正打通用户空间生态，构建进程装载器 loader、系统根服务 init、虚拟文件系统 vfs 与驱动管理器 devmgr，完成 PL011 驱动的完全沙盒化。
+> 目标: 真正打通用户空间标准 std 桥接，构建基于多段 OHC 格式的高效装载器 loader、系统根服务 init、虚拟文件系统 vfs 与驱动管理器 devmgr。
 
-### 5.1 hnx-libc 堆内存管理
-- [ ] `hnx-libc` 库基于 `SYSCALL_VMO_CREATE` 动态创建 VMO 并将其映射（map）至当前进程的 VMAR 虚拟空间
-- [ ] 引入高效轻量级内存分配器（如 dlmalloc 裸机变体），向用户态 App 暴露安全的 `malloc` 与 `free` 接口
+### 5.1 通用多段 OHC 打包工具 (`ohc-tool` 演进)
+- [ ] 扩展 `ohc-tool`：支持解析 Rust/LLVM 链接生成的 ELF Program Headers，提取 `.text`、`.rodata`、`.data` 等段
+- [ ] 升级打包协议：构造多段描述符头部，打包为精简、高安全性、防篡改的 Multi-Segment 通用 `.ohc` 胶囊镜像，剥除冗余 debug 符号表
 
-### 5.2 进程装载器服务 (loader)
-- [ ] 实现 `loader` 常驻系统服务：在用户空间解析 ELF headers
-- [ ] 用户空间申请新进程、新进程根 VMAR、并从 ELF 装载对应的 `.text`、`.data`、`.bss` 段 VMO，执行映射，建立堆栈并激活进程
+### 5.2 目标三元组与标准 `std` 动态重译编译
+- [ ] 创建 `std/targets/aarch64-unknown-capsule.json` 与 `riscv64-unknown-capsule.json` 目标配置文件，激活 `"families": ["unix"]`
+- [ ] 在 `hnx-libc` (`userspace/libc`) 中用 `#[no_mangle] pub extern "C"` 完整封装导出 UNIX C-ABI 核心符号（如 `write`、`read`、`nanosleep`、`exit`），桥接劫持 Rust 官方标准库底层系统依赖
+- [ ] 配置 `.cargo/config.toml` 中 unstable `build-std` 特性，令上层应用程序（如 `shell`、`init`）能够直接调用 `use std::...` 高层接口编译运行
 
-### 5.3 驱动管理器与外设沙盒化 (devmgr & PL011)
+### 5.3 专用 OHC 加载器 (loader)
+- [ ] 实现 `loader` 常驻系统服务：在用户空间直接解析多段 `.ohc` 头部，彻底移除对复杂 ELF 的解析依赖
+- [ ] 加载器行为实现：自动为 `.ohc` 中定义的各段分别申请 `VMO`，并按照描述符的虚拟地址和权限标志映射（map）至新进程的 `VMAR`，分配用户态堆栈，并向内核发起运行系统调用
+
+### 5.4 驱动管理器与外设沙盒化 (devmgr & PL011)
 - [ ] 彻底移除内核启动后的硬编码外设驱动，将串口驱动移动至用户态独立进程
 - [ ] `devmgr` (设备管理器) 运行时解析 DTB 设备树，为 PL011 启动专属的用户态驱动进程
 - [ ] 通过特权句柄映射 Device MMIO VMO 到 PL011 进程的 VMAR，直接操控外设寄存器，打通用户态输入输出

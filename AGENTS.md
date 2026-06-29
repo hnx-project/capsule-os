@@ -5,64 +5,83 @@
 **CapsuleOS** 是一个从零构建的、基于微内核架构的现代化类 Unix 操作系统，代号 **Pangu**（开天辟地）。
 - 内核: HNX 微内核 (hnxcore.ohc)
 - 架构: `aarch64-unknown-none` / `riscv64imac-unknown-none-elf` (多架构支持，软浮点 ABI 对齐)
-- 语言: Rust only (no_std)
+- 用户态目标三元组: `aarch64-unknown-capsule` / `riscv64-unknown-capsule` (动态编译 Rust 标准库 `std`)
+- 语言: Rust only (no_std 裸机内核 + std 支持用户空间)
 
-## 版本路线图
+## 二进制格式规范
 
-| 版本 | 代号 | 里程碑 |
-|------|------|--------|
-| v0.1.0 | Pangu | hnxcore.ohc 能启动并平滑输出 boot 字符 |
-| v0.2.0 | Pangu | 内存管理 (MMU 开启、物理页帧、VMO & VMAR 虚实地址管理机制) |
-| v0.3.0 | Pangu | 多任务调度 (中断接管、TCB/PCB、HandleTable、Round-Robin 调度器) |
-| v0.4.0 | Pangu | IPC 进程间通信 (Channel、端口 Port 与 Capabilities 跨进程转移) |
-| v0.5.0 | Pangu | 用户态服务治理 (init、loader、vfs、devmgr 驱动沙盒化集成) |
-| v0.6.0 | Pangu | POSIX 兼容层 |
-| v0.7.0 | Pangu | 文件系统服务 |
-| v0.8.0 | Pangu | 网络栈服务 |
-| v0.9.0 | Pangu | 所有用户态服务集成 |
-| v1.0.0 | TBD | capsule-os.img 完整系统 |
+### 1. 通用多段 `.ohc` 格式 (Multi-Segment OHC Specification)
+CapsuleOS 抛弃了用户态直接装载复杂、冗余 ELF 格式的传统做法，采用完全自研、极致轻量的通用 **OHC 胶囊格式**（用于内核镜像、用户态独立程序与共享库）。
 
-## 二进制格式
-
-### .ohc 格式 (内核镜像)
 ```
-+------------------+
-|  Magic (4B)     |  0x4F484300 ("OHC\0")
-+------------------+
-|  Version (2B)   |  0x0001
-+------------------+
-|  Entry (8B)     |  入口点虚拟地址
-+------------------+
-|  Flags (2B)     |  保留
-+------------------+
-|  Size (4B)      |  payload 大小
-+------------------+
-|  Checksum (4B)  |  CRC32
-+------------------+
-|  Reserved (4B)  |
-+------------------+
-|  Payload         |  内核代码
-+------------------+
++------------------------------------+
+|  Magic (4B)                        |  0x4F484300 ("OHC\0")
++------------------------------------+
+|  Version (2B)                      |  0x0001
++------------------------------------+
+|  Entry (8B)                        |  程序入口点虚拟地址 (Entry Point Virtual Address)
++------------------------------------+
+|  Segment Count (2B)                |  物理段描述符数量 (如 .text, .rodata, .data/.bss)
++------------------------------------+
+|  Flags (2B)                        |  属性标志：0=内核镜像, 1=用户态独立进程, 2=动态共享库 OHLIB
++------------------------------------+
+|  Size (4B)                         |  Payload 实际数据大小 (不含 Header 及段描述符)
++------------------------------------+
+|  Checksum (4B)                     |  CRC32 校验和 (仅对 Payload 计算)
++------------------------------------+
+|  Segment Descriptors               |  段描述数组 [Segment Descriptor; Segment Count]
+|  (每个描述符 24 字节)                |  ├─ VirtAddr (8B): 虚拟地址映射起点 (如 0x1000)
+|                                    |  ├─ FileOffset (8B): 对应 Payload 数据区偏移量 (如 120)
+|                                    |  ├─ Size (4B): 实际数据大小
+|                                    |  └─ Flags (4B): 映射权限位 (1=R, 2=W, 4=X)
++------------------------------------+
+|  Payload Data                      |  物理存储的代码段与数据段载荷
++------------------------------------+
 ```
 
-### 启动流程
+### 2. 启动与装载流程
 ```
+[ 物理世界：裸机启动阶段 ]
 QEMU (-kernel capsule-bootloader)
     ↓
-capsule-bootloader (submodule, 解析 OHC + 拷贝至 entry point)
+capsule-bootloader (子模块, 解析 OHC 头部 -> 校验 CRC32 -> 拷贝扁平 Payload 至 entry)
     ↓
-hnxcore.ohc (内核, entry = 0x40080000 on aarch64 / 0x80080000 on riscv64)
+hnxcore.ohc (内核运行, entry = 0x40080000 on aarch64 / 0x80080000 on riscv64)
     ↓
-boot_asm.S: DTB ptr -> x19/a1, 动态栈/BSS 初始化
+[ 虚拟世界：开启 MMU 4级页表翻译 ]
+kernel_main(dtb_ptr) (FDT 驱动自适应匹配绑定 -> 建立 VMAR / VMO 地址管理体系)
     ↓
-kernel_main(dtb_ptr) (lib.rs)
-    ↓
-根据 DTB 中的 compatible 属性匹配并动态加载对应的串口驱动（pl011 / ns16550）
-    ↓
-打印: "CapsuleOS v0.2.0-dev" + "OK"
+[ 用户空间：系统服务与应用进程加载 ]
+loader (用户态 ELF ➔ 多段 OHC 转换服务 ➔ 解析 OHC 多段头 ➔ 动态创建多段 VMO 并映射入新进程 VMAR ➔ 调度执行)
 ```
 
-> **重要**: 统一通过 capsule-bootloader 加载 OHC 镜像，坚决废除 Makefile 体系，改用 Rust 原生 `cargo xtask` 进行一键生命周期构建管理。
+## 🛠️ 工具链与 Rust `std` 桥接原理
+
+为了令上层应用程序可以直接无缝使用标准的 Rust 官方 `std`（如 `use std::fs` / `println!`），CapsuleOS 采用 C-ABI 拦截链接技术：
+
+1. **目标配置文件**：项目在 `std/targets/` 目录下维护自定义目标描述文件 `aarch64-unknown-capsule.json` 与 `riscv64-unknown-capsule.json`，其中激活 `"families": ["unix"]`，从而触发标准库 `std::sys::unix` 的代码路径。
+2. **符号导出拦截 (`hnx-libc`)**：用户态底层系统库 `hnx-libc` 通过 `#[no_mangle] pub extern "C"` 导出 UNIX 兼容标准符号（如 `write`、`read`、`open`、`exit`）。
+3. **Linker 物理合并**：使用 `-Z build-std` 动态编译 Rust 官方 `std` 时，链接器 `rust-lld` 自动将 `std` 内部未实现的 `extern "C" fn write` 符号强制绑定到 `hnx-libc` 暴露的接口上。
+4. **OHC 打包转换**：链接输出的标准 ELF 文件，通过 `ohc-tool` 解析其 Program Headers，自动剥离冗余 debug 符号并重构打包为精简的 `.ohc` 胶囊，注入目标存储区间。
+
+## 📁 Workspace 物理结构
+
+```
+capsule-os/
+├── .cargo/               # Cargo 别名与编译器 `-Z build-std` 联合配置
+├── bootloader/           # 📂 (子模块) capsule-bootloader 引导层
+├── kernel/               # 📂 (子模块) hnx-core 纯净微内核
+│   ├── linker/           # 架构链接脚本 (kernel_aarch64.ld / kernel_riscv64.ld)
+│   └── src/              # 内核核心（arch 架构映射, mm 内存分配, drivers 外设）
+├── userspace/            # 📂 用户空间整个生态
+│   ├── libc/             # hnx-libc 运行时底座与标准 C-ABI 符号劫持实现
+│   ├── services/         # 常驻基础服务进程 (init 根进程, loader 装载器, vfs 虚拟文件系统)
+│   └── programs/         # 用户态普通程序 (shell 控制台)
+├── std/                  # 📂 工具链标准目标文件存放区
+│   └── targets/          # *.json 目标三元组描述文件
+└── tools/                # 📂 研发工具
+    └── xtask/            # 纯 Rust 一键式交叉编译、ELF ➔ OHC 打包转换、QEMU 启动引擎
+```
 
 ## 编译运行快捷指令
 
@@ -74,45 +93,11 @@ cargo run-ohc
 cargo run-riscv
 ```
 
-## Workspace 物理结构
+## 关键约定与安全
 
-```
-capsule-os/
-├── .cargo/               # Cargo 别名与快捷构建指令
-├── bootloader/           # 📂 (子模块) capsule-bootloader 引导层
-├── kernel/               # 📂 (子模块) hnx-core 纯净微内核
-│   ├── linker/           # 架构链接脚本 (kernel_aarch64.ld / kernel_riscv64.ld)
-│   └── src/
-│       ├── arch/           # CPU 架构级核心逻辑
-│       │   ├── aarch64/    # ARM64 CPU 级逻辑、MMU 分页与引导汇编
-│       │   └── riscv64/    # RISC-V 64 CPU 级逻辑、MMU 分页与引导汇编
-│       ├── drivers/        # 动态匹配外设驱动层 (pl011 / ns16550 串口)
-│       └── mm/             # 内存管理层 (含物理页帧分配器、VMO 与 VMAR 虚实地址管理)
-├── userspace/            # 📂 用户空间
-│   ├── libc/             # hnx-libc 运行时底座与 Syscall 封装
-│   ├── services/         # 常驻基础服务进程 (init 根进程, loader 装载器, vfs 虚拟文件系统)
-│   └── programs/         # 用户态普通程序 (shell 控制台)
-└── tools/                # 📂 研发工具
-    └── xtask/            # 纯 Rust 一键式交叉编译、打包 OHC、调度 QEMU 运行引擎
-```
-
-## 关键约定
-
-### 驱动设计
-- 驱动接口通过 `kernel/src/drivers/` 驱动层注册，禁止引入硬编码外设地址。
-- 引导期通过 `fdt` 动态匹配外设 MMIO 地址，后期驱动彻底沙盒化转移至用户态 `devmgr` 服务中运行。
-
-### No_std 约定
-- 内核、引导程序及所有的用户态程序和基础服务皆为 `#![no_std]` 裸机程序。
-- 用户态程序入口点统一为 `_start()`。
-
-### 内核入口点
-- `_start()` 在 `kernel/src/lib.rs` (由 boot_asm.S 引导初始化后跳转)。
-- 内核中必须有且仅有一个：`#[panic_handler] fn panic(info: &PanicInfo) -> !`。
-
-### 错误处理
-- 统一使用 `shared::status::Status` 枚举。
-- 返回值签名对齐：`shared::status::Result<T> = core::result::Result<T, Status>`。
+- **No_std 内核 vs Std 用户态**：内核必须是纯净无 `std` 的裸机代码；用户空间 App 可以自由调用标准库，不加 `#[no_std]` 限制。
+- **句柄拦截**：所有的系统调用传参都必须通过 `Handle` 句柄间接索引，任何物理地址指针均不得从用户态直接穿透至内核空间。
+- **驱动彻底沙盒化**：外设驱动除极早期串口字符打印外，其余驱动均运行在用户态 `devmgr` 服务控制的独立进程内。
 
 ## 验证与检查命令
 
