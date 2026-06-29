@@ -15,3 +15,8 @@ rustflags = ["-A", "warnings"]
 [target.riscv64imac-unknown-none-elf]
 linker = "rust-lld"
 rustflags = ["-A", "warnings"]
+
+[alias]
+xtask = "run --package xtask --"
+run-ohc = "run --package xtask -- run --arch aarch64"
+run-riscv = "run --package xtask -- run --arch riscv64"

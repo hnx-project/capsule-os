@@ -9,11 +9,3 @@ path = "src/main.rs"
 
 [dependencies]
 hnx-libc = { path = "../../libc" }
-
-[build]
-rustflags = ["-C", "link-arg=-Tinit.ld"]
-
-[profile.dev]
-panic = "abort"
-codegen-units = 1
-debug = 0

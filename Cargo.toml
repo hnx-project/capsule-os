@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "bootloader",
+    "tools/xtask",
     # userspace | capsuleOS
     "userspace/libc",
     "userspace/services/vfs",
@@ -8,9 +9,6 @@ members = [
     "userspace/services/init",
     "userspace/programs/shell",
 ]
-
-[workspace.package]
-version = "0.1.0-pangu"
 
 resolver = "2"
 
