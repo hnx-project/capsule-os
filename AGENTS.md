@@ -2,20 +2,20 @@
 
 ## 项目概述
 
-**CapsuleOS** 是一个从零构建的微内核操作系统，代号 **Pangu**（开天辟地）。
+**CapsuleOS** 是一个从零构建的、基于微内核架构的现代化类 Unix 操作系统，代号 **Pangu**（开天辟地）。
 - 内核: HNX 微内核 (hnxcore.ohc)
-- 架构: `aarch64-unknown-none` / `riscv64gc-unknown-none-elf` (多架构支持)
+- 架构: `aarch64-unknown-none` / `riscv64imac-unknown-none-elf` (多架构支持，软浮点 ABI 对齐)
 - 语言: Rust only (no_std)
 
 ## 版本路线图
 
 | 版本 | 代号 | 里程碑 |
 |------|------|--------|
-| v0.1.0 | Pangu | hnxcore.ohc 能启动打印 "CapsuleOS v0.1.0" |
-| v0.2.0 | Pangu | 内存管理 (MMU 分页 + 物理页分配器) |
-| v0.3.0 | Pangu | 多任务调度 |
-| v0.4.0 | Pangu | IPC (进程间通信) |
-| v0.5.0 | Pangu | 用户态 devmgr 服务 |
+| v0.1.0 | Pangu | hnxcore.ohc 能启动并平滑输出 boot 字符 |
+| v0.2.0 | Pangu | 内存管理 (MMU 开启、物理页帧、VMO & VMAR 虚实地址管理机制) |
+| v0.3.0 | Pangu | 多任务调度 (中断接管、TCB/PCB、HandleTable、Round-Robin 调度器) |
+| v0.4.0 | Pangu | IPC 进程间通信 (Channel、端口 Port 与 Capabilities 跨进程转移) |
+| v0.5.0 | Pangu | 用户态服务治理 (init、loader、vfs、devmgr 驱动沙盒化集成) |
 | v0.6.0 | Pangu | POSIX 兼容层 |
 | v0.7.0 | Pangu | 文件系统服务 |
 | v0.8.0 | Pangu | 网络栈服务 |
@@ -49,7 +49,7 @@
 ```
 QEMU (-kernel capsule-bootloader)
     ↓
-capsule-bootloader (submodule, 解析 OHC + 拷贝到 entry)
+capsule-bootloader (submodule, 解析 OHC + 拷贝至 entry point)
     ↓
 hnxcore.ohc (内核, entry = 0x40080000 on aarch64 / 0x80080000 on riscv64)
     ↓
@@ -62,137 +62,67 @@ kernel_main(dtb_ptr) (lib.rs)
 打印: "CapsuleOS v0.2.0-dev" + "OK"
 ```
 
-> **重要**: 不再使用 stage1 直接引导。统一通过 capsule-bootloader 加载 OHC 镜像。
+> **重要**: 统一通过 capsule-bootloader 加载 OHC 镜像，坚决废除 Makefile 体系，改用 Rust 原生 `cargo xtask` 进行一键生命周期构建管理。
 
-## 构建命令
-
-```bash
-# 编译 AArch64 内核 (默认)
-make ohc ARCH=aarch64
-make run-ohc ARCH=aarch64
-
-# 编译 RISC-V 64 内核
-make ohc ARCH=riscv64
-make run-ohc ARCH=riscv64
-
-# 编译 capsule-bootloader (支持多架构)
-make bootloader ARCH=aarch64
-make bootloader ARCH=riscv64
-```
-
-## Makefile 目标
+## 编译运行快捷指令
 
 ```bash
-make build          # 编译 kernel
-make kernel        # 编译 + 链接 ELF
-make ohc           # 生成 hnxcore.ohc
-make run           # 在 QEMU 运行 ELF (直接)
-make bootloader    # 编译 capsule-bootloader
-make run-ohc       # 通过 bootloader 启动 OHC
-make clean         # 清理
-make check         # 检查编译
+# 1. 编译并以 OHC 模式在 QEMU 运行 AArch64 (默认)
+cargo run-ohc
+
+# 2. 编译并以 OHC 模式在 QEMU 运行 RISC-V 64 (Soft-Float)
+cargo run-riscv
 ```
 
-## 目标三元组
-
-- Kernel (AArch64): `aarch64-unknown-none` (bare metal, no_std)
-- Kernel (RISC-V 64): `riscv64gc-unknown-none-elf` (bare metal, no_std)
-- Userspace: `aarch64-unknown-none` (最终目标)
-
-## Workspace 结构
+## Workspace 物理结构
 
 ```
 capsule-os/
-├── hal/                    # Hardware Abstraction Layer (no_std)
-│   └── src/               # Traits only
-├── shared/                 # 共享类型 (no_std)
+├── .cargo/               # Cargo 别名与快捷构建指令
+├── bootloader/           # 📂 (子模块) capsule-bootloader 引导层
+├── kernel/               # 📂 (子模块) hnx-core 纯净微内核
+│   ├── linker/           # 架构链接脚本 (kernel_aarch64.ld / kernel_riscv64.ld)
 │   └── src/
-├── kernel/                 # HNX 微内核
-│   ├── kernel.ld         # 链接脚本
-│   └── src/
-│       ├── arch/           # 📂 CPU 架构层
-│       │   ├── aarch64/    # ARM64 CPU 级逻辑与引导
-│       │   ├── riscv64/    # RISC-V 64 CPU 级逻辑与引导
-│       │   └── x86_64/     # x86_64 架构桩
-│       ├── board/          # 📂 开发板/主板级初始化与参数路由层
-│       ├── drivers/        # 📂 动态匹配外设驱动层 (pl011 / ns16550 串口)
-│       └── mm/             # 📂 内存管理层 (含物理页隐式链表分配器)
-├── userspace/              # 用户态程序
-│   ├── libc/             # C 库
-│   └── services/         # 系统服务
-├── libs/                   # 基础库
-│   ├── libc/             # C 标准库
-│   └── libcapsule/       # Capsule 原生 API
-├── tools/                  # 开发工具 ⭐
-│   ├── ohc-tool/         # .ohc 打包工具 ✅ 已实现
-│   └── capsule-pack/      # 系统打包工具 ⭐ 待实现
-└── rootfs/               # 根文件系统
+│       ├── arch/           # CPU 架构级核心逻辑
+│       │   ├── aarch64/    # ARM64 CPU 级逻辑、MMU 分页与引导汇编
+│       │   └── riscv64/    # RISC-V 64 CPU 级逻辑、MMU 分页与引导汇编
+│       ├── drivers/        # 动态匹配外设驱动层 (pl011 / ns16550 串口)
+│       └── mm/             # 内存管理层 (含物理页帧分配器、VMO 与 VMAR 虚实地址管理)
+├── userspace/            # 📂 用户空间
+│   ├── libc/             # hnx-libc 运行时底座与 Syscall 封装
+│   ├── services/         # 常驻基础服务进程 (init 根进程, loader 装载器, vfs 虚拟文件系统)
+│   └── programs/         # 用户态普通程序 (shell 控制台)
+└── tools/                # 📂 研发工具
+    └── xtask/            # 纯 Rust 一键式交叉编译、打包 OHC、调度 QEMU 运行引擎
 ```
 
 ## 关键约定
 
-### HAL 设计
-- Traits 定义在 `hal/`
-- 实现放在 `kernel/src/arch/<arch>/` 或 `kernel/src/drivers/`
-- 禁止在 `hal/` 中实现
+### 驱动设计
+- 驱动接口通过 `kernel/src/drivers/` 驱动层注册，禁止引入硬编码外设地址。
+- 引导期通过 `fdt` 动态匹配外设 MMIO 地址，后期驱动彻底沙盒化转移至用户态 `devmgr` 服务中运行。
 
 ### No_std 约定
-- `hal/`, `shared/`, `kernel/` 都是 `#![no_std]`
-- 用户态程序也是 `#![no_std]`
-- 入口点: `_start()`
+- 内核、引导程序及所有的用户态程序和基础服务皆为 `#![no_std]` 裸机程序。
+- 用户态程序入口点统一为 `_start()`。
 
 ### 内核入口点
-- `_start()` 在 `kernel/src/lib.rs` (由 boot_asm.S 引导跳转)
-- 需要: `#[panic_handler] fn panic(info: &PanicInfo) -> !`
+- `_start()` 在 `kernel/src/lib.rs` (由 boot_asm.S 引导初始化后跳转)。
+- 内核中必须有且仅有一个：`#[panic_handler] fn panic(info: &PanicInfo) -> !`。
 
 ### 错误处理
-- `shared::status::Status` 枚举
-- `shared::status::Result<T> = core::result::Result<T, Status>`
+- 统一使用 `shared::status::Status` 枚举。
+- 返回值签名对齐：`shared::status::Result<T> = core::result::Result<T, Status>`。
 
-## Phase 1 实现清单 (v0.1.0) ✅ 已完成
-
-| 任务 | 优先级 | 状态 |
-|------|--------|------|
-| capsule-bootloader | P0 | ✅ 已实现 |
-| ohc-tool | P0 | ✅ 已实现 |
-| kernel.ld | P0 | ✅ 已实现 |
-| 内核入口 + print | P1 | ✅ 已完成 |
-| UART 驱动 | P1 | ✅ 已完成 |
-| MMU 初始化 | P2 | 待实现 (Phase 2) |
-
-## QEMU 测试
+## 验证与检查命令
 
 ```bash
-# 需要 QEMU >= 7.0
-brew install qemu
-
-# 运行 .ohc
-make run-ohc
-
-# 运行 ELF (直接)
-qemu-system-aarch64 -machine virt -cpu cortex-a57 -nographic -kernel kernel.elf
-```
-
-## 已知问题
-
-- capsule-pack 尚未实现
-- 用户态程序需要 .ohc 打包支持
-
-## 验证命令
-
-```bash
-# 检查 kernel 编译
-cargo check --target aarch64-unknown-none -p kernel
-
-# 构建 kernel (生成 libkernel.a)
-cargo build --target aarch64-unknown-none -p kernel --release
-
-# 完整 workspace 检查
+# 1. 检查整个 workspace 的健康状况
 cargo check --workspace
 
-# ohc-tool 帮助
-cargo run -p ohc-tool -- --help
+# 2. 检查 AArch64 内核编译
+cargo check --target aarch64-unknown-none -p kernel
 
-# 检查 .ohc 文件
-cargo run -p ohc-tool -- info --input hnxcore.ohc
+# 3. 检查 RISC-V 64 内核编译
+cargo check --target riscv64imac-unknown-none-elf -p kernel
 ```

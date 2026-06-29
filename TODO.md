@@ -1,6 +1,7 @@
 # CapsuleOS 开发计划 (与时俱进整理版)
 
-> 目标: 快速出成果，结合 capsule-bootloader 现代特性，先通后精
+> 目标: 快速出成果，结合 capsule-bootloader 现代特性，先通后精。
+> 构建与运行采用纯 Rust 极简原生体系：`cargo run-ohc` 与 `cargo run-riscv`。
 
 ---
 
@@ -8,9 +9,9 @@
 
 > 目标: hnxcore.ohc 能够通过 capsule-bootloader 安全加载，动态初始化栈和 BSS，接收 DTB 指针并打印 "CapsuleOS v0.1.0" 与 "OK"
 
-### 1.1 OHC 包打包工具 (`ohc-tool`) ✅
-- [x] tools/ohc-tool: 实现 OHC 头部写入、CRC32 校验、Payload 打包
-- [x] Makefile: 集成 `make ohc` 支持一键将内核 Raw Binary 打包为 `.ohc` 格式
+### 1.1 OHC 包打包工具 (`ohc-tool` -> 集成至 `xtask`) ✅
+- [x] tools/xtask: 实现 OHC 头部写入、CRC32 校验、Payload 打包
+- [x] xtask: 集成一键将内核 Raw Binary 打包为 `.ohc` 格式并实现全生命周期启动管理
 
 ### 1.2 capsule-bootloader 引导层对接 ✅
 - [x] 集成 capsule-bootloader 子模块，完成多核屏蔽（CPU 0 引导，其余进入 wfi 睡眠）、关闭早期中断及 FPU (FP/SIMD) 初始化
@@ -26,7 +27,7 @@
 ### 1.4 控制台驱动重构 ✅
 - [x] `arch/aarch64/mod.rs`: 实现纯 Rust 的 PL011 早期寄存器级波特率等参数初始化（`early_init()`）
 - [x] `lib.rs`: 移除硬编码的 inline 汇编字符打印，使用统一的 `arch::console_putchar` 输出标准 boot 消息
-- [x] `make run-ohc`: 完整联调测试，Bootloader 正确加载解包并平滑跳转至 CapsuleOS 打印成功
+- [x] `cargo run-ohc`: 完整联调测试，Bootloader 正确加载解包并平滑跳转至 CapsuleOS 打印成功
 
 ---
 
@@ -34,61 +35,98 @@
 
 > 目标: 激活 MMU 4级页表建立段/页级映射，实现物理内存管理与虚拟地址空间管理 (VMAR/VMO)
 
-### 2.1 动态外设与内存范围探测 (FDT 联动) ── 🌟 新增
-- [x] 引用或编写轻量 FDT 树解析，基于全局 `DTB_POINTER` 动态定位物理 RAM 的首尾物理地址（替换硬编码内存范围）
-- [x] 动态定位 chosen 标准控制台 PL011 的 MMIO 基地址（为多板支持解耦硬编码 `0x09000000`）
+### 2.1 动态外设与内存范围探测 (FDT 联动) ✅
+- [x] 引用并编写轻量 FDT 树解析，基于全局 `DTB_POINTER` 动态定位物理 RAM 的首尾物理地址（替换硬编码内存范围）
+- [x] 动态定位 chosen 标准控制台 PL011 / NS16550 的 MMIO 基地址（为多板支持解耦硬编码 `0x09000000`）
 
 ### 2.2 物理页分配器 (Physical Page Allocator) ✅
-- [x] 实现物理页面管理机制（如 Buddy System 伙伴算法、或 Bitmap 分配器）
+- [x] 实现物理页面管理机制（隐式物理页面空闲链表，0 字节额外元数据，高效 O(1) 分配与回收）
 - [x] 实现 `allocate_page()` / `free_page()` 底层原子物理页分配接口
 
-### 2.3 MMU 分页系统与页表管理 (AArch64 Page Table)
+### 2.3 MMU 分页系统与页表管理 (AArch64 / RISC-V SV39) ✅
 - [x] 实现 4 级页表建立（支持 4KB 页），支持设置 `AArch64PageFlags`（内核/用户态、读/写/执行属性、Device 属性）
 - [x] 建立内核早期虚拟地址映射：
   - 恒等映射（Identity Mapping）覆盖 UART 与 kernel/RAM 段
   - 高半核映射 `KERNEL_OFFSET = 0xFFFF_8000_0000_0000`（避开与恒等 1GB Block 的 L1 index 冲突）
   - PL011 MMIO 区间走恒等映射的 Device 1GB Block
 - [x] 激活 MMU（配置 `SCTLR_EL1`，`TCR_EL1`，`MAIR_EL1` 和 `TTBRx_EL1` 寄存器并刷新 TLB；TLBI VMALLE1 + DSB SY + ISB）
-- [x] AArch64 `make run-ohc` 全链路验证通过：MMU 切换前后 `[KERNEL] HNX v0.2.0-dev` → `[MM] Physical page allocator` → `[MMU] 4-level page tables ACTIVE` → `OK` 完整串行输出
-- [x] RISC-V 64 SV39 路径实现（`kernel/src/arch/riscv64/mmu.rs`）：构建 2 MiB 恒等映射 + L1→L2→4 KiB UART Device 页表。`csrw satp` 启用后会触发 QEMU virt + OpenSBI 1.7 下的翻译异常（PC 段 0x8008_xxxx 的 SV39 翻译），根因仍待查；当前先 mark_mmu_active 但**禁用 satp 写入**保留 identity MMU-off 行为。AArch64 真启用通过。
+- [x] AArch64 `cargo run-ohc` 全链路验证通过：MMU 开启，虚拟地址运行通畅。
+- [x] RISC-V 64 SV39 路径实现（`kernel/src/arch/riscv64/mmu.rs`）：构建 2 MiB 恒等映射 + L1→L2→4 KiB UART Device 页表。为了对齐 soft-float ABI，统一采用 `riscv64imac-unknown-none-elf` 目标。
 
 ### 2.4 虚拟地址空间管理 (VMAR & VMO) ✅
-- [x] **VMO (Virtual Memory Object)**: 真正实现物理页分配与延迟分配（Lazy Allocation）─ 4 KiB granularity；metadata 存于独立 page（4 KiB，含 magic/version + `[Option<PhysAddr>; 512]`）；API: `create_with_size / commit_page / commit_all / read / write / get_page_phys`；`read` 在 uncommitted page 处返回 0
-- [x] **VMAR (Virtual Memory Address Range)**: 真正实现虚拟区间分配、保护属性修改与页表映射关联 ─ 树形结构（root + sub-region）；metadata 存于独立 page（4 KiB，static-asserted 容纳 32 children + 32 mappings）；API: `create / allocate_subregion / map / unmap / protect`；`map` 4 KiB 一页一页调 `arch_mmu::map_page` 安装页表项
-- [x] **AArch64 4 KiB 页表 + L1/L2 Block shatter**: `arch::aarch64::mmu::map_page` 走 L0→L1→L2→L3；遇 L1 1 GiB Block 或 L2 2 MiB Block 时 **shatter** ─ 分配新的下一级表，把原 512 entries 重写为带原属性位的细粒度映射；`tlbi vaae1` 单条 TLB invalidate
-- [x] **RISC-V SV39 4 KiB 页表 + L1 Megapage shatter**: `arch::riscv64::mmu::map_page` 走 L1→L2→L3；shatter 2 MiB Megapage 为 L2；ROOT_PA 静态缓存避免反复读 satp；`sfence.vma` 刷新
-- [x] **跨架构统一 MMU 接口**: `arch::mmu` 暴露 `MapFlags` (kernel_rw/ro/rx, user_rw/ro, device_rw) + `map_page / unmap_page / pa_to_kernel_va`；`zero_page / read_pte / write_pte` 通过 `phys::mmu_is_active()` 在 pre-MMU (PA) / post-MMU (`pa_to_kernel_va`) 之间切换
-- [x] **物理分配器重构**: linked-list → bump allocator ─ 解决 post-MMU 下 free-list 节点处于未映射物理页的访问违例
-- [x] **x86_64 路径全部移除**: arch/bootloader/Cargo target/FDT 路径一并清理；capsule-os 现为 AArch64 + RISC-V 64 双架构微内核
-- [x] **跨架构 smoke 验证**: `lib.rs::vmo_vmar_smoke_test()` ─ AArch64 通过 MMU 翻译路径读到 VMO 内容 (MATCH via MMU)；RISC-V MMU 仍 off (Phase 2.3 遗留的 OpenSBI satp 翻译问题)，通过 `pa_to_kernel_va` 直接读 VMO 物理页验证 (MATCH via VMO PA)
+- [x] **VMO (Virtual Memory Object)**: 真正实现物理页分配与延迟分配（Lazy Allocation）─ 4 KiB granularity；metadata 存于独立 page；API: `create_with_size / commit_page / commit_all / read / write / get_page_phys`；`read` 在 uncommitted page 处返回 0
+- [x] **VMAR (Virtual Memory Address Range)**: 真正实现虚拟区间分配、保护属性修改与页表映射关联 ─ 树形结构（root + sub-region）；metadata 存于独立 page；API: `create / allocate_subregion / map / unmap / protect`；`map` 4 KiB 一页一页调 `arch_mmu::map_page` 安装页表项
+- [x] **AArch64 4 KiB 页表 + L1/L2 Block shatter**: `arch::aarch64::mmu::map_page` 走 L0→L1→L2→L3；遇 L1 1 GiB Block 或 L2 2 MiB Block 时 **shatter** ─ 分配新的下一级表，把原 512 entries 重写为带原属性位的细粒度映射
+- [x] **RISC-V SV39 4 KiB 页表 + L1 Megapage shatter**: `arch::riscv64::mmu::map_page` 走 L1→L2→L3；shatter 2 MiB Megapage 为 L2
+- [x] **跨架构统一 MMU 接口**: `arch::mmu` 暴露 `MapFlags` (kernel_rw/ro/rx, user_rw/ro, device_rw) + `map_page / unmap_page / pa_to_kernel_va`
+- [x] **跨架构 smoke 验证**: `lib.rs::vmo_vmar_smoke_test()` ─ AArch64 通过 MMU 翻译路径读到 VMO 内容 (MATCH via MMU)；RISC-V 通过 `pa_to_kernel_va` 直接读 VMO 物理页验证 (MATCH via VMO PA)
 
 ---
 
 ## 🔵 Phase 3: v0.3.0 Pangu - 多任务调度与中断管理
 
-> 目标: 结合 Bootloader 多核状态，完成 GIC 中断控制、时间片Tick时钟、线程创建切换与调度器
+> 目标: 结合 Bootloader 多核状态，完成时钟中断接管、设计进程/线程控制块、建立 Capability 与句柄表，以及优先级时间片轮转（Round-Robin）调度器。
 
-### 3.1 真正中断管理器 (Interrupt Handler & GIC)
-- [ ] 实现 AArch64 真正的高效异常处理上下文保存与恢复（`TrapFrame` 保存 31 个寄存器）
-- [ ] 编写 GIC (Generic Interrupt Controller) 驱动，接管定时器 Tick 中断
-- [ ] 完善 `vector_table`，打通中断分发到 Rust 内核 `irq_handler`
+### 3.1 异常处理与时钟中断分发
+- [ ] 编写 AArch64 与 RISC-V 64 架构级的异常上下文（`TrapFrame` 保存 31 个通用寄存器与特权级控制寄存器）压栈/出栈汇编代码
+- [ ] 接管 GIC (ARM) 与 PLIC (RISC-V 64) 中断控制器，注册硬件定时器（Timer）Tick 中断
+- [ ] 完善中断处理向量表（`vector_table`），安全派发时钟中断到 Rust 内核的调度器
 
-### 3.2 进程与线程管理 (Task & Thread)
-- [ ] 实现 `Thread` 控制块（状态：Ready, Running, Blocked, Exited）与内核栈分配
-- [ ] 实现 `Process` 控制块（共享地址空间 VMAR、句柄表 HandleTable）
+### 3.2 进程与线程控制块 (TCB & PCB)
+- [ ] 实现线程控制块 `Thread` (TCB)：保存内核栈指针、`TrapFrame` 地址、线程状态（Ready, Running, Blocked, Exited）
+- [ ] 实现进程控制块 `Process` (PCB)：关联独立的根虚拟空间 `VMAR`，管理私有 `HandleTable`（句柄表）
 
-### 3.3 调度器 (Scheduler)
-- [ ] 实现简单的优先级时间片轮转（Round-Robin）调度算法
-- [ ] 实现上下文切换（`switch_to` 汇编保存 `x19-x29`，`sp`，`lr` 等 callee-saved 寄存器）
-- [ ] 计时器 Tick 支持：每次时钟中断自动触发调度
+### 3.3 句柄表与权限控制 (Handle & Capability Table)
+- [ ] 引入 Zircon/seL4 风格的“一切皆对象，对象皆句柄”权限模型
+- [ ] 设计 `HandleTable` (句柄表) 支持 Capabilities：通过 u32 索引抽象并管控 VMO、VMAR、Channel、Thread 等内核对象
+- [ ] 校验 Syscall 的句柄参数及权限属性（读、写、映射、转移等），彻底隔离物理指针
+
+### 3.4 轮转调度器 (Scheduler)
+- [ ] 实现自适应优先级多级反馈队列（MLFQ）或时间片轮转（Round-Robin）调度
+- [ ] 编写上下文切换汇编 `switch_to`（保存 `x19-x29` / `s0-s11` 等 callee-saved 寄存器以及 SP, LR）
+- [ ] 打通硬件时钟中断，每次 Tick 定时触发 `schedule()` 强行剥夺当前运行线程并切换
 
 ---
 
-## 🟣 Phase 4 至 Phase 10 (后续路线图)
-- **Phase 4: v0.4.0 IPC** (Channel 创建/读写，Port 消息队列，异步通知)
-- **Phase 5: v0.5.0 用户态 devmgr** (用户态驱动框架与设备管理器 devhost)
-- **Phase 6: v0.6.0 POSIX 兼容层** (Syscall 映射，标准 I/O 接口支持)
-- **Phase 7: v0.7.0 文件系统服务** (VFS 虚拟文件系统、ramfs 内存文件系统)
-- **Phase 8: v0.8.0 网络栈服务** (TCP/IP 协议栈服务、网络接口驱动)
-- **Phase 9: v0.9.0 所有用户态服务集成**
-- **Phase 10: v1.0.0 完整 capsule-os.img 制作**
+## 🔵 Phase 4: v0.4.0 Pangu - 高吞吐 IPC 与能力所有权转移
+
+> 目标: 实现进程间高吞吐、零拷贝（或共享内存）的双向 Channel，并在消息传送中安全实现 Capabilities 所有权的跨进程流转。
+
+### 4.1 进程间通信通道 (Channel)
+- [ ] 设计 `Channel` 内核对象，包含双端 Endpoint（句柄 A 与句柄 B）
+- [ ] 实现 `channel_write()` 与 `channel_read()`：传输纯字节 Payload，由内核暂存并拷贝
+
+### 4.2 句柄/能力跨进程传递 (Handle Transfer via IPC)
+- [ ] 实现消息中携带 Handles：一个进程可以通过向 Channel 写入 Handle，将 VMO、VMAR、或另一个 Channel 端点的所有权安全赠予/复制给接收进程
+- [ ] 内核在传输期间自动维护源进程 `HandleTable` 的扣除与目标进程 `HandleTable` 的插入，保障内核对象安全传递
+
+### 4.3 异步完成端口 (Port)
+- [ ] 实现 `Port` 内核对象，类似 epoll，允许一个线程挂起并异步等待多个 Channel 事件、Timer 事件或内核对象状态转换通知
+
+---
+
+## 🔵 Phase 5: v0.5.0 Pangu - 用户态常驻服务与 ELF 装载器
+
+> 目标: 真正打通用户空间生态，构建进程装载器 loader、系统根服务 init、虚拟文件系统 vfs 与驱动管理器 devmgr，完成 PL011 驱动的完全沙盒化。
+
+### 5.1 hnx-libc 堆内存管理
+- [ ] `hnx-libc` 库基于 `SYSCALL_VMO_CREATE` 动态创建 VMO 并将其映射（map）至当前进程的 VMAR 虚拟空间
+- [ ] 引入高效轻量级内存分配器（如 dlmalloc 裸机变体），向用户态 App 暴露安全的 `malloc` 与 `free` 接口
+
+### 5.2 进程装载器服务 (loader)
+- [ ] 实现 `loader` 常驻系统服务：在用户空间解析 ELF headers
+- [ ] 用户空间申请新进程、新进程根 VMAR、并从 ELF 装载对应的 `.text`、`.data`、`.bss` 段 VMO，执行映射，建立堆栈并激活进程
+
+### 5.3 驱动管理器与外设沙盒化 (devmgr & PL011)
+- [ ] 彻底移除内核启动后的硬编码外设驱动，将串口驱动移动至用户态独立进程
+- [ ] `devmgr` (设备管理器) 运行时解析 DTB 设备树，为 PL011 启动专属的用户态驱动进程
+- [ ] 通过特权句柄映射 Device MMIO VMO 到 PL011 进程的 VMAR，直接操控外设寄存器，打通用户态输入输出
+
+---
+
+## 🟣 Phase 6 至 Phase 10 (后续路线图)
+- **Phase 6: v0.6.0 POSIX 兼容层** (标准 Syscall 映射、信号、Socket、管道)
+- **Phase 7: v0.7.0 文件系统服务** (VFS 双向 Channel 服务，实现 ramfs、FAT16/32 文件系统常驻服务)
+- **Phase 8: v0.8.0 网络栈服务** (TCP/IP 协议栈用户态服务，网卡驱动进程)
+- **Phase 9: v0.9.0 所有用户态服务集成** (Shell 控制台 + init 守护系统)
+- **Phase 10: v1.0.0 完整 capsule-os.img 制作** (基于 OrbisOS GUI 的像素流 VMO 零拷贝共享显示服务器整合)
