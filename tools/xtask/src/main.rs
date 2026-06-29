@@ -19,6 +19,7 @@ struct Platform {
     qemu_extra: Vec<&'static str>,
     dtb_addr: &'static str,
     ohc_addr: &'static str,
+    boot_addr: &'static str,
 }
 
 fn main() {
@@ -51,6 +52,7 @@ fn main() {
             qemu_extra: vec![],
             dtb_addr: "0x42000000",
             ohc_addr: "0x40700000",
+            boot_addr: "0x44000000",
         }
     } else if arch == "riscv64" {
         Platform {
@@ -65,6 +67,7 @@ fn main() {
             qemu_extra: vec!["-bios", "default"],
             dtb_addr: "0x82000000",
             ohc_addr: "0x80700000",
+            boot_addr: "0x44000000",
         }
     } else {
         panic!("Unsupported architecture: {}", arch);
@@ -261,7 +264,7 @@ fn run(plat: &Platform) {
     println!("{}    Generate{} QEMU Device Tree Blob (DTB)...", BOLD_BLUE, RESET);
     let mut dump_cmd = Command::new(format!("qemu-system-{}", plat.qemu_arch));
     dump_cmd.args([
-        "-M", "virt",
+        "-M", "virt,secure=off",
         "-cpu", plat.qemu_cpu,
         "-m", plat.qemu_mem,
         "-machine", "dumpdtb=/tmp/qemu_raw.dtb",
@@ -298,11 +301,11 @@ fn run(plat: &Platform) {
     println!("{}     Running{} QEMU virtual machine. {}[Ctrl+A, X to exit]{}", BOLD_GREEN, RESET, GRAY, RESET);
     let mut qemu = Command::new(format!("qemu-system-{}", plat.qemu_arch));
     qemu.args([
-        "-M", "virt",
+        "-M", "virt,secure=off",
         "-cpu", plat.qemu_cpu,
         "-m", plat.qemu_mem,
         "-nographic",
-        "-kernel", &format!("build/target/{}/release/capsule-bootloader", plat.rust_target),
+        "-device", &format!("loader,file=build/target/{}/release/capsule-bootloader.bin,addr={},cpu-num=0,force-raw=on", plat.rust_target, plat.boot_addr),
         "-device", &format!("loader,file=dist/kernel/hnxcore.ohc,addr={},force-raw=on", plat.ohc_addr),
         "-device", &format!("loader,file=dist/qemu.dtb,addr={},force-raw=on", plat.dtb_addr),
     ]);
