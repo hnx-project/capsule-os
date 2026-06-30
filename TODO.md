@@ -98,9 +98,11 @@
 - [x] 实现 `channel_write()` 与 `channel_read()`：支持直接从发送端线程内核地址向接收端线程直接进行单次内存拷贝的 Direct Handoff 机制
 - [x] 增加多线程会合 IPC 全仿真 Smoke 测试，在硬件时钟强占式多任务环境下完美实现 Blocked 挂起与 Ready 唤醒流转
 
-### 4.2 句柄/能力跨进程传递 (Handle Transfer via IPC)
-- [ ] 实现消息中携带 Handles：一个进程可以通过向 Channel 写入 Handle，将 VMO、VMAR、或另一个 Channel 端点的所有权安全赠予/复制给接收进程
-- [ ] 内核在传输期间自动维护源进程 `HandleTable` 的扣除与目标进程 `HandleTable` 的插入，保障内核对象安全传递
+### 4.2 句柄/能力跨进程传递 (Handle Transfer via IPC) ✅
+- [x] 实现独立进程句柄表隔离（Process-specific Handle Table Isolation），使每个测试任务（`init` / `worker`）拥有真正隔离的专属句柄表，终结了全局共享句柄表的历史
+- [x] 扩展 `HandleTable` 的能力划扣与安全注入接口 `remove_with_rights` 和 `add`
+- [x] 实现零内存分配的跨进程句柄/能力所有权安全转移（Move Semantics）机制，当通道写会合时直接在不同的句柄表之间进行能力的扣除与注入
+- [x] 增加多进程隔离 VMO 能力流转 Smoke 仿真测试：发送方 A 创建 VMO 并写入数据后通过 Channel 安全流转给接收方 B。A 的 VMO 被成功注销（Revocation Proof 通关），B 安全注入获得并成功解包读写，多平台 100% 验证通过！
 
 ### 4.3 异步完成端口 (Port)
 - [ ] 实现 `Port` 内核对象，类似 epoll，允许一个线程挂起并异步等待多个 Channel 事件、Timer 事件或内核对象状态转换通知
