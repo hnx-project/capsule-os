@@ -67,7 +67,7 @@ fn main() {
             qemu_extra: vec!["-bios", "default"],
             dtb_addr: "0x82000000",
             ohc_addr: "0x80700000",
-            boot_addr: "0x44000000",
+            boot_addr: "0x80200000",
         }
     } else {
         panic!("Unsupported architecture: {}", arch);
@@ -263,8 +263,9 @@ fn run(plat: &Platform) {
     // 1. Generate QEMU DTB dynamically
     println!("{}    Generate{} QEMU Device Tree Blob (DTB)...", BOLD_BLUE, RESET);
     let mut dump_cmd = Command::new(format!("qemu-system-{}", plat.qemu_arch));
+    let machine = if plat.qemu_arch == "aarch64" { "virt,secure=off" } else { "virt" };
     dump_cmd.args([
-        "-M", "virt,secure=off",
+        "-M", machine,
         "-cpu", plat.qemu_cpu,
         "-m", plat.qemu_mem,
         "-machine", "dumpdtb=/tmp/qemu_raw.dtb",
@@ -300,15 +301,28 @@ fn run(plat: &Platform) {
     // 2. Launch QEMU
     println!("{}     Running{} QEMU virtual machine. {}[Ctrl+A, X to exit]{}", BOLD_GREEN, RESET, GRAY, RESET);
     let mut qemu = Command::new(format!("qemu-system-{}", plat.qemu_arch));
-    qemu.args([
-        "-M", "virt,secure=off",
-        "-cpu", plat.qemu_cpu,
-        "-m", plat.qemu_mem,
-        "-nographic",
-        "-device", &format!("loader,file=build/target/{}/release/capsule-bootloader.bin,addr={},cpu-num=0,force-raw=on", plat.rust_target, plat.boot_addr),
-        "-device", &format!("loader,file=dist/kernel/hnxcore.ohc,addr={},force-raw=on", plat.ohc_addr),
-        "-device", &format!("loader,file=dist/qemu.dtb,addr={},force-raw=on", plat.dtb_addr),
-    ]);
+    let machine = if plat.qemu_arch == "aarch64" { "virt,secure=off" } else { "virt" };
+    if plat.qemu_arch == "aarch64" {
+        qemu.args([
+            "-M", machine,
+            "-cpu", plat.qemu_cpu,
+            "-m", plat.qemu_mem,
+            "-nographic",
+            "-device", &format!("loader,file=build/target/{}/release/capsule-bootloader.bin,addr={},cpu-num=0,force-raw=on", plat.rust_target, plat.boot_addr),
+            "-device", &format!("loader,file=dist/kernel/hnxcore.ohc,addr={},force-raw=on", plat.ohc_addr),
+            "-device", &format!("loader,file=dist/qemu.dtb,addr={},force-raw=on", plat.dtb_addr),
+        ]);
+    } else {
+        qemu.args([
+            "-M", machine,
+            "-cpu", plat.qemu_cpu,
+            "-m", plat.qemu_mem,
+            "-nographic",
+            "-kernel", &format!("build/target/{}/release/capsule-bootloader", plat.rust_target),
+            "-device", &format!("loader,file=dist/kernel/hnxcore.ohc,addr={},force-raw=on", plat.ohc_addr),
+            "-device", &format!("loader,file=dist/qemu.dtb,addr={},force-raw=on", plat.dtb_addr),
+        ]);
+    }
     for arg in &plat.qemu_extra {
         qemu.arg(arg);
     }
