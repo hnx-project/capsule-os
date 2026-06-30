@@ -88,13 +88,15 @@
 
 ---
 
-## 🔵 Phase 4: v0.4.0 Pangu - 高吞吐 IPC 与能力所有权转移
+## 🔵 Phase 4: v0.4.0 Pangu - 高吞吐 IPC 与能力所有权转移 (进行中 - 核心会合直传已打通) 🚀
 
 > 目标: 实现进程间高吞吐、零拷贝（或共享内存）的双向 Channel，并在消息传送中安全实现 Capabilities 所有权的跨进程流转。
 
-### 4.1 进程间通信通道 (Channel)
-- [ ] 设计 `Channel` 内核对象，包含双端 Endpoint（句柄 A 与句柄 B）
-- [ ] 实现 `channel_write()` 与 `channel_read()`：传输纯字节 Payload，由内核暂存并拷贝
+### 4.1 进程间通信通道 (Channel) ✅
+- [x] 设计 `Channel` 零分配同步会合（Synchronous Rendezvous）架构，扩展 TCB 传输上下文
+- [x] 实现静态先进先出（FIFO）双向等待队列 `send_waiters` 与 `recv_waiters`，规避动态内存分配
+- [x] 实现 `channel_write()` 与 `channel_read()`：支持直接从发送端线程内核地址向接收端线程直接进行单次内存拷贝的 Direct Handoff 机制
+- [x] 增加多线程会合 IPC 全仿真 Smoke 测试，在硬件时钟强占式多任务环境下完美实现 Blocked 挂起与 Ready 唤醒流转
 
 ### 4.2 句柄/能力跨进程传递 (Handle Transfer via IPC)
 - [ ] 实现消息中携带 Handles：一个进程可以通过向 Channel 写入 Handle，将 VMO、VMAR、或另一个 Channel 端点的所有权安全赠予/复制给接收进程
