@@ -111,22 +111,22 @@
 
 ---
 
-## 🔵 Phase 5: v0.5.0 Pangu - 统一 OHC/std 工具链生态与用户态装载
+## 🟡 Phase 5: v0.5.0 Pangu - 统一 OHC/std 工具链生态与用户态装载 (推进中)
 
 > 目标: 真正打通用户空间标准 std 桥接，构建基于多段 OHC 格式的高效装载器 loader、系统根服务 init、虚拟文件系统 vfs 与驱动管理器 devmgr。
 
-### 5.1 通用多段 OHC 打包工具 (`ohc-tool` 演进)
-- [ ] 扩展 `ohc-tool`：支持解析 Rust/LLVM 链接生成的 ELF Program Headers，提取 `.text`、`.rodata`、`.data` 等段
-- [ ] 升级打包协议：构造多段描述符头部，打包为精简、高安全性、防篡改的 Multi-Segment 通用 `.ohc` 胶囊镜像，剥除冗余 debug 符号表
+### 5.1 通用多段 OHC 打包工具 (`ohc-tool` 演进) ✅
+- [x] 扩展 `ohc-tool`：支持解析 Rust/LLVM 链接生成的 ELF Program Headers，提取 `.text`、`.rodata`、`.data` 等段
+- [x] 升级打包协议：构造多段描述符头部，打包为精简、高安全性、防篡改的 Multi-Segment 通用 `.ohc` 胶囊镜像，剥除冗余 debug 符号表
 
-### 5.2 目标三元组与标准 `std` 动态重译编译
-- [ ] 创建 `std/targets/aarch64-unknown-capsule.json` 与 `riscv64-unknown-capsule.json` 目标配置文件，激活 `"families": ["unix"]`
-- [ ] 在 `hnx-libc` (`userspace/libc`) 中用 `#[no_mangle] pub extern "C"` 完整封装导出 UNIX C-ABI 核心符号（如 `write`、`read`、`nanosleep`、`exit`），桥接劫持 Rust 官方标准库底层系统依赖
-- [ ] 配置 `.cargo/config.toml` 中 unstable `build-std` 特性，令上层应用程序（如 `shell`、`init`）能够直接调用 `use std::...` 高层接口编译运行
+### 5.2 目标三元组与标准 `std` 动态重译编译 ✅
+- [x] 创建 `std/targets/aarch64-unknown-capsule.json` 与 `riscv64-unknown-capsule.json` 目标配置文件，激活 `"target-family": "unix"` 与 lp64 编译对齐
+- [x] 在 `hnx-libc` (`userspace/libc`) 中用 `#[no_mangle] pub extern "C"` 完整封装导出 UNIX C-ABI 核心符号（如 `write`、`read`、`nanosleep`、`exit`），桥接劫持 Rust 官方标准库底层系统依赖
+- [x] 配置 `.cargo/config.toml` 中 unstable `build-std` 特性，令上层应用程序（如 `shell`、`init`）能够直接调用 `use std::...` 高层接口编译运行
 
-### 5.3 专用 OHC 加载器 (loader)
-- [ ] 实现 `loader` 常驻系统服务：在用户空间直接解析多段 `.ohc` 头部，彻底移除对复杂 ELF 的解析依赖
-- [ ] 加载器行为实现：自动为 `.ohc` 中定义的各段分别申请 `VMO`，并按照描述符的虚拟地址和权限标志映射（map）至新进程的 `VMAR`，分配用户态堆栈，并向内核发起运行系统调用
+### 5.3 专用 OHC 加载器 (loader) ✅
+- [x] 实现 `loader` 常驻系统服务：在用户空间直接解析多段 `.ohc` 头部，彻底移除对复杂 ELF 的解析依赖
+- [x] 加载器行为实现：自动为 `.ohc` 中定义的各段分别申请 `VMO`，并按照描述符的虚拟地址和权限标志进行页对齐映射（map）至新进程的 `VMAR`，分配用户态堆栈并完美执行 privilege drop 特权级安全下降
 
 ### 5.4 驱动管理器与外设沙盒化 (devmgr & PL011)
 - [ ] 彻底移除内核启动后的硬编码外设驱动，将串口驱动移动至用户态独立进程
