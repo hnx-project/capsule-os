@@ -76,10 +76,10 @@
 - [ ] 实现线程控制块 `Thread` (TCB)：保存内核栈指针、`TrapFrame` 地址、线程状态（Ready, Running, Blocked, Exited）
 - [ ] 实现进程控制块 `Process` (PCB)：关联独立的根虚拟空间 `VMAR`，管理私有 `HandleTable`（句柄表）
 
-### 3.3 句柄表与权限控制 (Handle & Capability Table)
-- [ ] 引入 Zircon/seL4 风格的“一切皆对象，对象皆句柄”权限模型
-- [ ] 设计 `HandleTable` (句柄表) 支持 Capabilities：通过 u32 索引抽象并管控 VMO、VMAR、Channel、Thread 等内核对象
-- [ ] 校验 Syscall 的句柄参数及权限属性（读、写、映射、转移等），彻底隔离物理指针
+### 3.3 句柄表与权限控制 (Handle & Capability Table) ✅
+- [x] 引入 Zircon/seL4 风格的“一切皆对象，对象皆句柄”权限模型
+- [x] 设计 `HandleTable` (句柄表) 支持 Capabilities：通过 u32 索引抽象并管控 VMO、VMAR、Channel、Thread 等内核对象
+- [x] 校验 Syscall 的句柄参数及权限属性（读、写、映射、转移等），彻底隔离物理指针
 
 ### 3.4 轮转调度器 (Scheduler)
 - [ ] 实现自适应优先级多级反馈队列（MLFQ）或时间片轮转（Round-Robin）调度
