@@ -63,28 +63,28 @@
 
 ---
 
-## 🔵 Phase 3: v0.3.0 Pangu - 多任务调度与中断管理
+## 🟢 Phase 3: v0.3.0 Pangu - 多任务调度与中断管理 (已圆满完成) ✅
 
 > 目标: 结合 Bootloader 多核状态，完成时钟中断接管、设计进程/线程控制块、建立 Capability 与句柄表，以及优先级时间片轮转（Round-Robin）调度器。
 
-### 3.1 异常处理与时钟中断分发
-- [ ] 编写 AArch64 与 RISC-V 64 架构级的异常上下文（`TrapFrame` 保存 31 个通用寄存器与特权级控制寄存器）压栈/出栈汇编代码
-- [ ] 接管 GIC (ARM) 与 PLIC (RISC-V 64) 中断控制器，注册硬件定时器（Timer）Tick 中断
-- [ ] 完善中断处理向量表（`vector_table`），安全派发时钟中断到 Rust 内核的调度器
+### 3.1 异常处理与时钟中断分发 ✅
+- [x] 编写 AArch64 与 RISC-V 64 架构级的异常上下文（`TrapFrame` 保存 31 个通用寄存器与特权级控制寄存器）压栈/出栈汇编代码
+- [x] 接管 GIC (ARM) 与 PLIC (RISC-V 64) 中断控制器，注册硬件定时器（Timer）Tick 中断
+- [x] 完善中断处理向量表（`vector_table`），安全派发时钟中断到 Rust 内核的调度器
 
-### 3.2 进程与线程控制块 (TCB & PCB)
-- [ ] 实现线程控制块 `Thread` (TCB)：保存内核栈指针、`TrapFrame` 地址、线程状态（Ready, Running, Blocked, Exited）
-- [ ] 实现进程控制块 `Process` (PCB)：关联独立的根虚拟空间 `VMAR`，管理私有 `HandleTable`（句柄表）
+### 3.2 进程与线程控制块 (TCB & PCB) ✅
+- [x] 实现线程控制块 `Thread` (TCB)：保存内核栈指针、`TrapFrame` 地址、线程状态（Ready, Running, Blocked, Exited）
+- [x] 实现进程控制块 `Process` (PCB)：关联独立的根虚拟空间 `VMAR`，管理私有 `HandleTable`（句柄表）
 
 ### 3.3 句柄表与权限控制 (Handle & Capability Table) ✅
 - [x] 引入 Zircon/seL4 风格的“一切皆对象，对象皆句柄”权限模型
 - [x] 设计 `HandleTable` (句柄表) 支持 Capabilities：通过 u32 索引抽象并管控 VMO、VMAR、Channel、Thread 等内核对象
 - [x] 校验 Syscall 的句柄参数及权限属性（读、写、映射、转移等），彻底隔离物理指针
 
-### 3.4 轮转调度器 (Scheduler)
-- [ ] 实现自适应优先级多级反馈队列（MLFQ）或时间片轮转（Round-Robin）调度
-- [ ] 编写上下文切换汇编 `switch_to`（保存 `x19-x29` / `s0-s11` 等 callee-saved 寄存器以及 SP, LR）
-- [ ] 打通硬件时钟中断，每次 Tick 定时触发 `schedule()` 强行剥夺当前运行线程并切换
+### 3.4 轮转调度器 (Scheduler) ✅
+- [x] 实现自适应优先级多级反馈队列（MLFQ）或时间片轮转（Round-Robin）调度
+- [x] 编写上下文切换汇编 `switch_to`（保存 `x19-x29` / `s0-s11` 等 callee-saved 寄存器以及 SP, LR）
+- [x] 打通硬件时钟中断，每次 Tick 定时触发 `schedule()` 强行剥夺当前运行线程并切换
 
 ---
 
