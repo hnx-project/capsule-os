@@ -149,6 +149,44 @@ fn find_objcopy() -> PathBuf {
 fn build(plat: &Platform) {
     println!("{}    Building{} CapsuleOS Ecosystem ({})", BOLD_CYAN, RESET, plat.arch);
 
+    // 0. Compile userspace loader (EL0)
+    println!("{}     Compile{} userspace/services/loader (EL0) in release mode...", BOLD_GREEN, RESET);
+    let userspace_target = format!("std/targets/{}-unknown-capsule.json", plat.arch);
+    let status = Command::new("cargo")
+        .args([
+            "+nightly",
+            "build",
+            "--release",
+            "-p", "hnx-loader",
+            "--target", &userspace_target,
+            "-Z", "build-std=core,alloc,panic_abort",
+        ])
+        .status()
+        .expect("failed to execute cargo build on loader");
+    if !status.success() {
+        panic!("failed to build userspace loader");
+    }
+
+    // Pack loader to .ohc using ohc-tool
+    println!("{}     Package{} kernel/files/loader.ohc...", BOLD_GREEN, RESET);
+    let loader_elf = format!("build/target/{}-unknown-capsule/release/loader", plat.arch);
+    let status = Command::new("cargo")
+        .args([
+            "run",
+            "--manifest-path", "kernel/Cargo.toml",
+            "-p", "ohc-tool",
+            "--",
+            "pack",
+            "--input", &loader_elf,
+            "--output", "kernel/files/loader.ohc",
+            "--entry", "65536"
+        ])
+        .status()
+        .expect("failed to run ohc-tool on loader");
+    if !status.success() {
+        panic!("failed to pack loader OHC image");
+    }
+
     // 1. Compile HNX Core Kernel Submodule
     println!("{}     Compile{} hnx-core (kernel) in release mode...", BOLD_GREEN, RESET);
     let status = Command::new("cargo")

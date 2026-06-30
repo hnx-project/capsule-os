@@ -5,5 +5,7 @@ extern crate hnx_libc;
 
 #[no_mangle]
 extern "C" fn _start() {
+    let msg = "Hello from CapsuleOS EL0 Userspace Loader Service!\n";
+    let _ = hnx_libc::write(1, msg.as_ptr(), msg.len());
     loop {}
 }
