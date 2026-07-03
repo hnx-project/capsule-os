@@ -10,5 +10,5 @@ path = "src/main.rs"
 [dependencies]
 hnx-libc = { path = "../../libc" }
 
-[build]
-rustflags = ["-C", "link-arg=-Tloader.ld"]
+# [build]
+# rustflags = ["-C", "link-arg=-Tloader.ld"]

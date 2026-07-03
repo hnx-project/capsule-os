@@ -1,166 +1,143 @@
-# Capsule OS - 开发计划
+# CapsuleOS 开发计划 (与时俱进整理版)
 
-> 目标: 快速出成果，先能用再完善
-
----
-
-## Phase 0: 项目初始化 (Week 1) - ✅ 完成
-
-### 0.1 项目结构 ✅
-- [x] Workspace 配置 (Cargo.toml)
-- [x] hal/, shared/, kernel/, userspace/, gui/ 目录
-- [x] AGENTS.md, TODO.md, .gitignore
-
-### 0.2 HAL traits ✅
-- [x] hal/src/cpu.rs (Cpu, CpuInfo traits)
-- [x] hal/src/mmu.rs (Mmu, PageTable traits)
-- [x] hal/src/interrupt.rs (InterruptController trait)
-- [x] hal/src/timer.rs (Timer trait)
-- [x] hal/src/console.rs (Console trait)
-- [x] hal/src/memory.rs (PhysicalMemory trait)
-
-### 0.3 shared 类型 ✅
-- [x] shared/src/status.rs (Status, Result)
-- [x] shared/src/types.rs (Handle, HandleValue, ObjectType)
-- [x] shared/src/ipc.rs (Message types)
-- [x] shared/src/boot.rs (BootInfo)
-
-### 0.4 kernel 骨架 ✅
-- [x] kernel/src/lib.rs (入口, panic handler)
-- [x] kernel/src/arch/mod.rs
-- [x] kernel/src/task/mod.rs
-- [x] kernel/src/mm/mod.rs
-- [x] kernel/src/ipc/mod.rs
-- [x] kernel/src/object/mod.rs
-- [x] kernel/src/syscall/mod.rs
-- [x] kernel/src/sync/mod.rs
-- [x] kernel/src/kcore/mod.rs
-- [x] kernel/kernel.ld (链接脚本)
-
-### 0.5 构建验证 ✅
-- [x] `cargo build --target aarch64-unknown-none -p kernel` 成功
-- [x] `make kernel-release` 生成 kernel.elf
+> 目标: 快速出成果，结合 capsule-bootloader 现代特性，先通后精。
+> 构建与运行采用纯 Rust 极简原生体系：`cargo run-ohc` 与 `cargo run-riscv`。
 
 ---
 
-## Phase 1: 最小可启动系统 (Week 2-3) - 🔄 进行中
+## 🟢 Phase 1: v0.1.0 Pangu - 可启动内核与引导对接 (已圆满完成) ✅
 
-> 目标: QEMU 启动，能打印 "Hello World"
+> 目标: hnxcore.ohc 能够通过 capsule-bootloader 安全加载，动态初始化栈和 BSS，接收 DTB 指针并打印 "CapsuleOS v0.1.0" 与 "OK"
 
-### 1.1 AArch64 架构实现
-- [x] kernel/src/arch/aarch64/mod.rs (UART putchar)
-- [ ] kernel/src/arch/aarch64/boot.S (启动汇编)
-- [ ] kernel/src/arch/aarch64/mmu.rs (MMU 启用)
-- [ ] kernel/src/arch/aarch64/linker.ld
+### 1.1 OHC 包打包工具 (`ohc-tool` -> 集成至 `xtask`) ✅
+- [x] tools/xtask: 实现 OHC 头部写入、CRC32 校验、Payload 打包
+- [x] xtask: 集成一键将内核 Raw Binary 打包为 `.ohc` 格式并实现全生命周期启动管理
 
-### 1.2 X86_64 架构实现
-- [ ] kernel/src/arch/x86_64/ (实现)
+### 1.2 capsule-bootloader 引导层对接 ✅
+- [x] 集成 capsule-bootloader 子模块，完成多核屏蔽（CPU 0 引导，其余进入 wfi 睡眠）、关闭早期中断及 FPU (FP/SIMD) 初始化
+- [x] 实现 Bootloader 对 OHC 格式的安全解析、校验与物理地址解包（`0x4008_0000`）
+- [x] 实现了 Bootloader 将 FDT (Device Tree Blob) 物理地址通过 `x0` 寄存器透传给内核
 
-### 1.3 内核核心实现
-- [ ] kcore/alloc.rs (堆分配器 - 需要实现)
-- [ ] task/scheduler.rs (需要完善)
-- [ ] task/thread.rs (线程切换)
+### 1.3 内核底层加载与 C ABI 对齐 ✅
+- [x] `boot_asm.S`: 移除硬编码内存地址，**改用链接脚本符号 `__boot_stack_top` 与 `_bss_start` / `_bss_end`** 进行动态物理栈分配与 BSS 段自动清零
+- [x] `boot_asm.S`: 接收并暂存 `dtb_ptr` (`x0`) 到 callee-saved 寄存器 (`x19`)，并在调用 `kernel_main` 前恢复到首参寄存器 `x0`
+- [x] `kernel_main`: 修改签名，接收 `dtb_ptr` 并将其存入全局静态变量 `DTB_POINTER` 供后续模块使用
+- [x] 异常向量表: 加载基础异常向量表（VBAR_EL1 注册），处理 `sync` / `irq` 等基础挂起和桩输出
 
-### 1.4 基础 Syscall
-- [ ] sys_exit, sys_write (完善)
-- [ ] sys_channel_*
-- [ ] sys_vmo_*
-
-### 1.5 Init 进程
-- [ ] userspace/services/init (完善)
-- [ ] Init 打印 "Hello from userspace!"
-
-### 1.6 QEMU 测试
-- [x] QEMU 可以启动 kernel.elf
-- [ ] 验证串口输出工作
+### 1.4 控制台驱动重构 ✅
+- [x] `arch/aarch64/mod.rs`: 实现纯 Rust 的 PL011 早期寄存器级波特率等参数初始化（`early_init()`）
+- [x] `lib.rs`: 移除硬编码的 inline 汇编字符打印，使用统一 of `arch::console_putchar` 输出标准 boot 消息
+- [x] `cargo run-ohc`: 完整联调测试，Bootloader 正确加载解包并平滑跳转至 CapsuleOS 打印成功
 
 ---
 
-## Phase 2: 基础 IPC 和进程管理 (Week 4-5)
+## 🟡 Phase 2: v0.2.0 Pangu - 动态外设探测与内存管理 ✅
 
-### 2.1 IPC 机制
-- [ ] ipc/channel.rs 完整实现
-- [ ] ipc/port.rs 完整实现
+> 目标: 激活 MMU 4级页表建立段/页级映射，实现物理内存管理与虚拟地址空间管理 (VMAR/VMO)
 
-### 2.2 进程/线程 Syscall
-- [ ] sys_process_*
-- [ ] sys_thread_*
+### 2.1 动态外设与内存范围探测 (FDT 联动) ✅
+- [x] 引用并编写轻量 FDT 树解析，基于全局 `DTB_POINTER` 动态定位物理 RAM 的首尾物理地址（替换硬编码内存范围）
+- [x] 动态定位 chosen 标准控制台 PL011 / NS16550 的 MMIO 基地址（为多板支持解耦硬编码 `0x09000000`）
 
-### 2.3 内存管理
-- [ ] mm/vmo.rs (真正分配物理页)
-- [ ] mm/vmar.rs (页表映射)
-- [ ] mm/phys.rs (物理页分配器)
+### 2.2 物理页分配器 (Physical Page Allocator) ✅
+- [x] 实现物理页面管理机制（隐式物理页面空闲链表，0 字节额外元数据，高效 O(1) 分配与回收）
+- [x] 实现 `allocate_page()` / `free_page()` 底层原子物理页分配接口
 
-### 2.4 ELF 加载
-- [ ] mm/elf.rs
-- [ ] userspace/services/loader/
+### 2.3 MMU 分页系统与页表管理 (AArch64 / RISC-V SV39) ✅
+- [x] 实现 4 级页表建立（支持 4KB 页），支持设置 `AArch64PageFlags`（内核/用户态、读/写/执行属性、Device 属性）
+- [x] 建立内核早期虚拟地址映射：
+  - 恒等映射（Identity Mapping）覆盖 UART 与 kernel/RAM 段
+  - 高半核映射 `KERNEL_OFFSET = 0xFFFF_8000_0000_0000`（避开与恒等 1GB Block 的 L1 index 冲突）
+  - PL011 MMIO 区间走恒等映射 of Device 1GB Block
+- [x] 激活 MMU（配置 `SCTLR_EL1`，`TCR_EL1`，`MAIR_EL1` 和 `TTBRx_EL1` 寄存器并刷新 TLB；TLBI VMALLE1 + DSB SY + ISB）
+- [x] AArch64 `cargo run-ohc` 全链路验证通过：MMU 开启，虚拟地址运行通畅。
+- [x] RISC-V 64 SV39 路径实现（`kernel/src/arch/riscv64/mmu.rs`）：构建 2 MiB 恒等映射 + L1→L2→4 KiB UART Device 页表。为了对齐 soft-float ABI，统一采用 `riscv64imac-unknown-none-elf` 目标。
 
----
-
-## Phase 3: 简单 GUI ⭐ (Week 6-10)
-
-### 3.1 显示驱动
-- [ ] VirtIO GPU 驱动
-- [ ] 帧缓冲
-
-### 3.2 GUI 服务
-- [ ] gui/compositor (窗口合成器)
-- [ ] gui/renderer (2D 渲染)
-- [ ] gui/client (客户端库)
-
-### 3.3 输入处理
-- [ ] 键盘驱动
-- [ ] 鼠标驱动
-
-### 3.4 窗口管理器
-- [ ] 浮动窗口
-- [ ] 焦点管理
+### 2.4 虚拟地址空间管理器 (VMAR & VMO) ✅
+- [x] **VMO (Virtual Memory Object)**: 真正实现物理页分配与延迟分配（Lazy Allocation）─ 4 KiB granularity；metadata 存于独立 page；API: `create_with_size / commit_page / commit_all / read / write / get_page_phys`；`read` 在 uncommitted page 处返回 0
+- [x] **VMAR (Virtual Memory Address Range)**: 真正实现虚拟区间分配、保护属性修改与页表映射关联 ─ 树形结构（root + sub-region）；metadata 存于独立 page；API: `create / allocate_subregion / map / unmap / protect`；`map` 4 KiB 一页一页调 `arch_mmu::map_page` 安装页表项
+- [x] **AArch64 4 KiB 页表 + L1/L2 Block shatter**: `arch::aarch64::mmu::map_page` 走 L0→L1→L2→L3；遇 L1 1 GiB Block 或 L2 2 MiB Block 时 **shatter** ─ 分配新的下一级表，把原 512 entries 重写为带原属性位的细粒度映射
+- [x] **RISC-V SV39 4 KiB 页表 + L1 Megapage shatter**: `arch::riscv64::mmu::map_page` 走 L1→L2→L3；shatter 2 MiB Megapage 为 L2
+- [x] **跨架构统一 MMU 接口**: `arch::mmu` 暴露 `MapFlags` (kernel_rw/ro/rx, user_rw/ro, device_rw) + `map_page / unmap_page / pa_to_kernel_va`
+- [x] **跨架构 smoke 验证**: `lib.rs::vmo_vmar_smoke_test()` ─ AArch64 通过 MMU 翻译路径读到 VMO 内容 (MATCH via MMU)；RISC-V 通过 `pa_to_kernel_va` 直接读 VMO 物理页验证 (MATCH via VMO PA)
 
 ---
 
-## Phase 4: 桌面应用 (Week 11-14)
+## 🟢 Phase 3: v0.3.0 Pangu - 多任务调度与中断管理 (已圆满完成) ✅
 
-### 4.1 VFS 服务
-### 4.2 文件管理器
-### 4.3 终端模拟器
-### 4.4 任务栏
+> 目标: 结合 Bootloader 多核状态，完成时钟中断接管、设计进程/线程控制块、建立 Capability 与句柄表，以及优先级时间片轮转（Round-Robin）调度器。
 
----
+### 3.1 异常处理与时钟中断分发 ✅
+- [x] 编写 AArch64 与 RISC-V 64 架构级的异常上下文（`TrapFrame` 保存 31 个通用寄存器与特权级控制寄存器）压栈/出栈汇编代码
+- [x] 接管 GIC (ARM) 与 PLIC (RISC-V 64) 中断控制器，注册硬件定时器（Timer）Tick 中断
+- [x] 完善中断处理向量表（`vector_table`），安全派发时钟中断到 Rust 内核的调度器
 
-## Phase 5: 完善 (Week 15+)
+### 3.2 进程与线程控制块 (TCB & PCB) ✅
+- [x] 实现线程控制块 `Thread` (TCB)：保存内核栈指针、`TrapFrame` 地址、线程状态（Ready, Running, Blocked, Exited）
+- [x] 实现进程控制块 `Process` (PCB)：关联独立的根虚拟空间 `VMAR`，管理私有 `HandleTable`（句柄表）
 
-### 5.1 图形增强
-### 5.2 网络支持
-### 5.3 声音支持
-### 5.4 持久化存储
+### 3.3 句柄表与权限控制 (Handle & Capability Table) ✅
+- [x] 引入 Zircon/seL4 风格的“一切皆对象，对象皆句柄”权限模型
+- [x] 设计 `HandleTable` (句柄表) 支持 Capabilities：通过 u32 索引抽象并管控 VMO、VMAR、Channel、Thread 等内核对象
+- [x] 校验 Syscall 的句柄参数及权限属性（读、写、映射、转移等），彻底隔离物理指针
 
----
-
-## 构建命令
-
-```bash
-# 构建 kernel (开发版)
-make build
-
-# 构建 kernel (发布版)
-make kernel-release
-
-# 运行 QEMU
-make run
-
-# 清理
-make clean
-
-# 检查编译
-make check
-```
+### 3.4 轮转调度器 (Scheduler) ✅
+- [x] 实现自适应优先级多级反馈队列（MLFQ）或时间片轮转（Round-Robin）调度
+- [x] 编写上下文切换汇编 `switch_to`（保存 `x19-x29` / `s0-s11` 等 callee-saved 寄存器以及 SP, LR）
+- [x] 打通硬件时钟中断，每次 Tick 定时触发 `schedule()` 强行剥夺当前运行线程并切换
 
 ---
 
-## 开发规则
+## 🟢 Phase 4: v0.4.0 Pangu - 高吞吐 IPC 与能力所有权转移 (已圆满完成) ✅
 
-1. **内核极简**: 只做调度 + IPC + 内存
-2. **GUI 不在内核**: compositor 是用户空间服务
-3. **HAL 抽象**: traits 定义在 hal/，实现放 kernel/src/arch/
-4. **syscall handler 拆分**: 禁止巨大 match
-5. **no_std**: 内核和 HAL 禁止 unsafe_code
+> 目标: 实现进程间高吞吐、零拷贝（或共享内存）的双向 Channel，并在消息传送中安全实现 Capabilities 所有权的跨进程流转。
+
+### 4.1 进程间通信通道 (Channel) ✅
+- [x] 设计 `Channel` 零分配同步会合（Synchronous Rendezvous）架构，扩展 TCB 传输上下文
+- [x] 实现静态先进先出（FIFO）双向等待队列 `send_waiters` 与 `recv_waiters`，规避动态内存分配
+- [x] 实现 `channel_write()` 与 `channel_read()`：支持直接从发送端线程内核地址向接收端线程直接进行单次内存拷贝的 Direct Handoff 机制
+- [x] 增加多线程会合 IPC 全仿真 Smoke 测试，在硬件时钟强占式多任务环境下完美实现 Blocked 挂起与 Ready 唤醒流转
+
+### 4.2 句柄/能力跨进程传递 (Handle Transfer via IPC) ✅
+- [x] 实现独立进程句柄表隔离（Process-specific Handle Table Isolation），使每个测试任务（`init` / `worker`）拥有真正隔离的专属句柄表，终结了全局共享句柄表的历史
+- [x] 扩展 `HandleTable` 的能力划扣与安全注入接口 `remove_with_rights` 和 `add`
+- [x] 实现零内存分配的跨进程句柄/能力所有权安全转移（Move Semantics）机制，当通道写会合时直接在不同的句柄表之间进行能力的扣除与注入
+- [x] 增加多进程隔离 VMO 能力流转 Smoke 仿真测试：发送方 A 创建 VMO 并写入数据后通过 Channel 安全流转给接收方 B。A 的 VMO 被成功注销（Revocation Proof 通关），B 安全注入获得并成功解包读写，多平台 100% 验证通过！
+
+### 4.3 异步完成端口 (Port) ✅
+- [x] 设计并实现 `Port` 内核对象，规避内核堆分配，创新采用 **Page-allocated 专用事件环形缓冲区** 与 **TCB 完成包槽位（Thread.port_packet_slot）** 的混合设计，使 `Port` 对象极速缩小到 32 字节，完美消除内存腐蚀和爆栈风险！
+- [x] 实现 `Port::wait` 和 `Port::queue` 高性能多路复用会合算法
+- [x] 增加多路异步事件多任务 Smoke 仿真：服务器进程 A 无事件在 Port 上被动阻塞，事件发生方 B 异步投递一个 PortPacket，直接实现零分配直弹唤醒，多平台 100% 联调通过！
+
+---
+
+## 🟡 Phase 5: v0.5.0 Pangu - 统一 OHC/std 工具链生态与用户态装载 (推进中)
+
+> 目标: 真正打通用户空间标准 std 桥接，构建基于多段 OHC 格式的高效装载器 loader、系统根服务 init、虚拟文件系统 vfs 与驱动管理器 devmgr。
+
+### 5.1 通用多段 OHC 打包工具 (`ohc-tool` 演进) ✅
+- [x] 扩展 `ohc-tool`：支持解析 Rust/LLVM 链接生成的 ELF Program Headers，提取 `.text`、`.rodata`、`.data` 等段
+- [x] 升级打包协议：构造多段描述符头部，打包为精简、高安全性、防篡改的 Multi-Segment 通用 `.ohc` 胶囊镜像，剥除冗余 debug 符号表
+
+### 5.2 目标三元组与标准 `std` 动态重译编译 ✅
+- [x] 创建 `std/targets/aarch64-unknown-capsule.json` 与 `riscv64-unknown-capsule.json` 目标配置文件，激活 `"target-family": "unix"` 与 lp64 编译对齐
+- [x] 在 `hnx-libc` (`userspace/libc`) 中用 `#[no_mangle] pub extern "C"` 完整封装导出 UNIX C-ABI 核心符号（如 `write`、`read`、`nanosleep`、`exit`），桥接劫持 Rust 官方标准库底层系统依赖
+- [x] 配置 `.cargo/config.toml` 中 unstable `build-std` 特性，令上层应用程序（如 `shell`、`init`）能够直接调用 `use std::...` 高层接口编译运行
+
+### 5.3 专用 OHC 加载器 (loader) ✅
+- [x] 实现 `loader` 常驻系统服务：在用户空间直接解析多段 `.ohc` 头部，彻底移除对复杂 ELF 的解析依赖
+- [x] 加载器行为实现：自动为 `.ohc` 中定义的各段分别申请 `VMO`，并按照描述符的虚拟地址和权限标志进行页对齐映射（map）至新进程的 `VMAR`，分配用户态堆栈并完美执行 privilege drop 特权级安全下降
+
+### 5.4 驱动管理器与外设沙盒化 (devmgr & PL011)
+- [ ] 彻底移除内核启动后的硬编码外设驱动，将串口驱动移动至用户态独立进程
+- [ ] `devmgr` (设备管理器) 运行时解析 DTB 设备树，为 PL011 启动专属的用户态驱动进程
+- [ ] 通过特权句柄映射 Device MMIO VMO 到 PL011 进程的 VMAR，直接操控外设寄存器，打通用户态输入输出
+
+---
+
+## 🟣 Phase 6 至 Phase 10 (后续路线图)
+- **Phase 6: v0.6.0 POSIX 兼容层** (标准 Syscall 映射、信号、Socket、管道)
+- **Phase 7: v0.7.0 文件系统服务** (VFS 双向 Channel 服务，实现 ramfs、FAT16/32 文件系统常驻服务)
+- **Phase 8: v0.8.0 网络栈服务** (TCP/IP 协议栈用户态服务，网卡驱动进程)
+- **Phase 9: v0.9.0 所有用户态服务集成** (Shell 控制台 + init 守护系统)
+- **Phase 10: v1.0.0 完整 capsule-os.img 制作** (基于 OrbisOS GUI 的像素流 VMO 零拷贝共享显示服务器整合)

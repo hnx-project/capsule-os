@@ -1,127 +1,113 @@
-# Capsule OS - Agent Instructions
+# CapsuleOS - Agent Instructions
 
-## Build Commands
+## 项目概述
 
-```bash
-# Build kernel (dev)
-make build
+**CapsuleOS** 是一个从零构建的、基于微内核架构的现代化类 Unix 操作系统，代号 **Pangu**（开天辟地）。
+- 内核: HNX 微内核 (hnxcore.ohc)
+- 架构: `aarch64-unknown-none` / `riscv64imac-unknown-none-elf` (多架构支持，软浮点 ABI 对齐)
+- 用户态目标三元组: `aarch64-unknown-capsule` / `riscv64-unknown-capsule` (动态编译 Rust 标准库 `std`)
+- 语言: Rust only (no_std 裸机内核 + std 支持用户空间)
 
-# Build kernel (release) + link ELF
-make kernel-release
+## 二进制格式规范
 
-# Run in QEMU
-make run
+### 1. 通用多段 `.ohc` 格式 (Multi-Segment OHC Specification)
+CapsuleOS 抛弃了用户态直接装载复杂、冗余 ELF 格式的传统做法，采用完全自研、极致轻量的通用 **OHC 胶囊格式**（用于内核镜像、用户态独立程序与共享库）。
 
-# Check compilation
-make check
-
-# Clean build artifacts
-make clean
-
-# Manual build
-cargo build --target aarch64-unknown-none -p kernel
-rust-lld -flavor gnu -T kernel/kernel.ld build/target/aarch64-unknown-none/release/libkernel.a -o kernel.elf
+```
++------------------------------------+
+|  Magic (4B)                        |  0x4F484300 ("OHC\0")
++------------------------------------+
+|  Version (2B)                      |  0x0001
++------------------------------------+
+|  Entry (8B)                        |  程序入口点虚拟地址 (Entry Point Virtual Address)
++------------------------------------+
+|  Segment Count (2B)                |  物理段描述符数量 (如 .text, .rodata, .data/.bss)
++------------------------------------+
+|  Flags (2B)                        |  属性标志：0=内核镜像, 1=用户态独立进程, 2=动态共享库 OHLIB
++------------------------------------+
+|  Size (4B)                         |  Payload 实际数据大小 (不含 Header 及段描述符)
++------------------------------------+
+|  Checksum (4B)                     |  CRC32 校验和 (仅对 Payload 计算)
++------------------------------------+
+|  Segment Descriptors               |  段描述数组 [Segment Descriptor; Segment Count]
+|  (每个描述符 24 字节)                |  ├─ VirtAddr (8B): 虚拟地址映射起点 (如 0x1000)
+|                                    |  ├─ FileOffset (8B): 对应 Payload 数据区偏移量 (如 120)
+|                                    |  ├─ Size (4B): 实际数据大小
+|                                    |  └─ Flags (4B): 映射权限位 (1=R, 2=W, 4=X)
++------------------------------------+
+|  Payload Data                      |  物理存储的代码段与数据段载荷
++------------------------------------+
 ```
 
-## Target Triple
+### 2. 启动与装载流程
+```
+[ 物理世界：裸机启动阶段 ]
+QEMU (-kernel capsule-bootloader)
+    ↓
+capsule-bootloader (子模块, 解析 OHC 头部 -> 校验 CRC32 -> 拷贝扁平 Payload 至 entry)
+    ↓
+hnxcore.ohc (内核运行, entry = 0x40080000 on aarch64 / 0x80080000 on riscv64)
+    ↓
+[ 虚拟世界：开启 MMU 4级页表翻译 ]
+kernel_main(dtb_ptr) (FDT 驱动自适应匹配绑定 -> 建立 VMAR / VMO 地址管理体系)
+    ↓
+[ 用户空间：系统服务与应用进程加载 ]
+loader (用户态 ELF ➔ 多段 OHC 转换服务 ➔ 解析 OHC 多段头 ➔ 动态创建多段 VMO 并映射入新进程 VMAR ➔ 调度执行)
+```
 
-- Kernel: `aarch64-unknown-none` (bare metal, no_std)
-- Userspace: native host target for development, `aarch64-unknown-none` for final
+## 🛠️ 工具链与 Rust `std` 桥接原理
 
-## Workspace Structure
+为了令上层应用程序可以直接无缝使用标准的 Rust 官方 `std`（如 `use std::fs` / `println!`），CapsuleOS 采用 C-ABI 拦截链接技术：
+
+1. **目标配置文件**：项目在 `std/targets/` 目录下维护自定义目标描述文件 `aarch64-unknown-capsule.json` 与 `riscv64-unknown-capsule.json`，其中激活 `"families": ["unix"]`，从而触发标准库 `std::sys::unix` 的代码路径。
+2. **符号导出拦截 (`hnx-libc`)**：用户态底层系统库 `hnx-libc` 通过 `#[no_mangle] pub extern "C"` 导出 UNIX 兼容标准符号（如 `write`、`read`、`open`、`exit`）。
+3. **Linker 物理合并**：使用 `-Z build-std` 动态编译 Rust 官方 `std` 时，链接器 `rust-lld` 自动将 `std` 内部未实现的 `extern "C" fn write` 符号强制绑定到 `hnx-libc` 暴露的接口上。
+4. **OHC 打包转换**：链接输出的标准 ELF 文件，通过 `ohc-tool` 解析其 Program Headers，自动剥离冗余 debug 符号并重构打包为精简的 `.ohc` 胶囊，注入目标存储区间。
+
+## 📁 Workspace 物理结构
 
 ```
 capsule-os/
-├── hal/                    # Hardware Abstraction Layer (no_std)
-│   └── src/               # Traits only, no implementations
-├── shared/                 # Shared types (no_std)
-│   └── src/
-│       ├── status.rs       # Status/Result types
-│       ├── types.rs        # HandleValue, ObjectType
-│       ├── ipc.rs          # Message types
-│       └── boot.rs         # BootInfo
-├── kernel/                 # Microkernel (no_std)
-│   ├── kernel.ld          # Linker script
-│   └── src/
-│       ├── arch/           # Arch implementations (aarch64/, x86_64/)
-│       ├── task/           # Scheduler, Thread, Process
-│       ├── mm/             # VMO, VMAR, physical memory
-│       ├── ipc/            # Channel, Port
-│       ├── object/          # Handle, HandleTable
-│       ├── syscall/         # Syscall dispatch
-│       └── kcore/           # Kernel core utilities
-├── userspace/              # User space programs
-│   ├── libc/               # Syscall wrappers
-│   ├── services/           # init, vfs, loader
-│   └── programs/          # shell
-└── gui/                    # Desktop environment
-    ├── compositor/         # Window compositor (stub)
-    ├── renderer/           # 2D rendering (stub)
-    └── client/            # GUI client library (stub)
+├── .cargo/               # Cargo 别名与编译器 `-Z build-std` 联合配置
+├── bootloader/           # 📂 (子模块) capsule-bootloader 引导层
+├── kernel/               # 📂 (子模块) hnx-core 纯净微内核
+│   ├── linker/           # 架构链接脚本 (kernel_aarch64.ld / kernel_riscv64.ld)
+│   └── src/              # 内核核心（arch 架构映射, mm 内存分配, drivers 外设）
+├── userspace/            # 📂 用户空间整个生态
+│   ├── libc/             # hnx-libc 运行时底座与标准 C-ABI 符号劫持实现
+│   ├── services/         # 常驻基础服务进程 (init 根进程, loader 装载器, vfs 虚拟文件系统)
+│   └── programs/         # 用户态普通程序 (shell 控制台)
+├── std/                  # 📂 工具链标准目标文件存放区
+│   └── targets/          # *.json 目标三元组描述文件
+└── tools/                # 📂 研发工具
+    └── xtask/            # 纯 Rust 一键式交叉编译、ELF ➔ OHC 打包转换、QEMU 启动引擎
 ```
 
-## Key Conventions
-
-### HAL Design
-- Traits defined in `hal/`, implementations in `kernel/src/arch/<arch>/`
-- Never implement traits in `hal/` crate itself
-
-### No_std Crates
-- `hal/`, `shared/`, `kernel/` are all `#![no_std]`
-- Userspace binaries are also `#![no_std]` with `_start` entry point
-- No `std`, no `alloc` (except where explicitly needed)
-
-### Kernel Entry Point
-- `_start()` in `kernel/src/lib.rs`
-- Panic handler required: `#[panic_handler] fn panic(info: &PanicInfo) -> !`
-
-### Status/Error Handling
-- `shared::status::Status` enum with error codes
-- `shared::status::Result<T> = core::result::Result<T, Status>`
-
-## Development Status
-
-### Phase 0 - Complete ✅
-- Project skeleton created
-- HAL traits defined
-- Kernel compiles to libkernel.a
-- Linker script created
-- Makefile with build commands
-
-### Phase 1 - In Progress 🔄
-- AArch64 boot code (partial)
-- UART console working
-- QEMU testing available
-
-## QEMU Testing
+## 编译运行快捷指令
 
 ```bash
-# Install QEMU (if needed)
-brew install qemu
+# 1. 编译并以 OHC 模式在 QEMU 运行 AArch64 (默认)
+cargo run-ohc
 
-# Build and run
-make kernel-release
-make run
-
-# QEMU command (manual)
-qemu-system-aarch64 -machine virt -cpu cortex-a57 -nographic -kernel kernel.elf
+# 2. 编译并以 OHC 模式在 QEMU 运行 RISC-V 64 (Soft-Float)
+cargo run-riscv
 ```
 
-## Known Issues
+## 关键约定与安全
 
-- Userspace binaries need linker scripts for bare metal
-- GUI components are stubs
-- QEMU serial output needs verification
+- **No_std 内核 vs Std 用户态**：内核必须是纯净无 `std` 的裸机代码；用户空间 App 可以自由调用标准库，不加 `#[no_std]` 限制。
+- **句柄拦截**：所有的系统调用传参都必须通过 `Handle` 句柄间接索引，任何物理地址指针均不得从用户态直接穿透至内核空间。
+- **驱动彻底沙盒化**：外设驱动除极早期串口字符打印外，其余驱动均运行在用户态 `devmgr` 服务控制的独立进程内。
 
-## Verification Commands
+## 验证与检查命令
 
 ```bash
-# Check kernel compiles (no linking needed)
+# 1. 检查整个 workspace 的健康状况
+cargo check --workspace
+
+# 2. 检查 AArch64 内核编译
 cargo check --target aarch64-unknown-none -p kernel
 
-# Build kernel (produces libkernel.a)
-cargo build --target aarch64-unknown-none -p kernel --release
-
-# Full workspace check
-cargo check --workspace
+# 3. 检查 RISC-V 64 内核编译
+cargo check --target riscv64imac-unknown-none-elf -p kernel
 ```
