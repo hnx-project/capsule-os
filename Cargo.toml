@@ -1,9 +1,14 @@
+[workspace.package]
+version = "0.5.1-develop"
+edition = "2021"
+
 [workspace]
 members = [
     "bootloader",
     "tools/xtask",
     # userspace | capsuleOS
-    "userspace/libc",
+    "userspace/hnxlibc",
+    "userspace/hnxstd",
     "userspace/services/vfs",
     "userspace/services/loader",
     "userspace/services/init",

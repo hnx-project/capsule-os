@@ -1,8 +1,8 @@
 [submodule "capsule-bootloader"]
 	path = bootloader
 	url = git@gitcode.com:hnx-project/capsule-bootloader.git
-	branch = develop
+	branch = develop-pangu
 [submodule "hnx-core"]
 	path = kernel
 	url = git@gitcode.com:hnx-project/hnx-core.git
-	branch = develop
+	branch = develop-pangu

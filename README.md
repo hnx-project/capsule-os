@@ -1,17 +1,8 @@
 # CapsuleOS
 
-```text
-   ______                     _       ____  _____
-  / ____/___ _____  _____  __| |     / __ \/ ___/
- / /   / __ `/ __ \/ ___/ / _  |    / / / /\__ \ 
-/ /___/ /_/ / /_/ (__  ) / /_| |   / /_/ /___/ / 
-\____/\__,_/ .___/____/  \____|    \____//____/  
-          /_/                                    
-```
-
 > **CapsuleOS** 是一个从零开始构建的、基于微内核架构的现代类 Unix 操作系统，代号 **Pangu** (开天辟地)。
 >
-> 项目采用先进的**“多仓库级联子模块”**工程结构，将核心微内核、基础系统服务、与商业版图形扩展完全隔离解耦。
+> 项目采用先进的**"多仓库级联子模块"**工程结构，将核心微内核、基础系统服务、与商业版图形扩展完全隔离解耦。
 
 ---
 
@@ -19,7 +10,7 @@
 
 - **双星并轨架构支持**：支持 `aarch64-unknown-none` 与 `riscv64imac-unknown-none-elf` (软浮点 ABI) 裸机双架构，运行时自适应启动。
 - **自研通用多段 OHC 胶囊格式**：运行期完全与 GNU/ELF 体系物理脱钩，通过自研 Multi-Segment OHC，将应用程序与共享库剥离冗余 debug 信息打包封装。新进程装载由用户态 `loader` 解析 OHC Segment 描述头，秒级高速映射 `VMO` 入新进程的 `VMAR` 虚拟空间。
-- **标准 Rust `std` 桥接支持**：基于自定义 `unknown-capsule` 目标三元组，通过 C-ABI（`hnx-libc` 拦截层）物理解析绑定 Rust 官方标准库底层的系统依赖，允许上层应用程序不加 `#[no_std]` 限制直接调用 Rust `std` 标准库高层 API 运作。
+- **自研 hnxstd 标准库**：基于自定义 `unknown-capsule` 目标三元组，通过 `hnxlibc` 提供核心系统调用封装，`hnxstd` 实现 `no_std` 环境下的基础数据结构与 I/O 接口。
 - **现代化固件移交**：完全兼容类 Unix 标准固件 ABI（FDT 物理地址透传），通过 `bootloader`（固件Shim层）平滑加载运行。
 - **动态设备树发现 (FDT Binding)**：内核动态解析 DTB 设备树的 `compatible` 属性，运行时动态实例化并注册外设驱动（如 PL011 与 NS16550 串口），实现与具体开发板平台的完全解耦。
 - **零拷贝与延迟页分配**：依靠基于物理页帧管理器的虚拟内存管理（VMO 与 VMAR 机制），提供精细的页级缺页加载与写时复制（CoW）。
@@ -65,7 +56,7 @@ rustup target add riscv64imac-unknown-none-elf
 ### 2. AArch64 (ARM 64-bit) 平台编译运行 (默认)
 ```bash
 # 一键编译、打包 OHC 并启动 QEMU 引导
-cargo run-ohc
+cargo xtask run --arch aarch64
 ```
 **期待冷启动日志**：
 ```text
@@ -90,7 +81,7 @@ OK
 ### 3. RISC-V 64 (Soft-Float) 平台编译运行
 ```bash
 # 一键编译、打包 OHC 并启动 QEMU 引导
-cargo run-riscv
+cargo xtask run --arch riscv64
 ```
 **期待冷启动日志**：
 ```text
@@ -116,30 +107,4 @@ OK
 
 ## 📈 生态开发演进计划 (Roadmap)
 
-### [x] Phase 1: v0.1.0 Pangu - 可启动内核与引导对接 ✅
-- [x] 开发 `ohc-tool` 完成 `.ohc` 二进制头部和打包功能
-- [x] 开发 `capsule-bootloader` 完成多核屏蔽与 FDT 指针透传
-- [x] 对齐 C ABI 接口，实现动态栈与 BSS 分配，完成 PL011/NS16550 字符显示
-
-### [x] Phase 2: v0.2.0 Pangu - 内存管理与虚实页面映射 ✅
-- [x] **Phase 2.1**: 通过 FDT 动态定位 RAM 起始地址和 UART MMIO 地址
-- [x] **Phase 2.2**: 物理页帧管理器就绪（隐式页面空闲链表，0 字节元数据开销，O(1) 效率）
-- [x] **Phase 2.3**: MMU 4级页表与虚实页面映射、开启 AArch64/RISC-V 64 恒等与高半核翻译
-- [x] **Phase 2.4**: 虚拟地址空间管理器（VMO 与 VMAR 机制实现，页表映射，Shatter 细化，跨架构验证）
-
-### [ ] Phase 3: v0.3.0 Pangu - 多任务调度与中断管理
-- [ ] 实现中断 Trap 寄存器上下文保存/恢复及 GIC/PLIC 中断分发
-- [ ] 实现内核级 `HandleTable` (句柄表) 支持 Capabilities
-- [ ] 实现 Ready, Running, Blocked 多状态线程（Thread）与进程（Process）控制块
-- [ ] 实现多核自适应时钟中断轮转（Round-Robin）调度算法
-
-### [ ] Phase 4: v0.4.0 Pangu - 高吞吐 IPC 与能力所有权转移
-- [ ] 实现 Zircon 风格的 IPC 双端 `Channel` 通道
-- [ ] 实现消息中携带 Handles 功能，实现内核级的能力所有权跨进程转移
-- [ ] 实现 `Port` 完成端口机制，支持多路复用异步事件等待
-
-### [ ] Phase 5: v0.5.0 Pangu - 统一 OHC/std 工具链生态与用户态装载
-- [ ] 升级并扩展 `ohc-tool`：支持解析 standard ELF 的 Program Headers（程序头表），提取各段虚拟地址与 RX/RW/RO 属性，打包生成带多段描述符的通用 `.ohc` 格式
-- [ ] 创建 `std/targets/` 架构级 Target JSON，通过 `hnx-libc` 符号导出拦截并重新动态编译官方标准库 `std`
-- [ ] 升级 `loader` 专用服务：完全废弃解析 ELF，使其专门解析多段 `.ohc` 头部，创建 VMO 并快速映射至进程的 VMAR 空间，装载启动
-- [ ] 实现 `init` (根服务进程)、`vfs` (虚拟文件系统服务) 与 `devmgr` (设备管理器) 的用户态集成
+@Include @TODO.md

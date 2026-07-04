@@ -5,8 +5,8 @@
 **CapsuleOS** 是一个从零构建的、基于微内核架构的现代化类 Unix 操作系统，代号 **Pangu**（开天辟地）。
 - 内核: HNX 微内核 (hnxcore.ohc)
 - 架构: `aarch64-unknown-none` / `riscv64imac-unknown-none-elf` (多架构支持，软浮点 ABI 对齐)
-- 用户态目标三元组: `aarch64-unknown-capsule` / `riscv64-unknown-capsule` (动态编译 Rust 标准库 `std`)
-- 语言: Rust only (no_std 裸机内核 + std 支持用户空间)
+- 用户态目标三元组: `aarch64-unknown-capsule` / `riscv64-unknown-capsule`
+- 语言: Rust only (no_std 裸机内核 + hnxstd 用户空间)
 
 ## 二进制格式规范
 
@@ -55,13 +55,13 @@ kernel_main(dtb_ptr) (FDT 驱动自适应匹配绑定 -> 建立 VMAR / VMO 地�
 loader (用户态 ELF ➔ 多段 OHC 转换服务 ➔ 解析 OHC 多段头 ➔ 动态创建多段 VMO 并映射入新进程 VMAR ➔ 调度执行)
 ```
 
-## 🛠️ 工具链与 Rust `std` 桥接原理
+## 🛠️ 工具链与 hnxstd 桥接原理
 
-为了令上层应用程序可以直接无缝使用标准的 Rust 官方 `std`（如 `use std::fs` / `println!`），CapsuleOS 采用 C-ABI 拦截链接技术：
+CapsuleOS 采用自研 `hnxstd` 标准库，在 `no_std` 环境下提供核心数据结构与 I/O 接口：
 
-1. **目标配置文件**：项目在 `std/targets/` 目录下维护自定义目标描述文件 `aarch64-unknown-capsule.json` 与 `riscv64-unknown-capsule.json`，其中激活 `"families": ["unix"]`，从而触发标准库 `std::sys::unix` 的代码路径。
-2. **符号导出拦截 (`hnx-libc`)**：用户态底层系统库 `hnx-libc` 通过 `#[no_mangle] pub extern "C"` 导出 UNIX 兼容标准符号（如 `write`、`read`、`open`、`exit`）。
-3. **Linker 物理合并**：使用 `-Z build-std` 动态编译 Rust 官方 `std` 时，链接器 `rust-lld` 自动将 `std` 内部未实现的 `extern "C" fn write` 符号强制绑定到 `hnx-libc` 暴露的接口上。
+1. **目标配置文件**：项目在 `std/targets/` 目录下维护自定义目标描述文件 `aarch64-unknown-capsule.json` 与 `riscv64-unknown-capsule.json`，`os = "none"`, `env = "capsule"`。
+2. **核心系统调用封装 (`hnxlibc`)**：`userspace/hnxlibc` 通过 `#[no_mangle] pub extern "C"` 导出 UNIX 兼容标准符号（如 `write`、`read`、`open`、`exit`）。
+3. **自研标准库 (`hnxstd`)**：`userspace/hnxstd` 提供 `Vec`、`String`、`println` 等基础接口，构建于 `hnxlibc` 之上。
 4. **OHC 打包转换**：链接输出的标准 ELF 文件，通过 `ohc-tool` 解析其 Program Headers，自动剥离冗余 debug 符号并重构打包为精简的 `.ohc` 胶囊，注入目标存储区间。
 
 ## 📁 Workspace 物理结构
@@ -74,7 +74,8 @@ capsule-os/
 │   ├── linker/           # 架构链接脚本 (kernel_aarch64.ld / kernel_riscv64.ld)
 │   └── src/              # 内核核心（arch 架构映射, mm 内存分配, drivers 外设）
 ├── userspace/            # 📂 用户空间整个生态
-│   ├── libc/             # hnx-libc 运行时底座与标准 C-ABI 符号劫持实现
+│   ├── hnxlibc/          # hnxlibc 运行时底座与标准 C-ABI 符号劫持实现
+│   ├── hnxstd/           # hnxstd 自研标准库 (Vec, String, println 等)
 │   ├── services/         # 常驻基础服务进程 (init 根进程, loader 装载器, vfs 虚拟文件系统)
 │   └── programs/         # 用户态普通程序 (shell 控制台)
 ├── std/                  # 📂 工具链标准目标文件存放区
@@ -86,16 +87,22 @@ capsule-os/
 ## 编译运行快捷指令
 
 ```bash
-# 1. 编译并以 OHC 模式在 QEMU 运行 AArch64 (默认)
-cargo run-ohc
+# 1. 编译并以 OHC 模式在 QEMU 运行 AArch64
+cargo xtask run --arch aarch64
 
 # 2. 编译并以 OHC 模式在 QEMU 运行 RISC-V 64 (Soft-Float)
-cargo run-riscv
+cargo xtask run --arch riscv64
+
+# 3. 仅编译不运行
+cargo xtask build --arch aarch64
+
+# 4. 检查工具链
+cargo xtask check-toolchain --expected-rust 1.96.1
 ```
 
 ## 关键约定与安全
 
-- **No_std 内核 vs Std 用户态**：内核必须是纯净无 `std` 的裸机代码；用户空间 App 可以自由调用标准库，不加 `#[no_std]` 限制。
+- **No_std 内核 vs hnxstd 用户态**：内核必须是纯净无 `std` 的裸机代码；用户空间 App 使用 `hnxstd` 自研标准库。
 - **句柄拦截**：所有的系统调用传参都必须通过 `Handle` 句柄间接索引，任何物理地址指针均不得从用户态直接穿透至内核空间。
 - **驱动彻底沙盒化**：外设驱动除极早期串口字符打印外，其余驱动均运行在用户态 `devmgr` 服务控制的独立进程内。
 

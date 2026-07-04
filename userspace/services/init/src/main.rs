@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-extern crate hnx_libc;
+extern crate hnxlibc;
 
 #[no_mangle]
 extern "C" fn _start() {

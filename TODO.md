@@ -1,7 +1,7 @@
 # CapsuleOS 开发计划 (与时俱进整理版)
 
 > 目标: 快速出成果，结合 capsule-bootloader 现代特性，先通后精。
-> 构建与运行采用纯 Rust 极简原生体系：`cargo run-ohc` 与 `cargo run-riscv`。
+> 构建与运行采用纯 Rust 极简原生体系：`cargo xtask build` 与 `cargo xtask run`。
 
 ---
 
@@ -27,7 +27,7 @@
 ### 1.4 控制台驱动重构 ✅
 - [x] `arch/aarch64/mod.rs`: 实现纯 Rust 的 PL011 早期寄存器级波特率等参数初始化（`early_init()`）
 - [x] `lib.rs`: 移除硬编码的 inline 汇编字符打印，使用统一 of `arch::console_putchar` 输出标准 boot 消息
-- [x] `cargo run-ohc`: 完整联调测试，Bootloader 正确加载解包并平滑跳转至 CapsuleOS 打印成功
+- [x] `cargo xtask run`: 完整联调测试，Bootloader 正确加载解包并平滑跳转至 CapsuleOS 打印成功
 
 ---
 
@@ -50,7 +50,7 @@
   - 高半核映射 `KERNEL_OFFSET = 0xFFFF_8000_0000_0000`（避开与恒等 1GB Block 的 L1 index 冲突）
   - PL011 MMIO 区间走恒等映射 of Device 1GB Block
 - [x] 激活 MMU（配置 `SCTLR_EL1`，`TCR_EL1`，`MAIR_EL1` 和 `TTBRx_EL1` 寄存器并刷新 TLB；TLBI VMALLE1 + DSB SY + ISB）
-- [x] AArch64 `cargo run-ohc` 全链路验证通过：MMU 开启，虚拟地址运行通畅。
+- [x] AArch64 `cargo xtask run` 全链路验证通过：MMU 开启，虚拟地址运行通畅。
 - [x] RISC-V 64 SV39 路径实现（`kernel/src/arch/riscv64/mmu.rs`）：构建 2 MiB 恒等映射 + L1→L2→4 KiB UART Device 页表。为了对齐 soft-float ABI，统一采用 `riscv64imac-unknown-none-elf` 目标。
 
 ### 2.4 虚拟地址空间管理器 (VMAR & VMO) ✅
@@ -77,7 +77,7 @@
 - [x] 实现进程控制块 `Process` (PCB)：关联独立的根虚拟空间 `VMAR`，管理私有 `HandleTable`（句柄表）
 
 ### 3.3 句柄表与权限控制 (Handle & Capability Table) ✅
-- [x] 引入 Zircon/seL4 风格的“一切皆对象，对象皆句柄”权限模型
+- [x] 引入 Zircon/seL4 风格的"一切皆对象，对象皆句柄"权限模型
 - [x] 设计 `HandleTable` (句柄表) 支持 Capabilities：通过 u32 索引抽象并管控 VMO、VMAR、Channel、Thread 等内核对象
 - [x] 校验 Syscall 的句柄参数及权限属性（读、写、映射、转移等），彻底隔离物理指针
 
@@ -111,18 +111,19 @@
 
 ---
 
-## 🟡 Phase 5: v0.5.0 Pangu - 统一 OHC/std 工具链生态与用户态装载 (推进中)
+## 🟡 Phase 5: v0.5.0 Pangu - 统一 OHC/xtask 工具链生态与用户态装载 (推进中)
 
-> 目标: 真正打通用户空间标准 std 桥接，构建基于多段 OHC 格式的高效装载器 loader、系统根服务 init、虚拟文件系统 vfs 与驱动管理器 devmgr。
+> 目标: 真正打通用户空间 hnxstd 桥接，构建基于多段 OHC 格式的高效装载器 loader、系统根服务 init、虚拟文件系统 vfs 与驱动管理器 devmgr。
 
 ### 5.1 通用多段 OHC 打包工具 (`ohc-tool` 演进) ✅
 - [x] 扩展 `ohc-tool`：支持解析 Rust/LLVM 链接生成的 ELF Program Headers，提取 `.text`、`.rodata`、`.data` 等段
 - [x] 升级打包协议：构造多段描述符头部，打包为精简、高安全性、防篡改的 Multi-Segment 通用 `.ohc` 胶囊镜像，剥除冗余 debug 符号表
 
-### 5.2 目标三元组与标准 `std` 动态重译编译 ✅
-- [x] 创建 `std/targets/aarch64-unknown-capsule.json` 与 `riscv64-unknown-capsule.json` 目标配置文件，激活 `"target-family": "unix"` 与 lp64 编译对齐
-- [x] 在 `hnx-libc` (`userspace/libc`) 中用 `#[no_mangle] pub extern "C"` 完整封装导出 UNIX C-ABI 核心符号（如 `write`、`read`、`nanosleep`、`exit`），桥接劫持 Rust 官方标准库底层系统依赖
-- [x] 配置 `.cargo/config.toml` 中 unstable `build-std` 特性，令上层应用程序（如 `shell`、`init`）能够直接调用 `use std::...` 高层接口编译运行
+### 5.2 目标三元组与 hnxstd/xtask 工具链 ✅
+- [x] 创建 `std/targets/aarch64-unknown-capsule.json` 与 `riscv64-unknown-capsule.json` 目标配置文件，`os = "none"`, `env = "capsule"`
+- [x] 在 `hnxlibc` (`userspace/hnxlibc`) 中用 `#[no_mangle] pub extern "C"` 完整封装导出 UNIX C-ABI 核心符号（如 `write`、`read`、`nanosleep`、`exit`），桥接劫持 Rust 官方标准库底层系统依赖
+- [x] 实现 `hnxstd` (`userspace/hnxstd`) 自研标准库，提供 `Vec`、`String`、`println` 等基础接口
+- [x] 重构 `xtask` 为 clap 模块化架构，支持 `build`、`run`、`check-toolchain` 子命令，静默 cargo 输出
 
 ### 5.3 专用 OHC 加载器 (loader) ✅
 - [x] 实现 `loader` 常驻系统服务：在用户空间直接解析多段 `.ohc` 头部，彻底移除对复杂 ELF 的解析依赖

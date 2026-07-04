@@ -1,7 +1,7 @@
 [package]
-name = "hnx-libc"
-version = "0.1.0"
-edition = "2021"
+name = "hnxlibc"
+version.workspace = true
+edition.workspace = true
 
 [lib]
 crate-type = ["rlib"]
