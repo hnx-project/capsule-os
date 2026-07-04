@@ -8,11 +8,21 @@ const BOLD_GREEN: &str = "\x1b[1;32m";
 const BOLD_CYAN: &str = "\x1b[1;36m";
 const RESET: &str = "\x1b[0m";
 
+const USERCRATE_S: &[(&str, &str)] = &[
+    ("hnx-init", "init"),
+    ("hnx-devmgr", "devmgr"),
+    ("hnx-vfs", "vfs"),
+    ("hnx-loader", "loader"),
+];
+
 pub fn build(plat: &Platform) -> Result<(), String> {
     println!("{}    Building{} CapsuleOS Ecosystem ({})", BOLD_CYAN, RESET, plat.arch);
 
-    build_userspace_loader(plat)?;
-    pack_loader(plat)?;
+    for (crate_name, _out_name) in USERCRATE_S {
+        build_userspace_program(plat, crate_name)?;
+    }
+    pack_user_programs(plat)?;
+
     build_kernel(plat)?;
     link_kernel(plat)?;
     extract_kernel_raw(plat)?;
@@ -25,26 +35,31 @@ pub fn build(plat: &Platform) -> Result<(), String> {
     Ok(())
 }
 
-fn build_userspace_loader(plat: &Platform) -> Result<(), String> {
-    print!("{}  Building{} loader (EL0)...", BOLD_GREEN, RESET);
+fn build_userspace_program(plat: &Platform, crate_name: &str) -> Result<(), String> {
+    print!("{}  Building{} {} (EL0)...", BOLD_GREEN, RESET, crate_name);
     let userspace_target = format!("std/targets/{}-unknown-capsule.json", plat.arch);
     let result = run_silent(
         Command::new("cargo")
-            .args(["+nightly", "build", "--release", "-p", "hnx-loader", "--target", &userspace_target, "-Z", "build-std=core,alloc,panic_abort", "-Z", "json-target-spec"]),
-        || { println!("\r{}  Building{} loader (EL0)... Done", BOLD_GREEN, RESET); }
+            .args(["+nightly", "build", "--release", "-p", crate_name, "--target", &userspace_target, "-Z", "build-std=core,alloc,panic_abort", "-Z", "json-target-spec"]),
+        || { println!("\r{}  Building{} {} (EL0)... Done", BOLD_GREEN, RESET, crate_name); }
     );
-    if !result.success { Err("failed to build loader".to_string()) } else { Ok(()) }
+    if !result.success { Err(format!("failed to build {}", crate_name)) } else { Ok(()) }
 }
 
-fn pack_loader(plat: &Platform) -> Result<(), String> {
-    print!("{}  Packing{} loader.ohc...", BOLD_GREEN, RESET);
-    let loader_elf = format!("build/target/{}-unknown-capsule/release/loader", plat.arch);
-    let result = run_silent(
-        Command::new("cargo")
-            .args(["run", "--manifest-path", "kernel/Cargo.toml", "-p", "ohc-tool", "--", "pack", "--input", &loader_elf, "--output", "kernel/files/loader.ohc", "--entry", "65536"]),
-        || { println!("\r{}  Packing{} loader.ohc... Done", BOLD_GREEN, RESET); }
-    );
-    if !result.success { Err("failed to pack loader".to_string()) } else { Ok(()) }
+fn pack_user_programs(plat: &Platform) -> Result<(), String> {
+    for (crate_name, out_name) in USERCRATE_S {
+        print!("{}  Packing{} {}.ohc...", BOLD_GREEN, RESET, out_name);
+        let elf = format!("build/target/{}-unknown-capsule/release/{}", plat.arch, crate_name.replace("hnx-", ""));
+        let output = format!("kernel/files/{}.ohc", out_name);
+        let entry = if *out_name == "init" { "4096" } else { "65536" };
+        let result = run_silent(
+            Command::new("cargo")
+                .args(["run", "--manifest-path", "kernel/Cargo.toml", "-p", "ohc-tool", "--", "pack", "--input", &elf, "--output", &output, "--entry", entry]),
+            || { println!("\r{}  Packing{} {}.ohc... Done", BOLD_GREEN, RESET, out_name); }
+        );
+        if !result.success { return Err(format!("failed to pack {}", out_name)); }
+    }
+    Ok(())
 }
 
 fn build_kernel(plat: &Platform) -> Result<(), String> {
@@ -120,4 +135,7 @@ fn print_build_summary(plat: &Platform) {
     };
     print_size("hnxcore.ohc", "dist/kernel/hnxcore.ohc");
     print_size("capsule-bootloader.bin", &format!("build/target/{}/release/capsule-bootloader.bin", plat.rust_target));
+    for (_, out_name) in USERCRATE_S {
+        print_size(&format!("{}.ohc", out_name), &format!("kernel/files/{}.ohc", out_name));
+    }
 }

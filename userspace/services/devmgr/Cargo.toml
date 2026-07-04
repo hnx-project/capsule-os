@@ -1,0 +1,11 @@
+[package]
+name = "hnx-devmgr"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "devmgr"
+path = "src/main.rs"
+
+[dependencies]
+hnxlibc = { path = "../../hnxlibc" }

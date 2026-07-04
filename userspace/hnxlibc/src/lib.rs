@@ -4,6 +4,66 @@ pub mod syscalls;
 pub use syscalls::*;
 
 #[no_mangle]
+pub extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    unsafe {
+        let mut i = 0;
+        while i < n {
+            *dest.add(i) = *src.add(i);
+            i += 1;
+        }
+    }
+    dest
+}
+
+#[no_mangle]
+pub extern "C" fn memmove(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    unsafe {
+        if src < dest as *const u8 {
+            let mut i = n;
+            while i > 0 {
+                i -= 1;
+                *dest.add(i) = *src.add(i);
+            }
+        } else {
+            let mut i = 0;
+            while i < n {
+                *dest.add(i) = *src.add(i);
+                i += 1;
+            }
+        }
+    }
+    dest
+}
+
+#[no_mangle]
+pub extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
+    unsafe {
+        let mut i = 0;
+        while i < n {
+            let a = *s1.add(i);
+            let b = *s2.add(i);
+            if a != b {
+                return if a < b { -1 } else { 1 };
+            }
+            i += 1;
+        }
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn memset(s: *mut u8, c: i32, n: usize) -> *mut u8 {
+    unsafe {
+        let mut i = 0;
+        while i < n {
+            *s.add(i) = c as u8;
+            i += 1;
+        }
+    }
+    s
+}
+
+#[no_mangle]
 pub extern "C" fn putchar(c: u8) {
     let _ = write(1, &c as *const u8, 1);
 }
@@ -49,6 +109,20 @@ pub extern "C" fn nanosleep(_req: *const u8, _rem: *mut u8) -> i32 {
 #[no_mangle]
 pub extern "C" fn getpid() -> i32 {
     1
+}
+
+#[no_mangle]
+pub extern "C" fn exec(name: *const u8) -> i32 {
+    if name.is_null() { return -1; }
+    let mut len = 0;
+    unsafe {
+        while *name.add(len) != 0 { len += 1; }
+    }
+    let slice = unsafe { core::slice::from_raw_parts(name, len) };
+    match core::str::from_utf8(slice) {
+        Ok(s) => syscalls::exec(s),
+        Err(_) => -1,
+    }
 }
 
 #[panic_handler]

@@ -44,6 +44,7 @@ pub const SYSCALL_CHANNEL_CREATE: u32 = 10;
 pub const SYSCALL_CHANNEL_READ: u32 = 11;
 pub const SYSCALL_CHANNEL_WRITE: u32 = 12;
 pub const SYSCALL_VMO_CREATE: u32 = 30;
+pub const SYSCALL_EXEC: u32 = 110;
 
 pub fn exit(code: i32) -> ! {
     syscall!(SYSCALL_EXIT, code as usize, 0, 0, 0, 0, 0);
@@ -57,4 +58,9 @@ pub fn write_fd(fd: usize, ptr: usize, len: usize) -> usize {
 pub fn channel_create() -> Result<usize, Status> {
     let ret = syscall!(SYSCALL_CHANNEL_CREATE, 0, 0, 0, 0, 0, 0);
     if ret == 0 { Err(Status::from_raw(ret as i32)) } else { Ok(ret) }
+}
+
+pub fn exec(name: &str) -> i32 {
+    let name_len = name.len();
+    syscall!(SYSCALL_EXEC, name.as_ptr() as usize, name_len, 0, 0, 0, 0) as i32
 }
