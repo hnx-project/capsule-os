@@ -18,8 +18,7 @@ fn println(s: &str) {
 extern "C" fn _start() {
     println("init: starting...");
     println("init: about to exec");
+    println("init: exec devmgr handed off");
     hnxlibc::exec("devmgr");
-    println("init: exec returned: ");
-    println("init: entering idle loop");
     loop {}
 }
