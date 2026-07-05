@@ -72,7 +72,11 @@ pub extern "C" fn putchar(c: u8) {
 pub extern "C" fn getchar() -> Option<u8> {
     let mut c = 0u8;
     let n = read(0, &mut c as *mut u8, 1);
-    if n > 0 { Some(c) } else { None }
+    if n > 0 {
+        Some(c)
+    } else {
+        None
+    }
 }
 
 #[no_mangle]
@@ -110,19 +114,19 @@ pub extern "C" fn nanosleep(_req: *const u8, _rem: *mut u8) -> i32 {
 pub extern "C" fn getpid() -> i32 {
     1
 }
-
-#[no_mangle]
-pub extern "C" fn exec(name: *const u8) -> i32 {
-    if name.is_null() { return -1; }
-    let mut len = 0;
+fn print(s: &str) {
     unsafe {
-        while *name.add(len) != 0 { len += 1; }
+        self::write(1, s.as_ptr(), s.len());
     }
-    let slice = unsafe { core::slice::from_raw_parts(name, len) };
-    match core::str::from_utf8(slice) {
-        Ok(s) => syscalls::exec(s),
-        Err(_) => -1,
+}
+#[no_mangle]
+pub extern "C" fn exec(name: &str) -> i32 {
+    if name.is_empty() {
+        return -1;
     }
+
+    print(name);
+    syscalls::exec_impl(name) as i32
 }
 
 #[panic_handler]

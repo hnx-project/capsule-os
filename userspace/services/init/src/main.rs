@@ -16,7 +16,10 @@ fn println(s: &str) {
 
 #[no_mangle]
 extern "C" fn _start() {
-    println("init: CapsuleOS PID 1 starting...");
-    println("init: entering idle loop (exec test skipped)");
+    println("init: starting...");
+    println("init: about to exec");
+    hnxlibc::exec("devmgr");
+    println("init: exec returned: ");
+    println("init: entering idle loop");
     loop {}
 }

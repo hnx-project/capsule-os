@@ -57,10 +57,16 @@ pub fn write_fd(fd: usize, ptr: usize, len: usize) -> usize {
 
 pub fn channel_create() -> Result<usize, Status> {
     let ret = syscall!(SYSCALL_CHANNEL_CREATE, 0, 0, 0, 0, 0, 0);
-    if ret == 0 { Err(Status::from_raw(ret as i32)) } else { Ok(ret) }
+    if ret == 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret)
+    }
 }
 
-pub fn exec(name: &str) -> i32 {
-    let name_len = name.len();
-    syscall!(SYSCALL_EXEC, name.as_ptr() as usize, name_len, 0, 0, 0, 0) as i32
+pub fn exec_impl(name: &str) -> i32 {
+    let mut len = name.len();
+    let mut local_name = name.as_bytes();
+    let ptr = local_name.as_ptr();
+    syscall!(SYSCALL_EXEC, ptr as usize, len, 0, 0, 0, 0) as i32
 }
