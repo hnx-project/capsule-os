@@ -110,18 +110,18 @@
     ```
     *(注：系统会突破常规开发者只能目标 develop 的限制，自动将 GitCode 合并请求的目标锁定并重定向为 `main` 分支。)*
 
-* **一键打标并发布版本 (Tag & Push)**：
-  - 只能在 `main` 或 `release/*` 分支上进行发布打标。运行：
+* **一键打包发布版本 (Release & Upload)**：
+  - 只能在 `main` 或 `release/*` 分支上进行发布。运行：
     ```bash
-    xtask repo tag <VERSION>  # 例如：xtask repo tag v0.6.0
+    xtask repo release <VERSION>  # 例如：xtask repo release v0.6.0
     ```
-    *(注：系统会首先执行 SemVer 强正则校验，校验通过后强制在双物理架构上进行 Release 模式完整类型编译，确保无瑕疵后自动在本地创建 annotated tag，并安全推送至官方主仓库。)*
+    *(注：系统会首先强力运行双物理架构 Release 最终类型校验。通过后，自动在本地进行全平台 zip 打包并请求 GitCode API ➔ GitCode 平台在后台会自动、无阻碍地在主仓库上生成该 Tag，无需在本地执行任何 Tag 的推送尝试，彻底消灭受保护分支对 Tag 推送的拦截！)*
 
 ---
 
 ## 🛠️ 快速上手与运行联调
 
-我们在 `capsule-os` 根目录配置了一键式的纯 Rust `cargo xtask` 自动化构建引擎。只需在终端运行对应的 Cargo 快捷别名，系统将自动递归编译内核、打包 `.ohc` 格式内核包，并启动 QEMU 引导运行：
+我们在 `capsule-os` 根目录配置了一键式的纯 Rust `xtask` 自动化构建引擎。只需在终端运行对应的 `xtask os` 级联子命令，系统将自动递归编译内核、打包 `.ohc` 格式内核包，并启动 QEMU 引导运行：
 
 ### 1. 安装开发工具链
 ```bash
@@ -136,7 +136,7 @@ rustup target add riscv64imac-unknown-none-elf
 ### 2. AArch64 (ARM 64-bit) 平台编译运行 (默认)
 ```bash
 # 一键编译、打包 OHC 并启动 QEMU 引导
-cargo xtask run --arch aarch64
+xtask os run --arch aarch64
 ```
 **期待冷启动日志**：
 ```text
@@ -161,7 +161,7 @@ OK
 ### 3. RISC-V 64 (Soft-Float) 平台编译运行
 ```bash
 # 一键编译、打包 OHC 并启动 QEMU 引导
-cargo xtask run --arch riscv64
+xtask os run --arch riscv64
 ```
 **期待冷启动日志**：
 ```text

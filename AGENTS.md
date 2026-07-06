@@ -86,18 +86,20 @@ capsule-os/
 
 ## 编译运行快捷指令
 
+通过 `./install_xtask` 一键安装后，可直接在系统的任何位置运行 `xtask` 开发指令：
+
 ```bash
 # 1. 编译并以 OHC 模式在 QEMU 运行 AArch64
-cargo xtask run --arch aarch64
+xtask os run --arch aarch64
 
 # 2. 编译并以 OHC 模式在 QEMU 运行 RISC-V 64 (Soft-Float)
-cargo xtask run --arch riscv64
+xtask os run --arch riscv64
 
 # 3. 仅编译不运行
-cargo xtask build --arch aarch64
+xtask os build --arch aarch64
 
-# 4. 检查工具链
-cargo xtask check-toolchain --expected-rust 1.96.1
+# 4. 检查交叉编译环境
+xtask os check-env --expected-rust 1.96.1
 ```
 
 ## 关键约定与安全
@@ -151,7 +153,7 @@ cargo check --target riscv64imac-unknown-none-elf -p kernel
   ```bash
   xtask repo pr --release
   ```
-- **一键版本发布**：强制通过严苛的 SemVer 正则校验、对双平台进行 Release 模式最终验证、在本地自动打上 annotated tag 并推送：
+- **一键版本发布**：强力运行双物理平台交叉编译校验、自适应打包符合命名空间的 ZIP 固件包、自动向 GitCode API 创建 Release（并在远端上游主干**全自动打上对应的 SemVer 标签**）并挂载附件：
   ```bash
-  xtask repo tag <VERSION>  # 示例：xtask repo tag v0.6.0
+  xtask repo release <VERSION>  # 示例：xtask repo release v0.6.0
   ```

@@ -123,13 +123,18 @@
 - [x] 创建 `std/targets/aarch64-unknown-capsule.json` 与 `riscv64-unknown-capsule.json` 目标配置文件，`os = "none"`, `env = "capsule"`
 - [x] 在 `hnxlibc` (`userspace/hnxlibc`) 中用 `#[no_mangle] pub extern "C"` 完整封装导出 UNIX C-ABI 核心符号（如 `write`、`read`、`nanosleep`、`exit`），桥接劫持 Rust 官方标准库底层系统依赖
 - [x] 实现 `hnxstd` (`userspace/hnxstd`) 自研标准库，提供 `Vec`、`String`、`println` 等基础接口
-- [x] 重构 `xtask` 为 clap 模块化架构，支持 `build`、`run`、`check-toolchain` 子命令，静默 cargo 输出
-- [x] **`cargo xtask repo` GitCode 专属自动化提交系统**：
-  - [x] 实现 `setup-fork` 一键主仓库、内核及 bootloader 子模块 Fork 拓扑递归绑定
-  - [x] 本地提交（commit）安全网关：实现分支正则校验、静默双平台编译降噪、以及版本重复防遗忘更新拦截
-  - [x] 一键 `pr` 合并：自动化变基、一键 Squash 零碎 commit、自动请求 GitCode 跨仓库 API
-  - [x] 管理员特权通道：新增 `tag` 语义化打标与推送，支持 `--release` 指向 `main` 生产分支，豁免版本号递增拦截
-  - [x] 一键极速本地构建与安装脚本 `./install_xtask`
+- [x] **重构 `xtask` 为「双星并轨指令体系」（`xtask os` 研发与 `xtask repo` 协作管理）**，静默 cargo 输出并提供极致清爽降噪
+- [x] **`xtask os`（操作系统研发与模拟引导）**：
+  - [x] `xtask os build`：全自动进行高集成多架构交叉编译。
+  - [x] `xtask os run`：一键加载并运行引导 AArch64 / RISC-V 64 双平台 QEMU 模拟器。
+  - [x] `xtask os check-env`：本地工具链交叉编译环境极速检查与环境建议。
+- [x] **`xtask repo`（GitCode 专属自动化协作管理管家）**：
+  - [x] `repo setup-fork`：一键主仓库、内核及 bootloader 子模块 Fork 拓扑递归绑定。
+  - [x] `repo commit`：格式化自动验证、双平台静默编译降噪校验（零 warnings 过滤）、版本重复防遗忘拦截。
+  - [x] `repo pr`：强制 Rebase 变基对齐、一键 Squash 零碎提交、GitCode 组织关系与协作权限 API 智能查询、跨库自动发起开发 PR 流。
+  - [x] `repo release`：管理员专属发布指令。一键全架构压制、全自动 ZIP 打包（符合 codename 和日期规范）、API 一键创建 Release 自动远端打 SemVer 标签、Pure Rust Multipart 一键自动上传 ZIP 附件。
+  - [x] `repo pull`：一键本地 Dirty 工作树安全扫描、拉取上游、并递归指针强对齐子模块。
+  - [x] 一键极速本地构建与全局 PATH 安装脚本 `./install_xtask`。
 
 ### 5.3 专用 OHC 加载器 (loader) ✅
 - [x] 实现 `loader` 常驻系统服务：在用户空间直接解析多段 `.ohc` 头部，彻底移除对复杂 ELF 的解析依赖

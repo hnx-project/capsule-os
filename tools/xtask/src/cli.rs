@@ -10,22 +10,46 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    Build {
-        #[arg(long, default_value = "aarch64")]
-        arch: String,
-    },
-    Run {
-        #[arg(long, default_value = "aarch64")]
-        arch: String,
-    },
-    CheckToolchain {
-        #[arg(long)]
-        expected_rust: Option<String>,
-    },
-    #[command(about = "Repository workflow automation (setup-fork, commit, PR, sync)")]
+    #[command(
+        about = "Repository and collaboration workflow (Fork, Commit, PR, Sync, Pull, Release, Add)"
+    )]
     Repo {
         #[command(subcommand)]
         sub: RepoSubcommands,
+    },
+    #[command(about = "Operating System development and execution (Build, Run, Check Env)")]
+    Os {
+        #[command(subcommand)]
+        sub: OsSubcommands,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum OsSubcommands {
+    #[command(about = "Build CapsuleOS kernel, standard library, and userspace programs")]
+    Build {
+        #[arg(
+            long,
+            default_value = "aarch64",
+            help = "The target architecture (aarch64 / riscv64)"
+        )]
+        arch: String,
+    },
+    #[command(about = "Compile all architectures and launch CapsuleOS inside QEMU emulator")]
+    Run {
+        #[arg(
+            long,
+            default_value = "aarch64",
+            help = "The target architecture (aarch64 / riscv64)"
+        )]
+        arch: String,
+    },
+    #[command(
+        about = "Verify if the local environment and cross-compilation toolchain are properly configured"
+    )]
+    CheckEnv {
+        #[arg(long, help = "The expected Rust compiler version")]
+        expected_rust: Option<String>,
     },
 }
 
