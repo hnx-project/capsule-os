@@ -39,6 +39,86 @@
 
 ---
 
+## 👥 角色开发流程规范
+
+为保障 CapsuleOS 核心微内核的纯净与稳定，项目根据开发者的不同角色，定义了严苛的、高度自动化的工作流。所有的 Git 拓扑转换、代码提交、PR 合并请求均由自研的 `xtask` 接管。
+
+请首先在根目录下运行安装脚本，将 `xtask` 编译并安装至您的本地 PATH 中，然后根据您的角色开始开发：
+```bash
+./install_xtask
+```
+
+### 1️⃣ 普通贡献者流程 (Fork-Based Contributor)
+普通贡献者**禁止**直接向官方主仓库推送任何分支。所有的开发应在其个人的 Fork 仓库上进行，最终通过 `xtask` 向官方 `develop` 分支提交 Merge Request (PR)。
+
+```text
+[ 官方主仓库: hnx-project ] (只读，上游)
+       │ ▲ 4. 自动创建 MR (目标: develop)
+       │ │
+       ▼ │ [ xtask repo pr ]
+[ 本地工作区 ] ──────► [ 个人 Fork 仓库: 您的账号 ] (读写，origin)
+    1. 写代码         3. 自动 Squash & Push
+    2. xtask repo commit
+```
+
+* **第一步：一键配置 Fork 拓扑**
+  如果您刚刚 `git clone` 了主仓库并写了代码，一键将其无损转换为 Fork 模式：
+  ```bash
+  xtask repo setup-fork --username <您的GitCode用户名>
+  ```
+  *(注：该命令会自动将您的 origin 指向您的个人 Fork，将上游 hnx-project 指向 upstream，并全自动级联重定向 `kernel` 与 `bootloader` 子模块。)*
+
+* **第二步：规范化本地提交 (commit)**
+  ```bash
+  xtask repo commit
+  ```
+  *(注：系统会自动在本地运行 AArch64 / RISC-V 64 双平台静默编译与格式化校验网关。若本地有代码修改但版本号与上游重名，系统将强制拦截，保障版本唯一性。)*
+
+* **第三步：一键同步上游**
+  在开发前或合并后，一键同步上游最新的 `develop` 代码和子模块指针：
+  ```bash
+  xtask repo sync
+  ```
+
+* **第四步：一键 Squash & 跨仓库创建 MR**
+  ```bash
+  xtask repo pr
+  ```
+  *(注：系统会自动抓取 upstream 最新的 develop 分支并执行强制 rebase 解决冲突。随后，自动软重置（soft-reset）并**将您的所有零散 commits 压缩（Squash）为单一干净的规范提交**，推送至您的 Fork 仓库，最后自动向 hnx-project 的 `develop` 分支发起合并请求。)*
+
+---
+
+### 2️⃣ 核心管理员流程 (Maintainer / Administrator)
+核心管理员（拥有主仓库写入权限）主要负责日常主仓库分支的整理、PR 评审，以及向生产分支 `main` 发布版本。
+
+```text
+[ 官方主仓库: hnx-project ]
+  ├─ develop (日常集成)
+  │      │ ▲
+  │      ▼ │ [ xtask repo pr --release ]
+  └─ main (生产发布) <─── [ xtask repo tag <version> ]
+```
+
+* **本地开发与豁免通道**：
+  - 管理员的本地 `origin` 远端直接指向官方主仓库（`hnx-project/capsule-os`）。
+  - 在运行 `xtask repo commit` 时，系统会自动探测并判断您为管理员，**自动豁免“版本号不得与上游重名”的拦截**，允许您自由地进行发布前的版本微调和维护提交。
+
+* **发布版合并请求 (Release MR)**：
+  - 当管理员在 `release/*` 分支上准备将积累的特性合并入生产 `main` 分支时，运行：
+    ```bash
+    xtask repo pr --release
+    ```
+    *(注：系统会突破常规开发者只能目标 develop 的限制，自动将 GitCode 合并请求的目标锁定并重定向为 `main` 分支。)*
+
+* **一键打标并发布版本 (Tag & Push)**：
+  - 只能在 `main` 或 `release/*` 分支上进行发布打标。运行：
+    ```bash
+    xtask repo tag <VERSION>  # 例如：xtask repo tag v0.6.0
+    ```
+    *(注：系统会首先执行 SemVer 强正则校验，校验通过后强制在双物理架构上进行 Release 模式完整类型编译，确保无瑕疵后自动在本地创建 annotated tag，并安全推送至官方主仓库。)*
+
+---
+
 ## 🛠️ 快速上手与运行联调
 
 我们在 `capsule-os` 根目录配置了一键式的纯 Rust `cargo xtask` 自动化构建引擎。只需在终端运行对应的 Cargo 快捷别名，系统将自动递归编译内核、打包 `.ohc` 格式内核包，并启动 QEMU 引导运行：

@@ -9,9 +9,17 @@ pub mod string {
     }
 
     impl String {
-        pub fn new() -> Self { String { _data: "" } }
-        pub fn from_str(s: &'static str) -> Self { String { _data: s } }
-        pub fn as_str(&self) -> &str { self._data }
-        pub fn as_bytes(&self) -> &[u8] { self._data.as_bytes() }
+        pub fn new() -> Self {
+            String { _data: "" }
+        }
+        pub fn from_str(s: &'static str) -> Self {
+            String { _data: s }
+        }
+        pub fn as_str(&self) -> &str {
+            self._data
+        }
+        pub fn as_bytes(&self) -> &[u8] {
+            self._data.as_bytes()
+        }
     }
 }

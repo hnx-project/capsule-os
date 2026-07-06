@@ -1,0 +1,36 @@
+#!/bin/bash
+set -e
+
+# Clear visual formatting colors
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;36m'
+NC='\033[0m' # No Color
+
+echo -e "🛠️  ${BLUE}Building CapsuleOS xtask build system in release mode...${NC}"
+
+# 1. Compile release version of xtask in the correct cargo scope
+cargo build --package xtask --release
+
+# 2. Determine local installation directory (non-root safe)
+INSTALL_DIR="$HOME/.local/bin"
+mkdir -p "$INSTALL_DIR"
+
+TARGET_BIN="build/target/release/xtask"
+DEST_BIN="$INSTALL_DIR/xtask"
+
+echo -e "📥 ${BLUE}Installing xtask executable to $DEST_BIN...${NC}"
+cp -f "$TARGET_BIN" "$DEST_BIN"
+chmod +x "$DEST_BIN"
+
+echo -e "🎉 ${GREEN}xtask successfully installed to $DEST_BIN!${NC}"
+
+# 3. Intelligent PATH verification and profiling suggestion
+if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+    echo -e "⚠️  ${YELLOW}$INSTALL_DIR is not present in your active PATH.${NC}"
+    echo -e "💡 Please add the following line to your shell profile (e.g., ~/.bashrc, ~/.zshrc, ~/.profile):"
+    echo -e "   ${GREEN}export PATH=\"\$HOME/.local/bin:\$PATH\"${NC}"
+    echo -e "   Then reload your shell: ${GREEN}source <profile>${NC}"
+else
+    echo -e "🚀 ${GREEN}Configuration verified! You can now run 'xtask' directly from anywhere!${NC}"
+fi

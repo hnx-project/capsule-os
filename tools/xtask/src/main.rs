@@ -2,6 +2,7 @@ mod build;
 mod cli;
 mod output;
 mod platform;
+mod repo;
 mod run;
 mod toolchain;
 
@@ -39,6 +40,12 @@ fn main() {
                     eprintln!("Run failed: {}", e);
                     std::process::exit(1);
                 }
+            }
+        }
+        Commands::Repo { sub } => {
+            if let Err(e) = repo::handle_repo(sub) {
+                eprintln!("{}", e);
+                std::process::exit(1);
             }
         }
     }

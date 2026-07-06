@@ -1,0 +1,17 @@
+# CapsuleOS xtask Unified Configuration File
+
+[project]
+name = "capsule-os"
+# The current release codename of the active development phase
+codename = "pangu"
+
+[gitcode]
+# Upstream organization and repository metadata
+upstream_owner = "hnx-project"
+upstream_repo = "capsule-os"
+
+[submodules]
+# Submodule path mapping to allow dynamic, code-independent fork switching
+# "local_path" = { upstream = "upstream_url", fork_repo = "fork_repo_suffix" }
+"kernel" = { upstream = "git@gitcode.com:hnx-project/hnx-core.git", fork_repo = "hnx-core" }
+"bootloader" = { upstream = "git@gitcode.com:hnx-project/capsule-bootloader.git", fork_repo = "bootloader" }

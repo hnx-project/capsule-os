@@ -124,6 +124,12 @@
 - [x] 在 `hnxlibc` (`userspace/hnxlibc`) 中用 `#[no_mangle] pub extern "C"` 完整封装导出 UNIX C-ABI 核心符号（如 `write`、`read`、`nanosleep`、`exit`），桥接劫持 Rust 官方标准库底层系统依赖
 - [x] 实现 `hnxstd` (`userspace/hnxstd`) 自研标准库，提供 `Vec`、`String`、`println` 等基础接口
 - [x] 重构 `xtask` 为 clap 模块化架构，支持 `build`、`run`、`check-toolchain` 子命令，静默 cargo 输出
+- [x] **`cargo xtask repo` GitCode 专属自动化提交系统**：
+  - [x] 实现 `setup-fork` 一键主仓库、内核及 bootloader 子模块 Fork 拓扑递归绑定
+  - [x] 本地提交（commit）安全网关：实现分支正则校验、静默双平台编译降噪、以及版本重复防遗忘更新拦截
+  - [x] 一键 `pr` 合并：自动化变基、一键 Squash 零碎 commit、自动请求 GitCode 跨仓库 API
+  - [x] 管理员特权通道：新增 `tag` 语义化打标与推送，支持 `--release` 指向 `main` 生产分支，豁免版本号递增拦截
+  - [x] 一键极速本地构建与安装脚本 `./install_xtask`
 
 ### 5.3 专用 OHC 加载器 (loader) ✅
 - [x] 实现 `loader` 常驻系统服务：在用户空间直接解析多段 `.ohc` 头部，彻底移除对复杂 ELF 的解析依赖

@@ -118,3 +118,40 @@ cargo check --target aarch64-unknown-none -p kernel
 # 3. 检查 RISC-V 64 内核编译
 cargo check --target riscv64imac-unknown-none-elf -p kernel
 ```
+
+## 👥 角色开发与 GitCode 提交规范 (xtask repo)
+
+为了保持最高品质的代码质量、防范版本冲突与子模块混乱，**所有 AI Agent 与开发者提交代码必须强制通过 `xtask` 自动化流程**：
+
+### 1. 基础环境一键安装
+在根目录下运行安装脚本，直接编译 release 版本的 `xtask` 并安装至用户的本地 PATH 中，方便后续运行：
+```bash
+./install_xtask
+```
+
+### 2. 贡献者角色工作流 (Contributor Mode)
+普通贡献者所有的开发应在其个人的 Fork 仓库上进行：
+- **第一步：一键配置 Fork 远端关系**（自动级联转换 `kernel` / `bootloader` 子模块）：
+  ```bash
+  xtask repo setup-fork --username <您的GitCode用户名>
+  ```
+- **第二步：本地安全提交**（包含双平台静默编译与版本重名校验防御）：
+  ```bash
+  xtask repo commit
+  ```
+- **第三步：一键安全变基与 Squash 合并 PR**（强约束：只向 upstream 的 `develop` 分支提交）：
+  ```bash
+  xtask repo pr
+  ```
+
+### 3. 管理员角色工作流 (Administrator Mode)
+管理员本地直接在官方主仓库开发：
+- **本地开发提交**：`xtask repo commit` 会自动判定管理员身份，**自动豁免版本未递增拦截**。
+- **发布生产 MR**：一键发起指向 `main` 生产分支的合并请求：
+  ```bash
+  xtask repo pr --release
+  ```
+- **一键版本发布**：强制通过严苛的 SemVer 正则校验、对双平台进行 Release 模式最终验证、在本地自动打上 annotated tag 并推送：
+  ```bash
+  xtask repo tag <VERSION>  # 示例：xtask repo tag v0.6.0
+  ```

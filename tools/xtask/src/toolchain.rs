@@ -11,7 +11,10 @@ pub fn check_toolchain(expected_rust: Option<&str>) -> Result<ToolchainInfo, Str
     let rustc_version = get_rustc_version()?;
     if let Some(expected) = expected_rust {
         if !rustc_version.contains(expected) {
-            eprintln!("Warning: Rust version mismatch. Expected: {}, Found: {}", expected, rustc_version);
+            eprintln!(
+                "Warning: Rust version mismatch. Expected: {}, Found: {}",
+                expected, rustc_version
+            );
         }
     }
     let rust_lld_path = find_rust_lld();
@@ -33,7 +36,11 @@ fn get_rustc_version() -> Result<String, String> {
 
 pub fn find_rust_lld() -> PathBuf {
     if let Ok(sysroot) = std::str::from_utf8(
-        &Command::new("rustc").args(["--print", "sysroot"]).output().unwrap().stdout
+        &Command::new("rustc")
+            .args(["--print", "sysroot"])
+            .output()
+            .unwrap()
+            .stdout,
     ) {
         let rustlib = PathBuf::from(sysroot.trim()).join("lib").join("rustlib");
         if let Ok(dirs) = std::fs::read_dir(rustlib) {
@@ -56,7 +63,11 @@ pub fn find_objcopy() -> PathBuf {
         return hb_objcopy;
     }
     if let Ok(sysroot) = std::str::from_utf8(
-        &Command::new("rustc").args(["--print", "sysroot"]).output().unwrap().stdout
+        &Command::new("rustc")
+            .args(["--print", "sysroot"])
+            .output()
+            .unwrap()
+            .stdout,
     ) {
         let rustlib = PathBuf::from(sysroot.trim()).join("lib").join("rustlib");
         if let Ok(dirs) = std::fs::read_dir(rustlib) {
