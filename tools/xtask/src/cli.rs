@@ -67,16 +67,11 @@ pub enum RepoSubcommands {
         )]
         release: bool,
     },
-    #[command(about = "Safely tag current commit and push to upstream (Admin/Release mode)")]
-    Tag {
-        #[arg(help = "The semver release tag, e.g., v0.6.0")]
-        version: String,
-    },
     #[command(
-        about = "Build all architectures, package them into a named zip, and publish a GitCode Release with the ZIP asset (Admin mode)"
+        about = "Build all architectures, package into ZIP, and publish GitCode Release (GitCode will auto-generate the tag upstream)"
     )]
     Release {
-        #[arg(help = "The release tag version (e.g. v0.6.0) to associate with this Release")]
+        #[arg(help = "The semver release version (e.g. v0.6.0) to publish")]
         version: String,
     },
     #[command(

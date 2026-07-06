@@ -631,27 +631,37 @@ fn handle_pr(
         )
     };
 
-    println!("💡 Please provide commit message structure for this unified PR branch.");
-    handle_commit(None, None, Some(&default_title), config)?;
+    // Run complete safety linter gateway to ensure the squashed commit is pristine
+    println!("🛡️ Verifying workspace compatibility and targets before Squash...");
+    run_check_silent(&["cargo", "check", "--workspace", "--quiet"], None)?;
+    run_check_silent(
+        &[
+            "cargo",
+            "check",
+            "--manifest-path",
+            "kernel/Cargo.toml",
+            "--target",
+            "aarch64-unknown-none",
+            "--quiet",
+        ],
+        None,
+    )?;
+    run_check_silent(
+        &[
+            "cargo",
+            "check",
+            "--manifest-path",
+            "kernel/Cargo.toml",
+            "--target",
+            "riscv64imac-unknown-none-elf",
+            "--quiet",
+        ],
+        None,
+    )?;
 
-    // 🌟 Administrator Direct Write-Back Flow (Auto Bypass PR creation page)
-    if session.is_admin && !release_mode {
-        println!("👑 Core Maintainer direct-write privileges unlocked!");
-        println!("📤 Pushing unified clean branch directly to upstream/develop...");
-        run_cmd_status(
-            &[
-                "git",
-                "push",
-                "upstream",
-                &format!("{}:develop", current_branch),
-                "-f",
-            ],
-            None,
-        )
-        .map_err(|e| format!("Failed to push directly to upstream repository: {}", e))?;
-        println!("\n🚀 \x1B[1;32mDirect Push and Merge Complete! Unified clean commit safely integrated into upstream/develop.\x1B[0m\n");
-        return Ok(());
-    }
+    // Directly stage changes and commit the unified Squash title securely
+    run_cmd_status(&["git", "commit", "-m", &default_title], None)
+        .map_err(|e| format!("Failed to create unified squash commit: {}", e))?;
 
     // Push the unified branch to developer fork (origin) with force-with-lease for safety
     println!(
@@ -769,117 +779,6 @@ fn handle_sync() -> Result<(), String> {
     .map_err(|_| "Failed to synchronize submodules recursively.".to_string())?;
 
     println!("✅ Worktree and submodules sync successfully synchronized!");
-    Ok(())
-}
-
-/// Handle tag subcommand (Administrators only - create annotated SemVer tags and push to upstream)
-fn handle_tag(version: &str, config: &XtaskConfig) -> Result<(), String> {
-    // 1. Tag SemVer naming constraints matching standard Regex
-    let tag_pattern = r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.(0|[1-9][0-9]*))?(-[a-z0-9-]+)?$";
-    let regex = Regex::new(tag_pattern).unwrap();
-    if !regex.is_match(version) {
-        return Err(format!(
-            "❌ Invalid tag version format: '{}'!\n\
-             Must match strict SemVer format: e.g., v0.6.0, v1.0.0-rc.1",
-            version
-        ));
-    }
-
-    // 2. Branch restriction (Only allow tagging on main or release/* branches)
-    let current_branch = run_cmd(&["git", "branch", "--show-current"], None)?;
-    if current_branch != "main" && !current_branch.starts_with("release/") {
-        return Err(format!(
-            "❌ Tagging is prohibited on active branch '{}'!\n\
-             Release tags are strictly restricted to 'main' or 'release/*' branches to protect production integrity.",
-            current_branch
-        ));
-    }
-
-    // 3. Ultimate Safety Compilation Guard (Ensure the tag is pristine)
-    println!("🛠️ Running final safety validation checks before tagging...");
-    print!("🧹 Checking rustfmt... ");
-    let _ = std::io::Write::flush(&mut std::io::stdout());
-    run_cmd_status(&["cargo", "fmt", "--check"], None)
-        .map_err(|_| "\n❌ Formatting check failed! Run 'cargo fmt' first.".to_string())?;
-    println!("\x1B[1;32m[OK]\x1B[0m");
-
-    print!("🛡️ Verifying workspace and multi-arch kernel targets... ");
-    let _ = std::io::Write::flush(&mut std::io::stdout());
-
-    // Create missing workspace payload placeholders to untangle kernel compile dependencies
-    let ohc_deps = [
-        "kernel/files/init.ohc",
-        "kernel/files/devmgr.ohc",
-        "kernel/files/loader.ohc",
-        "kernel/files/vfs.ohc",
-    ];
-    for file in &ohc_deps {
-        let p = Path::new(file);
-        if !p.exists() {
-            if let Some(parent) = p.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            let _ = fs::write(p, &[]);
-        }
-    }
-
-    run_check_silent(&["cargo", "check", "--workspace", "--quiet"], None)?;
-    run_check_silent(
-        &[
-            "cargo",
-            "check",
-            "--manifest-path",
-            "kernel/Cargo.toml",
-            "--target",
-            "aarch64-unknown-none",
-            "--quiet",
-        ],
-        None,
-    )?;
-    run_check_silent(
-        &[
-            "cargo",
-            "check",
-            "--manifest-path",
-            "kernel/Cargo.toml",
-            "--target",
-            "riscv64imac-unknown-none-elf",
-            "--quiet",
-        ],
-        None,
-    )?;
-    println!("\x1B[1;32m[OK]\x1B[0m");
-
-    // 4. Create annotated tag locally
-    println!("🏷️ Creating annotated Git tag: {}...", version);
-    run_cmd_status(
-        &[
-            "git",
-            "tag",
-            "-a",
-            version,
-            "-m",
-            &format!("Release {}", version),
-        ],
-        None,
-    )
-    .map_err(|e| format!("Failed to create local annotated tag: {}", e))?;
-
-    // 5. Push tag to upstream main repo
-    let remote = if run_cmd(&["git", "remote"], None)?.contains("upstream") {
-        "upstream"
-    } else {
-        "origin"
-    };
-
-    println!("📤 Pushing tag {} to remote '{}'...", version, remote);
-    run_cmd_status(&["git", "push", remote, version], None)
-        .map_err(|e| format!("Failed to push tag to remote: {}", e))?;
-
-    println!(
-        "\n🚀 \x1B[1;32mTag {} has been successfully published to {}! (Production Release Complete)\x1B[0m\n",
-        version, remote
-    );
     Ok(())
 }
 
@@ -1258,9 +1157,6 @@ pub fn handle_repo(sub: &RepoSubcommands) -> Result<(), String> {
             // preflight_check is mandatory for pr (it returns session)
             let session = preflight_check(&config)?;
             handle_pr(title.as_deref(), *release, &config, &session)?;
-        }
-        RepoSubcommands::Tag { version } => {
-            handle_tag(version, &config)?;
         }
         RepoSubcommands::Release { version } => {
             let session = preflight_check(&config)?;
