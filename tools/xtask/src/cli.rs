@@ -114,4 +114,8 @@ pub enum RepoSubcommands {
     Pull,
     #[command(about = "Safely synchronize your branch and submodules with upstream develop")]
     Sync,
+    #[command(
+        about = "Safely validate code (run checks) and push current branch directly to your developer fork (origin)"
+    )]
+    Push,
 }

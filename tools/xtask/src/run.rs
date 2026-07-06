@@ -101,7 +101,7 @@ fn launch_qemu(plat: &Platform) {
         qemu.args([
             "-M", machine, "-cpu", plat.qemu_cpu, "-m", plat.qemu_mem, "-nographic",
             "-device", &format!("loader,file=build/target/{}/release/capsule-bootloader.bin,addr={},cpu-num=0,force-raw=on", plat.rust_target, plat.boot_addr),
-            "-device", &format!("loader,file=dist/kernel/hnxcore.ohc,addr={},force-raw=on", plat.ohc_addr),
+            "-device", &format!("loader,file=dist/kernel/hnxcore,addr={},force-raw=on", plat.ohc_addr),
             "-device", &format!("loader,file=dist/qemu.dtb,addr={},force-raw=on", plat.dtb_addr),
         ]);
     } else {
@@ -120,7 +120,7 @@ fn launch_qemu(plat: &Platform) {
             ),
             "-device",
             &format!(
-                "loader,file=dist/kernel/hnxcore.ohc,addr={},force-raw=on",
+                "loader,file=dist/kernel/hnxcore,addr={},force-raw=on",
                 plat.ohc_addr
             ),
             "-device",

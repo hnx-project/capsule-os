@@ -74,13 +74,13 @@ fn build_userspace_program(plat: &Platform, crate_name: &str) -> Result<(), Stri
 
 fn pack_user_programs(plat: &Platform) -> Result<(), String> {
     for (crate_name, out_name) in USERCRATE_S {
-        print!("{}  Packing{} {}.ohc...", BOLD_GREEN, RESET, out_name);
+        print!("{}  Packing{} {}...", BOLD_GREEN, RESET, out_name);
         let elf = format!(
             "build/target/{}-unknown-capsule/release/{}",
             plat.arch,
             crate_name.replace("hnx-", "")
         );
-        let output = format!("kernel/files/{}.ohc", out_name);
+        let output = format!("kernel/files/{}", out_name);
         let entry = if *out_name == "init" { "4096" } else { "65536" };
         let result = run_silent(
             Command::new("cargo").args([
@@ -99,10 +99,7 @@ fn pack_user_programs(plat: &Platform) -> Result<(), String> {
                 entry,
             ]),
             || {
-                println!(
-                    "\r{}  Packing{} {}.ohc... Done",
-                    BOLD_GREEN, RESET, out_name
-                );
+                println!("\r{}  Packing{} {}... Done", BOLD_GREEN, RESET, out_name);
             },
         );
         if !result.success {
@@ -203,10 +200,7 @@ fn extract_kernel_raw(plat: &Platform) -> Result<(), String> {
 }
 
 fn pack_kernel_ohc(plat: &Platform) -> Result<(), String> {
-    print!(
-        "{}  Packing{} dist/kernel/hnxcore.ohc...",
-        BOLD_GREEN, RESET
-    );
+    print!("{}  Packing{} dist/kernel/hnxcore...", BOLD_GREEN, RESET);
     let result = run_silent(
         Command::new("cargo").args([
             "run",
@@ -219,13 +213,13 @@ fn pack_kernel_ohc(plat: &Platform) -> Result<(), String> {
             "--input",
             "dist/kernel/kernel.raw",
             "--output",
-            "dist/kernel/hnxcore.ohc",
+            "dist/kernel/hnxcore",
             "--entry",
             plat.kernel_entry,
         ]),
         || {
             println!(
-                "\r{}  Packing{} dist/kernel/hnxcore.ohc... Done",
+                "\r{}  Packing{} dist/kernel/hnxcore... Done",
                 BOLD_GREEN, RESET
             );
         },
@@ -293,7 +287,7 @@ fn print_build_summary(plat: &Platform) {
             println!("  {}: [{:.1} KB]", label, size_kb);
         }
     };
-    print_size("hnxcore.ohc", "dist/kernel/hnxcore.ohc");
+    print_size("hnxcore", "dist/kernel/hnxcore");
     print_size(
         "capsule-bootloader.bin",
         &format!(
@@ -302,9 +296,6 @@ fn print_build_summary(plat: &Platform) {
         ),
     );
     for (_, out_name) in USERCRATE_S {
-        print_size(
-            &format!("{}.ohc", out_name),
-            &format!("kernel/files/{}.ohc", out_name),
-        );
+        print_size(out_name, &format!("kernel/files/{}", out_name));
     }
 }

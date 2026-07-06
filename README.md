@@ -9,7 +9,7 @@
 ## ✨ 核心特性
 
 - **双星并轨架构支持**：支持 `aarch64-unknown-none` 与 `riscv64imac-unknown-none-elf` (软浮点 ABI) 裸机双架构，运行时自适应启动。
-- **自研通用多段 OHC 胶囊格式**：运行期完全与 GNU/ELF 体系物理脱钩，通过自研 Multi-Segment OHC，将应用程序与共享库剥离冗余 debug 信息打包封装。新进程装载由用户态 `loader` 解析 OHC Segment 描述头，秒级高速映射 `VMO` 入新进程的 `VMAR` 虚拟空间。
+- **自研通用多段 OHLINK 胶囊格式**：运行期完全与 GNU/ELF 体系物理脱钩，通过自研 Multi-Segment OHLINK，将应用程序与共享库剥离冗余 debug 信息打包封装。新进程装载由用户态 `loader` 解析 OHLINK Segment 描述头，秒级高速映射 `VMO` 入新进程的 `VMAR` 虚拟空间。
 - **自研 hnxstd 标准库**：基于自定义 `unknown-capsule` 目标三元组，通过 `hnxlibc` 提供核心系统调用封装，`hnxstd` 实现 `no_std` 环境下的基础数据结构与 I/O 接口。
 - **现代化固件移交**：完全兼容类 Unix 标准固件 ABI（FDT 物理地址透传），通过 `bootloader`（固件Shim层）平滑加载运行。
 - **动态设备树发现 (FDT Binding)**：内核动态解析 DTB 设备树的 `compatible` 属性，运行时动态实例化并注册外设驱动（如 PL011 与 NS16550 串口），实现与具体开发板平台的完全解耦。
@@ -74,13 +74,26 @@
   ```
   *(注：系统会自动在本地运行 AArch64 / RISC-V 64 双平台静默编译与格式化校验网关。若本地有代码修改但版本号与上游重名，系统将强制拦截，保障版本唯一性。)*
 
-* **第三步：一键同步上游**
+* **第三步：一键同步上游 (sync)**
   在开发前或合并后，一键同步上游最新的 `develop` 代码和子模块指针：
   ```bash
   xtask repo sync
   ```
 
-* **第四步：一键 Squash & 跨仓库创建 MR**
+* **第四步：一键安全备份到个人 Fork (push)**
+  如果您完成了阶段性工作或想进行多端备份，一键将当前分支及所有被修改的子模块级联安全推送到您自己的 Fork 仓库：
+  ```bash
+  xtask repo push
+  ```
+  *(注：系统会自动级联探测所有子模块的本地提交状态，全自动把 Dirty 子模块推送到对应子模块的个人 Fork，并在主干完成最新指针绑定与安全推送，全程 100% 自动。同时默认将本地上游追踪设为 `origin/develop`，彻底消灭 IDE 的视觉挂起超前警告。)*
+
+* **第五步：一键拉取个人 Fork 备份 (pull)**
+  一键拉取并对齐您在个人远端 Fork 仓库备份的最新代码与子模块状态：
+  ```bash
+  xtask repo pull
+  ```
+
+* **第六步：一键 Squash & 跨仓库创建 MR (pr)**
   ```bash
   xtask repo pr
   ```
@@ -121,7 +134,7 @@
 
 ## 🛠️ 快速上手与运行联调
 
-我们在 `capsule-os` 根目录配置了一键式的纯 Rust `xtask` 自动化构建引擎。只需在终端运行对应的 `xtask os` 级联子命令，系统将自动递归编译内核、打包 `.ohc` 格式内核包，并启动 QEMU 引导运行：
+我们在 `capsule-os` 根目录配置了一键式的纯 Rust `xtask` 自动化构建引擎。只需在终端运行对应的 `xtask os` 级联子命令，系统将自动递归编译内核、打包 OHLINK 格式内核包，并启动 QEMU 引导运行：
 
 ### 1. 安装开发工具链
 ```bash
@@ -135,14 +148,14 @@ rustup target add riscv64imac-unknown-none-elf
 
 ### 2. AArch64 (ARM 64-bit) 平台编译运行 (默认)
 ```bash
-# 一键编译、打包 OHC 并启动 QEMU 引导
+# 一键编译、打包 OHLINK 并启动 QEMU 引导
 xtask os run --arch aarch64
 ```
 **期待冷启动日志**：
 ```text
 [Bootloader] Booting v0.2.0-dev...
 [Bootloader] DTB found at fallback addr 0x42000000.
-[Bootloader] Valid OHC Image Found!
+[Bootloader] Valid OHLINK Image Found!
 [Bootloader] Extracting payload to entry point...
 [Bootloader] Jumping to HNX Kernel...
 
@@ -160,14 +173,14 @@ OK
 
 ### 3. RISC-V 64 (Soft-Float) 平台编译运行
 ```bash
-# 一键编译、打包 OHC 并启动 QEMU 引导
+# 一键编译、打包 OHLINK 并启动 QEMU 引导
 xtask os run --arch riscv64
 ```
 **期待冷启动日志**：
 ```text
 [Bootloader] Booting v0.2.0-dev...
 [Bootloader] DTB parsed successfully at 0x9fe00000.
-[Bootloader] Valid OHC Image Found!
+[Bootloader] Valid OHLINK Image Found!
 [Bootloader] Extracting payload to entry point...
 [Bootloader] Jumping to HNX Kernel...
 
