@@ -1,0 +1,12 @@
+[package]
+name = "ohlink-format"
+version = "0.1.0"
+edition = "2021"
+authors = ["ohlink-cc Developers"]
+description = "Core parsing, building, validation, and standard structure library for OHLINK binary format"
+
+[dependencies]
+
+[features]
+default = ["std"]
+std = []
