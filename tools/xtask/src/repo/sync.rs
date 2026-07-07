@@ -19,13 +19,46 @@ pub fn handle_sync() -> Result<(), String> {
 
     println!("📦 Synchronizing Git subtrees recursively from upstream...");
     println!("📥 Updating Subtree 'bootloader' (develop-pangu)...");
-    let _ = run_cmd_status(&["git", "subtree", "pull", "--prefix=bootloader", "bootloader-up", "develop-pangu", "--squash"], None);
+    let _ = run_cmd_status(
+        &[
+            "git",
+            "subtree",
+            "pull",
+            "--prefix=bootloader",
+            "bootloader-up",
+            "develop-pangu",
+            "--squash",
+        ],
+        None,
+    );
 
     println!("📥 Updating Subtree 'kernel' (develop)...");
-    let _ = run_cmd_status(&["git", "subtree", "pull", "--prefix=kernel", "kernel-up", "develop", "--squash"], None);
+    let _ = run_cmd_status(
+        &[
+            "git",
+            "subtree",
+            "pull",
+            "--prefix=kernel",
+            "kernel-up",
+            "develop",
+            "--squash",
+        ],
+        None,
+    );
 
     println!("📥 Updating Subtree 'tools/ohlink-cc' (main)...");
-    let _ = run_cmd_status(&["git", "subtree", "pull", "--prefix=tools/ohlink-cc", "ohlink-cc-up", "main", "--squash"], None);
+    let _ = run_cmd_status(
+        &[
+            "git",
+            "subtree",
+            "pull",
+            "--prefix=tools/ohlink-cc",
+            "ohlink-cc-up",
+            "main",
+            "--squash",
+        ],
+        None,
+    );
 
     println!("✅ Worktree and subtrees successfully synchronized!");
     Ok(())

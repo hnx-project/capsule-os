@@ -45,7 +45,10 @@ pub fn build(plat: &Platform) -> Result<(), String> {
 }
 
 fn bootstrap_ohlink_tools() -> Result<(), String> {
-    print!("{}  Bootstrapping{} OHLINK Toolchain (Host)...", BOLD_CYAN, RESET);
+    print!(
+        "{}  Bootstrapping{} OHLINK Toolchain (Host)...",
+        BOLD_CYAN, RESET
+    );
     let result = run_silent(
         Command::new("cargo").args([
             "build",

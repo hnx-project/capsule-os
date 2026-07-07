@@ -36,9 +36,36 @@ pub fn handle_setup_fork(username: &str) -> Result<(), String> {
 
     // 2. Setup Subtrees Remotes
     println!("🚀 Setting up Subtree Upstream Remotes...");
-    let _ = run_cmd_status(&["git", "remote", "add", "bootloader-up", "git@gitcode.com:hnx-project/capsule-bootloader.git"], None);
-    let _ = run_cmd_status(&["git", "remote", "add", "kernel-up", "git@gitcode.com:hnx-project/hnx-core.git"], None);
-    let _ = run_cmd_status(&["git", "remote", "add", "ohlink-cc-up", "git@gitcode.com:hnx-project/ohlink-cc.git"], None);
+    let _ = run_cmd_status(
+        &[
+            "git",
+            "remote",
+            "add",
+            "bootloader-up",
+            "git@gitcode.com:hnx-project/capsule-bootloader.git",
+        ],
+        None,
+    );
+    let _ = run_cmd_status(
+        &[
+            "git",
+            "remote",
+            "add",
+            "kernel-up",
+            "git@gitcode.com:hnx-project/hnx-core.git",
+        ],
+        None,
+    );
+    let _ = run_cmd_status(
+        &[
+            "git",
+            "remote",
+            "add",
+            "ohlink-cc-up",
+            "git@gitcode.com:hnx-project/ohlink-cc.git",
+        ],
+        None,
+    );
 
     let _ = run_cmd_status(&["git", "fetch", "--all"], None);
 

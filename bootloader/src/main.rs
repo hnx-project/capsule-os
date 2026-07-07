@@ -22,7 +22,11 @@ extern "C" fn rust_main(dtb_ptr: *const u8) -> ! {
         // QEMU virt 默认在 high memory 放置 DTB，但更可靠的方案是让 QEMU 通过 loader 加载
         let candidate = platform::DTB_FALLBACK_ADDR as *const u8;
         if let Ok(_fdt) = unsafe { Fdt::from_ptr(candidate) } {
-            log_info!("BOOT", "DTB found at fallback addr {:#x}.", platform::DTB_FALLBACK_ADDR);
+            log_info!(
+                "BOOT",
+                "DTB found at fallback addr {:#x}.",
+                platform::DTB_FALLBACK_ADDR
+            );
             candidate
         } else {
             log_warn!("BOOT", "DTB not found.");
@@ -30,7 +34,11 @@ extern "C" fn rust_main(dtb_ptr: *const u8) -> ! {
         }
     } else {
         if let Ok(_fdt) = unsafe { Fdt::from_ptr(dtb_ptr) } {
-            log_info!("BOOT", "DTB parsed successfully at {:#x}.", dtb_ptr as usize);
+            log_info!(
+                "BOOT",
+                "DTB parsed successfully at {:#x}.",
+                dtb_ptr as usize
+            );
         } else {
             log_warn!("BOOT", "DTB magic invalid at {:#x}.", dtb_ptr as usize);
         }
@@ -61,8 +69,7 @@ extern "C" fn rust_main(dtb_ptr: *const u8) -> ! {
     // 提取字段 (使用小端序)
     let version = u16::from_le_bytes([header[4], header[5]]);
     let entry = u64::from_le_bytes([
-        header[6], header[7], header[8], header[9],
-        header[10], header[11], header[12], header[13],
+        header[6], header[7], header[8], header[9], header[10], header[11], header[12], header[13],
     ]);
     let segment_count = u16::from_le_bytes([header[14], header[15]]);
     let size = u32::from_le_bytes([header[18], header[19], header[20], header[21]]);
