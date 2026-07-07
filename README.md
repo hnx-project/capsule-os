@@ -1,203 +1,158 @@
-# CapsuleOS
+# 🌌 CapsuleOS: A Pure-Rust Microkernel Operating System
 
-> **CapsuleOS** 是一个从零开始构建的、基于微内核架构的现代类 Unix 操作系统，代号 **Pangu** (开天辟地)。
->
-> 项目采用先进的**"多仓库级联子模块"**工程结构，将核心微内核、基础系统服务、与商业版图形扩展完全隔离解耦。
-
----
-
-## ✨ 核心特性
-
-- **双星并轨架构支持**：支持 `aarch64-unknown-none` 与 `riscv64imac-unknown-none-elf` (软浮点 ABI) 裸机双架构，运行时自适应启动。
-- **自研通用多段 OHLINK 胶囊格式**：运行期完全与 GNU/ELF 体系物理脱钩，通过自研 Multi-Segment OHLINK，将应用程序与共享库剥离冗余 debug 信息打包封装。新进程装载由用户态 `loader` 解析 OHLINK Segment 描述头，秒级高速映射 `VMO` 入新进程的 `VMAR` 虚拟空间。
-- **自研 hnxstd 标准库**：基于自定义 `unknown-capsule` 目标三元组，通过 `hnxlibc` 提供核心系统调用封装，`hnxstd` 实现 `no_std` 环境下的基础数据结构与 I/O 接口。
-- **现代化固件移交**：完全兼容类 Unix 标准固件 ABI（FDT 物理地址透传），通过 `bootloader`（固件Shim层）平滑加载运行。
-- **动态设备树发现 (FDT Binding)**：内核动态解析 DTB 设备树的 `compatible` 属性，运行时动态实例化并注册外设驱动（如 PL011 与 NS16550 串口），实现与具体开发板平台的完全解耦。
-- **零拷贝与延迟页分配**：依靠基于物理页帧管理器的虚拟内存管理（VMO 与 VMAR 机制），提供精细的页级缺页加载与写时复制（CoW）。
-- **极简高性能微内核 (HNX)**：内核仅保留线程调度、IPC（进程间通信）、虚实内存管理和 Capability 权限控制四大极简服务，其他文件系统、驱动程序、网络栈全部运行在用户空间。
-- **30KB 极限物理内核**：通过 LDD 连接器 `--gc-sections` 垃圾回收技术，彻底扫除死代码，微内核二进制体积极速精简至 **30KB** 级别。
+<div align="center">
+  <img src="https://img.shields.io/badge/OS-CapsuleOS-6f42c1?style=for-the-badge&logo=rust" alt="CapsuleOS" />
+  <img src="https://img.shields.io/badge/Architecture-AArch64%20%7C%20RISCV64-success?style=for-the-badge" alt="Architecture" />
+  <img src="https://img.shields.io/badge/Kernel-HNX%20v0.3.1-blue?style=for-the-badge" alt="HNX Kernel" />
+  <img src="https://img.shields.io/badge/Format-OHLINK-orange?style=for-the-badge" alt="OHLINK Format" />
+</div>
 
 ---
 
-## 📂 多项目多仓库级联大格局
+**CapsuleOS** (Codename: **Pangu / 开天辟地**) is a next-generation, high-performance microkernel operating system built entirely from scratch in pure **Rust**. Designed with modularity, zero-trust security, and high performance in mind, CapsuleOS pushes the boundaries of modern bare-metal system programming by shifting traditional OS components (such as device drivers, virtual file systems, and dynamic loaders) completely into secure user-space sandboxes.
 
-本项目生态由以下三个物理隔离、独立开发演进的仓库组成：
+Our ecosystem operates completely decoupled from traditional heavyweight binary formats like GNU ELF, relying instead on our ultra-lightweight, custom-designed **OHLINK binary format**, complete with pure-Rust static linking, symbol resolution, and high-performance instruction relocations.
+
+---
+
+## 🚀 Key Highlights & Innovations
+
+### 🛡️ 1. Pure Rust Microkernel Architecture (HNX)
+At the heart of CapsuleOS lies the **HNX Microkernel**, refined to a tiny **30KB binary runtime footprint**. By employing link-time optimization (LTO) and strict code-dead-stripping (`--gc-sections`), HNX implements only the absolute minimal primitives in privileged Mode (EL1/S-Mode):
+* **Thread Scheduling**: Preemptive, high-frequency tick scheduling.
+* **Capabilities & Handles**: Zero-trust, handle-based resource encapsulation and delegation modeled after seL4 and Zircon.
+* **Virtual Memory**: Advanced VM objects (VMO) and Address Regions (VMAR) with fine-grained page tables.
+* **Ultra-Fast IPC**: Zero-allocation Synchronous Rendezvous Channels with **Direct Handoff** capabilities, enabling zero-copy transfer of kernel Capabilities across isolated process boundaries.
+
+### 📦 2. The Custom OHLINK Binary Standard
+CapsuleOS rejects the heavy overhead of loading complex ELF binaries in sandboxed environments. We developed the **OHLINK specification**, a custom bare-metal executable and dynamic linking structure:
+* **Pure Rust Toolchain (`ohlink-cc`)**: A dynamic dynamic-library `rustc_codegen_ohlink` backend paired with `ohlink-linker` supporting 6 major AArch64 relocation equations (including `R_AARCH64_ABS64`, `R_AARCH64_CALL26`, and `R_AARCH64_ADR_PREL_PG_HI21`).
+* **Microkernel Safe Loader**: A highly secure `#![no_std]` OHLINK parser built into the microkernel and bootloader, incorporating robust CRC32-IEEE checksum validation and automatic segment page-alignment.
+* **Format-Level Isolation**: Complete separation of executable sections (`.text` is marked as Read-Only + Execute, `.rodata` as Read-Only + Non-Executable, and `.data` as Read-Write + Non-Executable) enforced securely via 4-level MMU hardware translations.
+
+### 🧱 3. Comprehensive User-Space Sandbox & `hnxstd`
+To make writing secure OS services highly developer-friendly, CapsuleOS features:
+* **Custom Target Spec**: Official target triples `aarch64-unknown-capsule` and `riscv64-unknown-capsule` that define the OS environment.
+* **`hnxlibc` ABI**: A clean layer mapping standard C-ABI symbols (`write`, `read`, `exit`, etc.) to low-level microkernel system calls.
+* **`hnxstd` Standard Library**: A self-built, fully compliant standard library providing `Vec`, `String`, `println!`, and core collections to sandboxed user-space servers like `init`, `loader`, `devmgr`, and `vfs`.
+
+---
+
+## 📂 Unified Monorepo Layout (Subtree-Driven)
+
+CapsuleOS has transitioned from complex, fragile Git Submodules into a highly robust **Git Subtree Monorepo** architecture. This ensures that any developer can clone a single repository and compile the entire operating system, firmwares, and tools instantly with zero external key or authentication issues.
 
 ```text
-/Users/admin/personal/code/
-├── hnx-core/               # 🚀 1. 纯净 HNX 微内核仓库 (100% 独立)
-│
-├── capsule-os/             # 🟢 2. 基础 CLI 操作系统仓库 (Submodule 级联)
-│   ├── bootloader/         # (子模块：自 capsule-bootloader 仓库)
-│   └── kernel/             # (子模块：自 hnx-core 仓库，无冗余嵌套)
-│
-└── orbis-os/               # 🟣 3. 商业图形操作系统仓库 (Submodule 级联)
-    └── capsule/            # (子模块：自 capsule-os 仓库)
-        ├── bootloader/     # (二级子模块)
-        └── kernel/         # (二级子模块)
+.
+├── bootloader/            # 📂 (Subtree: capsule-bootloader) Arm64 Bare-Metal Bootloader
+├── kernel/                # 📂 (Subtree: hnx-core) Privileged Microkernel Runtime
+│   ├── linker/            # 📜 Architecture linker scripts
+│   └── src/               # 🦀 MMU, Scheduler, Interrupts, and System Calls
+├── userspace/             # 📂 User-Space Sandboxed Ecosystem
+│   ├── hnxlibc/           # 🧬 Standard C system-call bridging library
+│   ├── hnxstd/            # 🦀 Self-built Rust standard library (Vec, String, Println)
+│   ├── services/          # 🛡️ Sandboxed servers (init, devmgr, vfs, loader)
+│   └── programs/          # 🐚 Shell, CLI applications, and tools
+├── std/                   # 📂 Cross-Compilation Spec Definitions
+│   └── targets/           # 📜 JSON target specifications for Rustc
+├── tools/                 # 📂 System Build and Packaging Tools
+│   ├── ohlink-cc/         # 📂 (Subtree: ohlink-cc) Pure-Rust Compiler Backend, Linker, and VM Emulator
+│   └── xtask/             # 🎛️ Dual-Star build orchestrator and GitCode manager
+└── xtask.toml             # 📜 Global build and project metadata
 ```
 
 ---
 
-## 👥 角色开发流程规范
+## 🛠️ The Dual-Star `xtask` Dev Workflow
 
-为保障 CapsuleOS 核心微内核的纯净与稳定，项目根据开发者的不同角色，定义了严苛的、高度自动化的工作流。所有的 Git 拓扑转换、代码提交、PR 合并请求均由自研的 `xtask` 接管。
+CapsuleOS comes with a self-bootstrapping developer companion toolchain (`xtask`) designed to manage the entire OS development life cycle and upstream GitCode integration.
 
-请首先在根目录下运行安装脚本，将 `xtask` 编译并安装至您的本地 PATH 中，然后根据您的角色开始开发：
+To install the `xtask` binary globally on your host, simply execute the bootstrap script:
 ```bash
 ./install_xtask
 ```
 
-### 1️⃣ 普通贡献者流程 (Fork-Based Contributor)
-普通贡献者**禁止**直接向官方主仓库推送任何分支。所有的开发应在其个人的 Fork 仓库上进行，最终通过 `xtask` 向官方 `develop` 分支提交 Merge Request (PR)。
+### 💻 1. The Code Subcommand Suite (`xtask code`)
+Focuses on compiling, compiling, and executing the microkernel ecosystem:
 
-```text
-[ 官方主仓库: hnx-project ] (只读，上游)
-       │ ▲ 4. 自动创建 MR (目标: develop)
-       │ │
-       ▼ │ [ xtask repo pr ]
-[ 本地工作区 ] ──────► [ 个人 Fork 仓库: 您的账号 ] (读写，origin)
-    1. 写代码         3. 自动 Squash & Push
-    2. xtask repo commit
-```
-
-* **第一步：一键配置 Fork 拓扑**
-  如果您刚刚 `git clone` 了主仓库并写了代码，一键将其无损转换为 Fork 模式：
-  ```bash
-  xtask repo setup-fork --username <您的GitCode用户名>
-  ```
-  *(注：该命令会自动将您的 origin 指向您的个人 Fork，将上游 hnx-project 指向 upstream，并全自动级联重定向 `kernel` 与 `bootloader` 子模块。)*
-
-* **第二步：规范化本地提交 (commit)**
-  ```bash
-  xtask repo commit
-  ```
-  *(注：系统会自动在本地运行 AArch64 / RISC-V 64 双平台静默编译与格式化校验网关。若本地有代码修改但版本号与上游重名，系统将强制拦截，保障版本唯一性。)*
-
-* **第三步：一键同步上游 (sync)**
-  在开发前或合并后，一键同步上游最新的 `develop` 代码和子模块指针：
-  ```bash
-  xtask repo sync
-  ```
-
-* **第四步：一键安全备份到个人 Fork (push)**
-  如果您完成了阶段性工作或想进行多端备份，一键将当前分支及所有被修改的子模块级联安全推送到您自己的 Fork 仓库：
-  ```bash
-  xtask repo push
-  ```
-  *(注：系统会自动级联探测所有子模块的本地提交状态，全自动把 Dirty 子模块推送到对应子模块的个人 Fork，并在主干完成最新指针绑定与安全推送，全程 100% 自动。同时默认将本地上游追踪设为 `origin/develop`，彻底消灭 IDE 的视觉挂起超前警告。)*
-
-* **第五步：一键拉取个人 Fork 备份 (pull)**
-  一键拉取并对齐您在个人远端 Fork 仓库备份的最新代码与子模块状态：
-  ```bash
-  xtask repo pull
-  ```
-
-* **第六步：一键 Squash & 跨仓库创建 MR (pr)**
-  ```bash
-  xtask repo pr
-  ```
-  *(注：系统会自动抓取 upstream 最新的 develop 分支并执行强制 rebase 解决冲突。随后，自动软重置（soft-reset）并**将您的所有零散 commits 压缩（Squash）为单一干净的规范提交**，推送至您的 Fork 仓库，最后自动向 hnx-project 的 `develop` 分支发起合并请求。)*
-
----
-
-### 2️⃣ 核心管理员流程 (Maintainer / Administrator)
-核心管理员（拥有主仓库写入权限）主要负责日常主仓库分支的整理、PR 评审，以及向生产分支 `main` 发布版本。
-
-```text
-[ 官方主仓库: hnx-project ]
-  ├─ develop (日常集成)
-  │      │ ▲
-  │      ▼ │ [ xtask repo pr --release ]
-  └─ main (生产发布) <─── [ xtask repo tag <version> ]
-```
-
-* **本地开发与豁免通道**：
-  - 管理员的本地 `origin` 远端直接指向官方主仓库（`hnx-project/capsule-os`）。
-  - 在运行 `xtask repo commit` 时，系统会自动探测并判断您为管理员，**自动豁免“版本号不得与上游重名”的拦截**，允许您自由地进行发布前的版本微调和维护提交。
-
-* **发布版合并请求 (Release MR)**：
-  - 当管理员在 `release/*` 分支上准备将积累的特性合并入生产 `main` 分支时，运行：
-    ```bash
-    xtask repo pr --release
-    ```
-    *(注：系统会突破常规开发者只能目标 develop 的限制，自动将 GitCode 合并请求的目标锁定并重定向为 `main` 分支。)*
-
-* **一键打包发布版本 (Release & Upload)**：
-  - 只能在 `main` 或 `release/*` 分支上进行发布。运行：
-    ```bash
-    xtask repo release <VERSION>  # 例如：xtask repo release v0.6.0
-    ```
-    *(注：系统会首先强力运行双物理架构 Release 最终类型校验。通过后，自动在本地进行全平台 zip 打包并请求 GitCode API ➔ GitCode 平台在后台会自动、无阻碍地在主仓库上生成该 Tag，无需在本地执行任何 Tag 的推送尝试，彻底消灭受保护分支对 Tag 推送的拦截！)*
-
----
-
-## 🛠️ 快速上手与运行联调
-
-我们在 `capsule-os` 根目录配置了一键式的纯 Rust `xtask` 自动化构建引擎。只需在终端运行对应的 `xtask os` 级联子命令，系统将自动递归编译内核、打包 OHLINK 格式内核包，并启动 QEMU 引导运行：
-
-### 1. 安装开发工具链
 ```bash
-# 1. 安装 QEMU (需要 QEMU >= 7.0)
-brew install qemu dtc
+# 🖥️ Build the entire OS, userspace, and bootloader for aarch64
+xtask code build --arch aarch64
 
-# 2. 添加 bare-metal 目标工具链
-rustup target add aarch64-unknown-none
-rustup target add riscv64imac-unknown-none-elf
+# 🚀 Compile and launch CapsuleOS instantly in AArch64 QEMU Emulator
+xtask code run --arch aarch64
+
+# 🔬 Check local host cross-compilation toolchain and environment
+xtask code check-env
 ```
 
-### 2. AArch64 (ARM 64-bit) 平台编译运行 (默认)
+### 🔏 2. The Repo Subcommand Suite (`xtask repo`)
+Enforces strict open-source collaboration guidelines, automating subtree alignment, conventional commits, and release management:
+
 ```bash
-# 一键编译、打包 OHLINK 并启动 QEMU 引导
-xtask os run --arch aarch64
-```
-**期待冷启动日志**：
-```text
-[Bootloader] Booting v0.2.0-dev...
-[Bootloader] DTB found at fallback addr 0x42000000.
-[Bootloader] Valid OHLINK Image Found!
-[Bootloader] Extracting payload to entry point...
-[Bootloader] Jumping to HNX Kernel...
+# ⚙️ Initialize fork topology and setup tracking for local development
+xtask repo setup-fork --username <YourGitCodeUsername>
 
-[KERNEL] HNX v0.2.0-dev
-[FDT] Discovered hardware:
-  UART base : 0x9000000
-  UART type : pl011
-  RAM base  : 0x40000000
-  RAM size  : 0x20000000 (512 MB)
-[MM] Physical page allocator initialized.
-  Free pages : 130841 (511 MB) / 130843 (511 MB)
-[MMU] 4-level page tables ACTIVE
-OK
-```
+# 🧼 Lint, check targets for zero-warnings, and create standard Conventional Commits
+xtask repo commit --type feat --scope loader --message "add ohlink loader"
 
-### 3. RISC-V 64 (Soft-Float) 平台编译运行
-```bash
-# 一键编译、打包 OHLINK 并启动 QEMU 引导
-xtask os run --arch riscv64
-```
-**期待冷启动日志**：
-```text
-[Bootloader] Booting v0.2.0-dev...
-[Bootloader] DTB parsed successfully at 0x9fe00000.
-[Bootloader] Valid OHLINK Image Found!
-[Bootloader] Extracting payload to entry point...
-[Bootloader] Jumping to HNX Kernel...
+# 📥 Pull and synchronize all Git subtrees with upstream squash integrations
+xtask repo pull
 
-[KERNEL] HNX v0.2.0-dev
-[FDT] Discovered hardware:
-  UART base : 0x10000000
-  UART type : ns16550
-  RAM base  : 0x80000000
-  RAM size  : 0x20000000 (512 MB)
-[MM] Physical page allocator initialized.
-  Free pages : 130926 (511 MB) / 130928 (511 MB)
-[MMU] 4-level page tables ACTIVE
-OK
+# 📤 Verify and push changes recursively across workspace to personal Fork
+xtask repo push
+
+# 📦 (Admin Only) Compile, package into standard releases, and upload to GitCode via API
+xtask repo release v0.5.6
 ```
 
 ---
 
-## 📈 生态开发演进计划 (Roadmap)
+## 🖥️ Booting Output Demonstration
+When launched using `xtask code run --arch aarch64`, the bootloader aligns, validates, and hands control over to the HNX Microkernel, which securely initiates the sandboxed EL0 environment:
 
-@Include @TODO.md
+```text
+[  INFO ] [BOOT  ] Booting v0.5.6-develop...
+[  INFO ] [BOOT  ] DTB found at fallback addr 0x42000000.
+[  INFO ] [BOOT  ] Valid OHC Image Found!
+[  INFO ] [BOOT  ] => Version : 0x0002
+[  INFO ] [BOOT  ] => Entry   : 0x0000000040080000
+[  INFO ] [BOOT  ] => Segments: 1
+[  INFO ] [BOOT  ] => Size    : 0x0002ec58 bytes
+[  INFO ] [BOOT  ] Extracting payload to entry point...
+[  INFO ] [BOOT  ] Jumping to HNX Kernel...
+
+[  INFO ] [KERNEL] HNX v0.3.1
+[  INFO ] [FDT   ] Discovered hardware:
+[  INFO ] [FDT   ] => UART base : 0x9000000
+[  INFO ] [FDT   ] => RAM base  : 0x40000000
+[  INFO ] [FDT   ] => RAM size  : 0x20000000 (512 MB)
+[  INFO ] [MM    ] Physical page allocator initialized.
+[  INFO ] [MMU   ] 4-level page tables ACTIVE
+[  INFO ] [IRQ   ] GIC + generic timer enabled
+[  INFO ] [BOOT  ] OK
+[  INFO ] [SMOKE ] VMO/VMAR smoke test: MATCH (via MMU translation)
+[  INFO ] [TASK  ] init & worker threads created with process handle tables
+[  INFO ] [LOADER] Loader service launched successfully at EL0!
+[  INFO ] [BOOT  ] Loader process ready to schedule
+[  INFO ] [HANDLE] smoke test PASS
+[  INFO ] [SCHED ] Starting preemptive multitasking...
+```
+
+---
+
+## 🛡️ Security Architecture & Principles
+* **Separation of Concerns**: Microkernel execution is strictly restricted to memory management, scheduling, capability policing, and thread contexts.
+* **Capability-Based Authorization**: Processes cannot reference raw addresses or system objects directly. Every action is gated by a `Handle` with fine-grained permission bits (e.g. `READ`, `WRITE`, `EXECUTE`, `MAP`).
+* **Zero-Allocation IPC**: Channels and Ports are engineered using page-preallocated completion pools and Thread-Control-Block (TCB) inline queues. This removes the possibility of Kernel-Heap-Exhaustion attacks, which often cause system-wide panics in other OS implementations.
+
+---
+
+## 🤝 Contributing to CapsuleOS
+CapsuleOS is an actively maintained open-source system. If you want to contribute:
+1. Fork the upstream repository.
+2. Initialize with `./install_xtask` and `xtask repo setup-fork`.
+3. Commit with `xtask repo commit` to ensure code formatting, target compilation, and strict lint checks pass perfectly.
+4. Push with `xtask repo push` and open a Merge Request targeting the upstream `develop` branch!
+
+*Designed and engineered with passion by **TinchyChin** and the **HNX-Project** community.*

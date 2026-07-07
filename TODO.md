@@ -1,7 +1,7 @@
 # CapsuleOS 开发计划 (与时俱进整理版)
 
 > 目标: 快速出成果，结合 capsule-bootloader 现代特性，先通后精。
-> 构建与运行采用纯 Rust 极简原生体系：`cargo xtask build` 与 `cargo xtask run`。
+> 构建与运行采用纯 Rust 极简原生体系：`cargo xtask code build` 与 `cargo xtask code run`。
 
 ---
 
@@ -14,8 +14,8 @@
 - [x] xtask: 集成一键将内核 Raw Binary 打包为 `.ohc` 格式并实现全生命周期启动管理
 
 ### 1.2 capsule-bootloader 引导层对接 ✅
-- [x] 集成 capsule-bootloader 子模块，完成多核屏蔽（CPU 0 引导，其余进入 wfi 睡眠）、关闭早期中断及 FPU (FP/SIMD) 初始化
-- [x] 实现 Bootloader 对 OHC 格式的安全解析、校验与物理地址解包（`0x4008_0000`）
+- [x] 集成 capsule-bootloader 引导层，完成多核屏蔽（CPU 0 引导，其余进入 wfi 睡眠）、关闭早期中断及 FPU (FP/SIMD) 初始化
+- [x] 实现 Bootloader 对 OHLK 格式的安全解析、校验与物理地址解包（`0x4008_0000`）
 - [x] 实现了 Bootloader 将 FDT (Device Tree Blob) 物理地址通过 `x0` 寄存器透传给内核
 
 ### 1.3 内核底层加载与 C ABI 对齐 ✅
@@ -27,11 +27,11 @@
 ### 1.4 控制台驱动重构 ✅
 - [x] `arch/aarch64/mod.rs`: 实现纯 Rust 的 PL011 早期寄存器级波特率等参数初始化（`early_init()`）
 - [x] `lib.rs`: 移除硬编码的 inline 汇编字符打印，使用统一 of `arch::console_putchar` 输出标准 boot 消息
-- [x] `cargo xtask run`: 完整联调测试，Bootloader 正确加载解包并平滑跳转至 CapsuleOS 打印成功
+- [x] `cargo xtask code run`: 完整联调测试，Bootloader 正确加载解包并平滑跳转至 CapsuleOS 打印成功
 
 ---
 
-## 🟡 Phase 2: v0.2.0 Pangu - 动态外设探测与内存管理 ✅
+## 🟢 Phase 2: v0.2.0 Pangu - 动态外设探测与内存管理 (已圆满完成) ✅
 
 > 目标: 激活 MMU 4级页表建立段/页级映射，实现物理内存管理与虚拟地址空间管理 (VMAR/VMO)
 
@@ -40,7 +40,7 @@
 - [x] 动态定位 chosen 标准控制台 PL011 / NS16550 的 MMIO 基地址（为多板支持解耦硬编码 `0x09000000`）
 
 ### 2.2 物理页分配器 (Physical Page Allocator) ✅
-- [x] 实现物理页面管理机制（隐式物理页面空闲链表，0 字节额外元数据，高效 O(1) 分配与回收）
+- [x] 实现物理页面 management 机制（隐式物理页面空闲链表，0 字节额外元数据，高效 O(1) 分配与回收）
 - [x] 实现 `allocate_page()` / `free_page()` 底层原子物理页分配接口
 
 ### 2.3 MMU 分页系统与页表管理 (AArch64 / RISC-V SV39) ✅
@@ -50,7 +50,7 @@
   - 高半核映射 `KERNEL_OFFSET = 0xFFFF_8000_0000_0000`（避开与恒等 1GB Block 的 L1 index 冲突）
   - PL011 MMIO 区间走恒等映射 of Device 1GB Block
 - [x] 激活 MMU（配置 `SCTLR_EL1`，`TCR_EL1`，`MAIR_EL1` 和 `TTBRx_EL1` 寄存器并刷新 TLB；TLBI VMALLE1 + DSB SY + ISB）
-- [x] AArch64 `cargo xtask run` 全链路验证通过：MMU 开启，虚拟地址运行通畅。
+- [x] AArch64 `cargo xtask code run` 全链路验证通过：MMU 开启，虚拟地址运行通畅。
 - [x] RISC-V 64 SV39 路径实现（`kernel/src/arch/riscv64/mmu.rs`）：构建 2 MiB 恒等映射 + L1→L2→4 KiB UART Device 页表。为了对齐 soft-float ABI，统一采用 `riscv64imac-unknown-none-elf` 目标。
 
 ### 2.4 虚拟地址空间管理器 (VMAR & VMO) ✅
@@ -111,47 +111,30 @@
 
 ---
 
-## 🟡 Phase 5: v0.5.0 Pangu - 统一 OHC/xtask 工具链生态与用户态装载 (推进中)
+## 🟢 Phase 5: v0.5.0 Pangu - 统一 OHLINK/xtask 工具链生态与微内核装载器自举 (已圆满完成) ✅
 
-> 目标: 真正打通用户空间 hnxstd 桥接，构建基于多段 OHC 格式的高效装载器 loader、系统根服务 init、虚拟文件系统 vfs 与驱动管理器 devmgr。
+> 目标: 将原本脆弱的分散式子模块，彻底升级合并为全新的 **Subtree 单体仓架构**。在微内核中引入我们自研的 `#![no_std]` 强类型 `ohlink-format` 协议，废弃原有硬编码偏移及 ohc-tool 打包黑盒。同时改造 `xtask` 自举编译宿主机工具链，完成闭环。
 
-### 5.1 通用多段 OHC 打包工具 (`ohc-tool` 演进) ✅
-- [x] 扩展 `ohc-tool`：支持解析 Rust/LLVM 链接生成的 ELF Program Headers，提取 `.text`、`.rodata`、`.data` 等段
-- [x] 升级打包协议：构造多段描述符头部，打包为精简、高安全性、防篡改的 Multi-Segment 通用 `.ohc` 胶囊镜像，剥除冗余 debug 符号表
+### 5.1 Subtree 级联多仓合流与团队标识锁定 ✅
+- [x] 彻底注销并清除 legacy 子模块，将 `bootloader`、`kernel` 与宿主机工具链 `tools/ohlink-cc` 全部以 Squashed 干净历史形式并入主干。
+- [x] 注册 Subtree 专属的上游 Remote 控制器（`bootloader-up`, `kernel-up`, `ohlink-cc-up`），实现极为便利、整洁的一键增量合并。
+- [x] 规范化配置本地 Git 本地管理员身份标识：`TinchyChin <tinchychin97@gmail.com>`。
 
-### 5.2 目标三元组与 hnxstd/xtask 工具链 ✅
-- [x] 创建 `std/targets/aarch64-unknown-capsule.json` 与 `riscv64-unknown-capsule.json` 目标配置文件，`os = "none"`, `env = "capsule"`
-- [x] 在 `hnxlibc` (`userspace/hnxlibc`) 中用 `#[no_mangle] pub extern "C"` 完整封装导出 UNIX C-ABI 核心符号（如 `write`、`read`、`nanosleep`、`exit`），桥接劫持 Rust 官方标准库底层系统依赖
-- [x] 实现 `hnxstd` (`userspace/hnxstd`) 自研标准库，提供 `Vec`、`String`、`println` 等基础接口
-- [x] **重构 `xtask` 为「双星并轨指令体系」（`xtask os` 研发与 `xtask repo` 协作管理）**，静默 cargo 输出并提供极致清爽降噪
-- [x] **`xtask os`（操作系统研发与模拟引导）**：
-  - [x] `xtask os build`：全自动进行高集成多架构交叉编译。
-  - [x] `xtask os run`：一键加载并运行引导 AArch64 / RISC-V 64 双平台 QEMU 模拟器。
-  - [x] `xtask os check-env`：本地工具链交叉编译环境极速检查与环境建议。
-- [x] **`xtask repo`（GitCode 专属自动化协作管理管家）**：
-  - [x] `repo setup-fork`：一键主仓库、内核及 bootloader 子模块 Fork 拓扑递归绑定。
-  - [x] `repo commit`：格式化自动验证、双平台静默编译降噪校验（零 warnings 过滤）、版本重复防遗忘拦截。
-  - [x] `repo pr`：强制 Rebase 变基对齐、一键 Squash 零碎提交、GitCode 组织关系与协作权限 API 智能查询、跨库自动发起开发 PR 流。
-  - [x] `repo release`：管理员专属发布指令。一键全架构压制、全自动 ZIP 打包（符合 codename 和日期规范）、API 一键创建 Release 自动远端打 SemVer 标签、Pure Rust Multipart 一键自动上传 ZIP 附件。
-  - [x] `repo pull`：一键本地 Dirty 工作树安全扫描、拉取上游、并递归指针强对齐子模块。
-  - [x] 一键极速本地构建与全局 PATH 安装脚本 `./install_xtask`。
+### 5.2 OHLINK 强类型微内核装载器 (sys_exec) ✅
+- [x] 引入 `#![no_std]` 的 `ohlink-format` 格式，将其无缝整合入 HNX 微内核。
+- [x] 重构 `sys_exec` 核心逻辑：利用自研的 `OHLK_Parser` 强类型自动解析段表，按 `Text`、`Data`、`Rodata`、`Bss` 严格安全边界校验。
+- [x] **CRC32 & 内存安全**：对新拉起的进程二进制体自动进行多项式校验和校验，杜绝任何溢出及硬编码偏移，支持对齐虚存区间物理页注入。
+- [x] **Bootloader 魔数对齐**：修改 bootloader 允许一键启动并兼容 `OHLK` 魔数。
 
-### 5.3 专用 OHC 加载器 (loader) ✅
-- [x] 实现 `loader` 常驻系统服务：在用户空间直接解析多段 `.ohc` 头部，彻底移除对复杂 ELF 的解析依赖
-- [x] 加载器行为实现：自动为 `.ohc` 中定义的各段分别申请 `VMO`，并按照描述符的虚拟地址和权限标志进行页对齐映射（map）至新进程的 `VMAR`，分配用户态堆栈并完美执行 privilege drop 特权级安全下降
-
-### 5.4 驱动管理器与外设沙盒化 (devmgr & PL011)
-- [x] 添加 `exec` syscall 到内核，支持通过名字加载 .ohc 程序
-- [x] 重新实现 `init.ohc` 作为 PID 1 根进程，启动 devmgr 和 vfs 服务
-- [x] 创建 `devmgr` 用户态服务（空实现，待完善）
-- [x] 创建 `vfs` 用户态服务（空实现，待完善）
-- [ ] 完善 devmgr：运行时解析 DTB 设备树，启动 PL011 用户态驱动进程
-- [ ] 实现 PL011 用户态驱动：通过特权句柄映射 Device MMIO VMO 到进程 VMAR
+### 5.3 目标三元组与 xtask 深度自举改造 ✅
+- [x] 改造 `xtask os build` 任务：自动注入对宿主机 `tools/ohlink-cc` 工具链的静默编译（自举出 `ohlink-linker` 与插件）。
+- [x] 用户态应用编译：全自动为 `userspace` 四大基础应用注入 `-Zcodegen-backend` 参数。
+- [x] **`xtask` 框架双星并轨升级**：重构其为 `xtask code` (OS 代码自举、编译、QEMU 运行、自检) 与 `xtask repo` (一键子树 Pull、Push、Setup-Fork 与自动 Conventional Commit 创建)。
 
 ---
 
-## 🟣 Phase 6 至 Phase 10 (后续路线图)
-- **Phase 6: v0.6.0 POSIX 兼容层** (标准 Syscall 映射、信号、Socket、管道)
+## 🟡 Phase 6 至 Phase 10 (后续路线图)
+- **Phase 6: v0.6.0 POSIX 兼容层** (标准 Syscall 映射、信号、Socket、管道，以及 hnxstd 用户态标准库与 ohlink-linker 的深度符号绑定)
 - **Phase 7: v0.7.0 文件系统服务** (VFS 双向 Channel 服务，实现 ramfs、FAT16/32 文件系统常驻服务)
 - **Phase 8: v0.8.0 网络栈服务** (TCP/IP 协议栈用户态服务，网卡驱动进程)
 - **Phase 9: v0.9.0 所有用户态服务集成** (Shell 控制台 + init 守护系统)
