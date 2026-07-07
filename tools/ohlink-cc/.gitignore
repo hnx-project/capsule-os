@@ -1,0 +1,36 @@
+# Build artifacts
+build/
+target/
+dist/
+# Cargo
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Rust
+*.rlib
+*.a
+
+# Build output
+*.elf
+*.bin
+*.o
+
+# QEMU
+qemu_pids/
+*.img
+*.dtb
+*.ohc
+*.ohlib
