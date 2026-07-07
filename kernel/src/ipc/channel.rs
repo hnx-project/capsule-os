@@ -9,6 +9,19 @@ pub const MAX_WAITERS: usize = 8;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChannelState { Open, HalfClosed, Closed }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MessagePriority {
+    Low = 0,
+    Normal = 1,
+    High = 2,
+}
+
+impl Default for MessagePriority {
+    fn default() -> Self {
+        MessagePriority::Normal
+    }
+}
+
 #[derive(Debug)]
 pub struct Channel {
     pub id: u32,
@@ -89,50 +102,51 @@ impl Channel {
         }
 
         // Get our own thread mut
-        let cur_thread_ptr = unsafe {
-            crate::task::scheduler::SCHEDULER.get_current_thread_mut().ok_or(Status::ThreadNotFound)? as *mut crate::task::thread::Thread
-        };
+        let cur_thread_ptr = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() }
+            .ok_or(Status::ThreadNotFound)?;
         let cur_thread = unsafe { &mut *cur_thread_ptr };
 
         // 1. Check if there is a waiting sender
         if let Some(sender_tid) = self.pop_sender() {
-            unsafe {
-                if let Some(sender) = crate::task::scheduler::SCHEDULER.get_thread_mut(sender_tid) {
-                    // Copy directly from sender's registered buffer
-                    let src_slice = core::slice::from_raw_parts(sender.ipc_buf_ptr as *const u8, sender.ipc_buf_len);
-                    let copy_len = core::cmp::min(src_slice.len(), data.len());
-                    data[..copy_len].copy_from_slice(&src_slice[..copy_len]);
+            if let Some(sender) = unsafe { crate::task::scheduler::SCHEDULER.get_thread_ptr(sender_tid) } {
+                // Copy directly from sender's registered buffer
+                let src_slice = unsafe {
+                    core::slice::from_raw_parts((*sender).ipc_buf_ptr as *const u8, (*sender).ipc_buf_len)
+                };
+                let copy_len = core::cmp::min(src_slice.len(), data.len());
+                data[..copy_len].copy_from_slice(&src_slice[..copy_len]);
 
-                    // Handle Transfer: take stashed handles from sender and inject to our handle table
-                    if !cur_thread.handle_table.is_null() {
-                        let mut h_idx = 0;
-                        for slot in sender.ipc_transfer_slots.iter_mut() {
-                            if let Some((obj, rights)) = slot.take() {
-                                if let Ok(new_hv) = (&*cur_thread.handle_table).add(obj, rights) {
-                                    cur_thread.ipc_transfer_handles[h_idx] = Some(new_hv.get());
-                                    h_idx += 1;
-                                }
+                // Handle Transfer: take stashed handles from sender and inject to our handle table
+                if !cur_thread.handle_table.is_null() {
+                    let mut h_idx = 0;
+                    for slot in unsafe { (*sender).ipc_transfer_slots.iter_mut() } {
+                        if let Some((obj, rights)) = slot.take() {
+                            if let Ok(new_hv) = unsafe { (&*cur_thread.handle_table).add(obj, rights) } {
+                                cur_thread.ipc_transfer_handles[h_idx] = Some(new_hv.get());
+                                h_idx += 1;
                             }
                         }
                     }
-
-                    // Update sender's result and wake them up
-                    sender.ipc_actual_len = copy_len;
-                    sender.state = crate::task::thread::ThreadState::Ready;
-
-                    // Extract the newly injected handles to output slice
-                    let mut h_copied = 0;
-                    for i in 0..handles.len() {
-                        if i < cur_thread.ipc_transfer_handles.len() {
-                            if let Some(h_raw) = cur_thread.ipc_transfer_handles[i].take() {
-                                handles[i] = HandleValue::new(h_raw);
-                                h_copied += 1;
-                            }
-                        }
-                    }
-
-                    return Ok(copy_len);
                 }
+
+                // Update sender's result and wake them up
+                unsafe {
+                    (*sender).ipc_actual_len = copy_len;
+                    (*sender).state = crate::task::thread::ThreadState::Ready;
+                }
+
+                // Extract the newly injected handles to output slice
+                let mut h_copied = 0;
+                for i in 0..handles.len() {
+                    if i < cur_thread.ipc_transfer_handles.len() {
+                        if let Some(h_raw) = cur_thread.ipc_transfer_handles[i].take() {
+                            handles[i] = HandleValue::new(h_raw);
+                            h_copied += 1;
+                        }
+                    }
+                }
+
+                return Ok(copy_len);
             }
         }
 
@@ -179,39 +193,40 @@ impl Channel {
         }
 
         // Get our own thread mut
-        let cur_thread_ptr = unsafe {
-            crate::task::scheduler::SCHEDULER.get_current_thread_mut().ok_or(Status::ThreadNotFound)? as *mut crate::task::thread::Thread
-        };
+        let cur_thread_ptr = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() }
+            .ok_or(Status::ThreadNotFound)?;
         let cur_thread = unsafe { &mut *cur_thread_ptr };
 
         // 1. Check if there is a waiting receiver
         if let Some(receiver_tid) = self.pop_receiver() {
-            unsafe {
-                if let Some(receiver) = crate::task::scheduler::SCHEDULER.get_thread_mut(receiver_tid) {
-                    // Copy directly to receiver's registered buffer
-                    let dest_slice = core::slice::from_raw_parts_mut(receiver.ipc_buf_ptr as *mut u8, receiver.ipc_buf_len);
-                    let copy_len = core::cmp::min(data.len(), dest_slice.len());
-                    dest_slice[..copy_len].copy_from_slice(&data[..copy_len]);
+            if let Some(receiver) = unsafe { crate::task::scheduler::SCHEDULER.get_thread_ptr(receiver_tid) } {
+                // Copy directly to receiver's registered buffer
+                let dest_slice = unsafe {
+                    core::slice::from_raw_parts_mut((*receiver).ipc_buf_ptr as *mut u8, (*receiver).ipc_buf_len)
+                };
+                let copy_len = core::cmp::min(data.len(), dest_slice.len());
+                dest_slice[..copy_len].copy_from_slice(&data[..copy_len]);
 
-                    // Handle Transfer: take handles from current thread's table and inject directly into receiver's table
-                    if !cur_thread.handle_table.is_null() && !receiver.handle_table.is_null() {
-                        let mut h_idx = 0;
-                        for &h_val in handles.iter().take(2) {
-                            if let Ok((obj, rights)) = (&*cur_thread.handle_table).remove_with_rights(h_val) {
-                                if let Ok(new_hv) = (&*receiver.handle_table).add(obj, rights) {
-                                    receiver.ipc_transfer_handles[h_idx] = Some(new_hv.get());
-                                    h_idx += 1;
-                                }
+                // Handle Transfer: take handles from current thread's table and inject directly into receiver's table
+                if !cur_thread.handle_table.is_null() && !unsafe { (*receiver).handle_table }.is_null() {
+                    let mut h_idx = 0;
+                    for &h_val in handles.iter().take(2) {
+                        if let Ok((obj, rights)) = unsafe { &*cur_thread.handle_table }.remove_with_rights(h_val) {
+                            if let Ok(new_hv) = unsafe { &*(*receiver).handle_table }.add(obj, rights) {
+                                unsafe { (*receiver).ipc_transfer_handles[h_idx] = Some(new_hv.get()); }
+                                h_idx += 1;
                             }
                         }
                     }
-
-                    // Update receiver's result and wake them up
-                    receiver.ipc_actual_len = copy_len;
-                    receiver.state = crate::task::thread::ThreadState::Ready;
-
-                    return Ok(copy_len);
                 }
+
+                // Update receiver's result and wake them up
+                unsafe {
+                    (*receiver).ipc_actual_len = copy_len;
+                    (*receiver).state = crate::task::thread::ThreadState::Ready;
+                }
+
+                return Ok(copy_len);
             }
         }
 
@@ -261,7 +276,122 @@ impl Channel {
         Ok(actual_len)
     }
 
+    pub fn read_with_timeout(&mut self, data: &mut [u8], handles: &mut [HandleValue], timeout_ms: u64) -> Result<usize> {
+        if self.state == ChannelState::Closed {
+            return Err(Status::PeerClosed);
+        }
+
+        let cur_thread_ptr = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() }
+            .ok_or(Status::ThreadNotFound)?;
+        let cur_thread = unsafe { &mut *cur_thread_ptr };
+
+        if let Some(sender_tid) = self.pop_sender() {
+            if let Some(sender) = unsafe { crate::task::scheduler::SCHEDULER.get_thread_ptr(sender_tid) } {
+                let src_slice = unsafe {
+                    core::slice::from_raw_parts((*sender).ipc_buf_ptr as *const u8, (*sender).ipc_buf_len)
+                };
+                let copy_len = core::cmp::min(src_slice.len(), data.len());
+                data[..copy_len].copy_from_slice(&src_slice[..copy_len]);
+
+                if !cur_thread.handle_table.is_null() {
+                    let mut h_idx = 0;
+                    for slot in unsafe { (*sender).ipc_transfer_slots.iter_mut() } {
+                        if let Some((obj, rights)) = slot.take() {
+                            if let Ok(new_hv) = unsafe { (&*cur_thread.handle_table).add(obj, rights) } {
+                                cur_thread.ipc_transfer_handles[h_idx] = Some(new_hv.get());
+                                h_idx += 1;
+                            }
+                        }
+                    }
+                }
+
+                unsafe {
+                    (*sender).ipc_actual_len = copy_len;
+                    (*sender).state = crate::task::thread::ThreadState::Ready;
+                }
+
+                for i in 0..handles.len() {
+                    if i < cur_thread.ipc_transfer_handles.len() {
+                        if let Some(h_raw) = cur_thread.ipc_transfer_handles[i].take() {
+                            handles[i] = HandleValue::new(h_raw);
+                        }
+                    }
+                }
+
+                return Ok(copy_len);
+            }
+        }
+
+        cur_thread.ipc_buf_ptr = data.as_mut_ptr() as usize;
+        cur_thread.ipc_buf_len = data.len();
+        cur_thread.ipc_actual_len = 0;
+        cur_thread.state = crate::task::thread::ThreadState::Blocked;
+
+        let tid = cur_thread.id;
+        if !self.push_receiver(tid) {
+            cur_thread.state = crate::task::thread::ThreadState::Running;
+            return Err(Status::NoMemory);
+        }
+
+        let deadline = if timeout_ms > 0 {
+            Some(crate::drivers::timer::get_ticks() + timeout_ms * 1000 / 10)
+        } else {
+            None
+        };
+
+        unsafe {
+            crate::task::scheduler::SCHEDULER.schedule();
+        }
+
+        let woken_thread = unsafe { &mut *cur_thread_ptr };
+
+        if deadline.is_some() {
+            let current_ticks = crate::drivers::timer::get_ticks();
+            if current_ticks >= deadline.unwrap() {
+                self.remove_receiver(tid);
+                if cur_thread.state == crate::task::thread::ThreadState::Blocked {
+                    cur_thread.state = crate::task::thread::ThreadState::Ready;
+                }
+                return Err(Status::TimedOut);
+            }
+        }
+
+        let actual_len = woken_thread.ipc_actual_len;
+
+        for i in 0..handles.len() {
+            if i < woken_thread.ipc_transfer_handles.len() {
+                if let Some(h_raw) = woken_thread.ipc_transfer_handles[i].take() {
+                    handles[i] = HandleValue::new(h_raw);
+                }
+            }
+        }
+
+        Ok(actual_len)
+    }
+
+    fn remove_receiver(&mut self, tid: usize) {
+        for i in 0..MAX_WAITERS {
+            if self.recv_waiters[i] == Some(tid) {
+                self.recv_waiters[i] = None;
+                for j in i..MAX_WAITERS-1 {
+                    self.recv_waiters[j] = self.recv_waiters[j+1];
+                }
+                self.recv_waiters[MAX_WAITERS-1] = None;
+                return;
+            }
+        }
+    }
+
     pub fn close(&mut self) {
         self.state = ChannelState::Closed;
+
+        for i in 0..MAX_WAITERS {
+            if let Some(tid) = self.send_waiters[i].take() {
+                unsafe { crate::task::scheduler::SCHEDULER.wake_thread(tid); }
+            }
+            if let Some(tid) = self.recv_waiters[i].take() {
+                unsafe { crate::task::scheduler::SCHEDULER.wake_thread(tid); }
+            }
+        }
     }
 }

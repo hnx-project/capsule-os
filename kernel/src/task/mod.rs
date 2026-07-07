@@ -3,7 +3,7 @@ pub mod thread;
 pub mod process;
 
 pub use scheduler::Scheduler;
-pub use thread::Thread;
+pub use thread::{Thread, Priority};
 pub use process::Process;
 
 #[cfg(target_arch = "aarch64")]

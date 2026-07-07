@@ -21,9 +21,9 @@ fn handle_table() -> Option<&'static HandleTable> {
 
 pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
                         arg2: usize, arg3: usize, arg4: usize, arg5: usize) -> usize {
-    let thread = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_mut() };
-    let table = match thread {
-        Some(t) if !t.handle_table.is_null() => unsafe { &*t.handle_table },
+    let thread_ptr = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() };
+    let table = match thread_ptr {
+        Some(t) if !unsafe { (*t).handle_table.is_null() } => unsafe { &*(*t).handle_table },
         _ => match handle_table() {
             Some(t) => t,
             None => return Status::NotAllowed.to_raw(),

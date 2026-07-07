@@ -1,115 +1,221 @@
-use crate::task::thread::{Thread, ThreadState};
+use crate::task::thread::{Priority, Thread, ThreadState};
 use crate::task::switch_to;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 pub const MAX_THREADS: usize = 16;
+pub const PRIORITY_LEVELS: usize = 5;
+
+struct ThreadQueue {
+    items: [Option<usize>; MAX_THREADS],
+    count: usize,
+}
+
+impl ThreadQueue {
+    const fn new() -> Self {
+        ThreadQueue {
+            items: [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None],
+            count: 0,
+        }
+    }
+
+    fn push(&mut self, thread_id: usize) -> bool {
+        if self.count >= MAX_THREADS {
+            return false;
+        }
+        self.items[self.count] = Some(thread_id);
+        self.count += 1;
+        true
+    }
+
+    fn pop_highest_priority(&mut self) -> Option<usize> {
+        if self.count == 0 {
+            return None;
+        }
+        let result = self.items[0];
+        for i in 1..self.count {
+            self.items[i - 1] = self.items[i];
+        }
+        self.count -= 1;
+        self.items[self.count] = None;
+        result
+    }
+
+    fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+}
 
 pub struct Scheduler {
     threads: [Option<Thread>; MAX_THREADS],
-    current: Option<usize>,
+    queues: [ThreadQueue; PRIORITY_LEVELS],
+    current_idx: Option<usize>,
     tick_count: usize,
     running: bool,
 }
+
+static SCHEDULER_LOCK: AtomicBool = AtomicBool::new(false);
 
 pub static mut SCHEDULER: Scheduler = Scheduler::new();
 
 impl Scheduler {
     pub const fn new() -> Self {
-        const NONE_THREAD: Option<Thread> = None;
         Scheduler {
-            threads: [NONE_THREAD; MAX_THREADS],
-            current: None,
+            threads: [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None],
+            queues: [ThreadQueue::new(), ThreadQueue::new(), ThreadQueue::new(), ThreadQueue::new(), ThreadQueue::new()],
+            current_idx: None,
             tick_count: 0,
             running: false,
         }
     }
 
-    pub fn add(&mut self, thread: Thread) {
-        for slot in self.threads.iter_mut() {
-            if slot.is_none() {
-                *slot = Some(thread);
-                return;
+    fn lock(&self) {
+        while SCHEDULER_LOCK.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            core::hint::spin_loop();
+        }
+    }
+
+    fn unlock(&self) {
+        SCHEDULER_LOCK.store(false, Ordering::Release);
+    }
+
+    fn priority_to_index(priority: Priority) -> usize {
+        priority as usize
+    }
+
+    fn find_empty_slot(&self) -> Option<usize> {
+        for i in 0..MAX_THREADS {
+            if self.threads[i].is_none() {
+                return Some(i);
             }
         }
-        panic!("[SCHED] Max thread count exceeded!");
+        None
+    }
+
+    pub fn add(&mut self, mut thread: Thread) {
+        self.lock();
+
+        let slot = self.find_empty_slot();
+        if let Some(idx) = slot {
+            let priority_idx = Self::priority_to_index(thread.priority);
+            thread.state = ThreadState::Ready;
+            self.threads[idx] = Some(thread);
+
+            if !self.queues[priority_idx].push(idx) {
+                self.threads[idx] = None;
+                panic!("[SCHED] Queue overflow!");
+            }
+        } else {
+            panic!("[SCHED] Max thread count exceeded!");
+        }
+
+        self.unlock();
+    }
+
+    fn pop_next_from_all_queues(&mut self) -> Option<usize> {
+        for i in 0..PRIORITY_LEVELS {
+            if let Some(idx) = self.queues[i].pop_highest_priority() {
+                return Some(idx);
+            }
+        }
+        None
+    }
+
+    fn requeue_current(&mut self, idx: usize) {
+        let priority_idx = if let Some(ref t) = self.threads[idx] {
+            Self::priority_to_index(t.priority)
+        } else {
+            return;
+        };
+        self.queues[priority_idx].push(idx);
     }
 
     pub fn run(&mut self) -> ! {
+        self.lock();
         self.running = true;
-        let next_idx = 0;
-        self.current = Some(next_idx);
 
-        let next_thread = self.threads[next_idx].as_mut().expect("no threads in scheduler");
-        next_thread.state = ThreadState::Running;
+        if let Some(idx) = self.pop_next_from_all_queues() {
+            self.current_idx = Some(idx);
+            unsafe {
+                if let Some(ref mut t) = self.threads[idx] {
+                    t.state = ThreadState::Running;
+                    t.reset_time_slice();
+                }
+            }
 
-        let mut dummy_ctx = crate::task::thread::ThreadContext::default();
-        unsafe {
-            switch_to(&mut dummy_ctx, &next_thread.context);
+            let mut dummy_ctx = crate::task::thread::ThreadContext::default();
+            unsafe {
+                switch_to(&mut dummy_ctx, &mut self.threads[idx].as_mut().unwrap().context);
+            }
         }
 
-        unreachable!("Scheduler::run returned");
+        panic!("[SCHED] No threads to run!");
     }
 
     pub fn schedule(&mut self) {
+        self.lock();
+
         if !self.running {
+            self.unlock();
             return;
         }
 
         self.tick_count = self.tick_count.wrapping_add(1);
 
-        let current_idx = match self.current {
+        let prev_idx = match self.current_idx {
             Some(idx) => idx,
-            None => return,
-        };
-
-        // Find the next runnable thread (starting from (current_idx + 1) % MAX_THREADS)
-        let mut next_idx = None;
-        for i in 1..=MAX_THREADS {
-            let idx = (current_idx + i) % MAX_THREADS;
-            if let Some(t) = &self.threads[idx] {
-                if t.state == ThreadState::Ready || t.state == ThreadState::Initial {
-                    next_idx = Some(idx);
-                    break;
-                }
-            }
-        }
-
-        if let Some(n_idx) = next_idx {
-            if n_idx == current_idx {
-                // Only current thread is ready, continue running it
+            None => {
+                self.unlock();
                 return;
             }
+        };
 
-            // Switch to the next thread
-            self.current = Some(n_idx);
+        let prev_state = if let Some(ref mut t) = self.threads[prev_idx] {
+            if t.state == ThreadState::Running {
+                t.state = ThreadState::Ready;
+            }
+            t.remaining_ticks = t.remaining_ticks.saturating_sub(1);
+            if t.remaining_ticks == 0 {
+                t.decay_priority();
+            }
+            t.state
+        } else {
+            ThreadState::Dead
+        };
+
+        if prev_state == ThreadState::Ready {
+            self.requeue_current(prev_idx);
+        }
+
+        if let Some(next_idx) = self.pop_next_from_all_queues() {
+            let prev_name = if let Some(ref t) = self.threads[prev_idx] { t.name } else { "none" };
+            let next_name = if let Some(ref t) = self.threads[next_idx] { t.name } else { "none" };
+
+            if let Some(ref mut t) = self.threads[next_idx] {
+                t.state = ThreadState::Running;
+                t.reset_time_slice();
+            }
+
+            print_switch(prev_name, next_name);
+            self.current_idx = Some(next_idx);
+
+            let prev_context_ptr = &mut self.threads[prev_idx].as_mut().unwrap().context as *mut _;
+            let next_context_ptr = &mut self.threads[next_idx].as_mut().unwrap().context as *mut _;
+
+            self.unlock();
 
             unsafe {
-                let threads_ptr = self.threads.as_mut_ptr();
-                let cur_thread = &mut *threads_ptr.add(current_idx);
-                let next_thread = &mut *threads_ptr.add(n_idx);
-
-                if let (Some(cur), Some(next)) = (cur_thread, next_thread) {
-                    if cur.state == ThreadState::Running {
-                        cur.state = ThreadState::Ready;
-                    }
-                    next.state = ThreadState::Running;
-
-                    // Log context switch on every switch for visual confirmation
-                    print_switch(cur.name, next.name);
-
-                    switch_to(&mut cur.context, &next.context);
-                }
+                switch_to(&mut *prev_context_ptr, &*next_context_ptr);
             }
         } else {
-            // No runnable threads found.
-            // If the current thread is DEAD, we must halt the CPU to prevent infinite exception/ERET loops!
-            let current_dead = if let Some(cur) = self.get_current_thread_mut() {
-                cur.state == ThreadState::Dead
-            } else {
-                true
-            };
+            let all_dead = self.threads.iter().all(|t| match t {
+                None => true,
+                Some(thread) => thread.state == ThreadState::Dead,
+            });
 
-            if current_dead {
-                crate::log_error!("SCHED", "No runnable threads left and current thread is DEAD! Halting CPU safely...");
+            self.unlock();
+
+            if all_dead {
+                crate::log_error!("SCHED", "No runnable threads left! Halting CPU safely...");
                 unsafe {
                     crate::arch::trap::disable_irqs();
                     loop {
@@ -120,35 +226,64 @@ impl Scheduler {
                     }
                 }
             }
+
+            self.current_idx = None;
         }
+    }
+
+    pub fn tick(&mut self) {
+        self.schedule();
     }
 
     pub fn current_thread_name(&self) -> &'static str {
-        if let Some(idx) = self.current {
-            if let Some(t) = &self.threads[idx] {
-                return t.name;
+        self.lock();
+        let name = if let Some(idx) = self.current_idx {
+            if let Some(ref t) = self.threads[idx] {
+                t.name
+            } else {
+                "none"
             }
-        }
-        "none"
-    }
-
-    pub fn get_current_thread_mut(&mut self) -> Option<&mut Thread> {
-        if let Some(idx) = self.current {
-            self.threads[idx].as_mut()
         } else {
-            None
-        }
+            "none"
+        };
+        self.unlock();
+        name
     }
 
-    pub fn get_thread_mut(&mut self, thread_id: usize) -> Option<&mut Thread> {
-        for slot in self.threads.iter_mut() {
-            if let Some(t) = slot {
+    pub fn get_current_thread_ptr(&mut self) -> Option<*mut Thread> {
+        self.lock();
+        let ptr = self.current_idx.and_then(|idx| self.threads[idx].as_mut().map(|t| t as *mut Thread));
+        self.unlock();
+        ptr
+    }
+
+    pub fn get_thread_ptr(&mut self, thread_id: usize) -> Option<*mut Thread> {
+        self.lock();
+        let mut ptr = None;
+        for i in 0..MAX_THREADS {
+            if let Some(ref mut t) = self.threads[i] {
                 if t.id == thread_id {
-                    return Some(t);
+                    ptr = Some(t as *mut Thread);
+                    break;
                 }
             }
         }
-        None
+        self.unlock();
+        ptr
+    }
+
+    pub fn wake_thread(&mut self, thread_id: usize) {
+        self.lock();
+        for i in 0..MAX_THREADS {
+            if let Some(ref mut t) = self.threads[i] {
+                if t.id == thread_id && (t.state == ThreadState::Blocked || t.state == ThreadState::Sleeping) {
+                    t.state = ThreadState::Ready;
+                    self.requeue_current(i);
+                    break;
+                }
+            }
+        }
+        self.unlock();
     }
 }
 

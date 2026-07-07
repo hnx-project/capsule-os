@@ -125,6 +125,10 @@ pub fn phys_count() -> u64 {
     }
 }
 
+pub fn get_ticks() -> u64 {
+    unsafe { TICK_COUNT }
+}
+
 /// Called from the IRQ dispatcher (IRQ-EL0 / IRQ-EL1 paths) on every timer
 /// tick.  `frame` is the kernel trap-frame pointer; on AArch64 EL0 IRQ it
 /// is non-null and lets us persist x0..x18 into the current thread's
@@ -151,12 +155,14 @@ pub fn handle_tick_from_irq(frame: *mut crate::arch::aarch64::trap::TrapFrame) {
             out(reg) spsr,
             options(nomem, nostack)
         );
-        if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_mut() {
-            t.context.elr = elr;
-            t.context.spsr = spsr;
-            if !frame.is_null() {
-                let f = &*frame;
-                t.context.x = f.x;
+        if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
+            unsafe {
+                (*t).context.elr = elr;
+                (*t).context.spsr = spsr;
+                if !frame.is_null() {
+                    let f = &*frame;
+                    (*t).context.x = f.x;
+                }
             }
         }
 

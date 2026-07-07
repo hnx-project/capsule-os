@@ -130,10 +130,8 @@ pub fn sys_exec(table: &HandleTable, program_name: &str) -> Result<()> {
     // and the just-exec'd process would share the same global TTBR0
     // page table; init's linker PC-relative adr/adrp would then point
     // into the new process's segments and trigger spurious faults.
-    if let Some(caller) = unsafe {
-        crate::task::scheduler::SCHEDULER.get_current_thread_mut()
-    } {
-        caller.state = crate::task::thread::ThreadState::Dead;
+    if let Some(caller) = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() } {
+        unsafe { (*caller).state = crate::task::thread::ThreadState::Dead; }
     }
 
     crate::log_info!(
@@ -188,12 +186,10 @@ pub fn sys_thread_start(table: &HandleTable, thread_handle_raw: u32) -> Result<(
     let t_hv = HandleValue::new(thread_handle_raw);
     let tid = table.with_thread(t_hv, Rights::WRITE.bits(), |id| id)?;
 
-    unsafe {
-        if let Some(t) = crate::task::scheduler::SCHEDULER.get_thread_mut(tid) {
-            t.state = crate::task::thread::ThreadState::Ready;
-            Ok(())
-        } else {
-            Err(Status::NotFound)
-        }
+    if let Some(t) = unsafe { crate::task::scheduler::SCHEDULER.get_thread_ptr(tid) } {
+        unsafe { (*t).state = crate::task::thread::ThreadState::Ready; }
+        Ok(())
+    } else {
+        Err(Status::NotFound)
     }
 }

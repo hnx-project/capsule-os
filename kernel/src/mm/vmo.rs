@@ -51,11 +51,10 @@ struct VmoHeader {
 #[derive(Debug)]
 pub struct Vmo {
     pub id: u64,
-    /// Physical address of the metadata page (one page holds the
-    /// `VmoHeader` followed by the per-page table).
     meta_pa: PhysAddr,
-    /// Cached size in bytes.
     size: usize,
+    pub is_cow: bool,
+    pub parent_id: Option<u64>,
 }
 
 impl Vmo {
@@ -90,6 +89,8 @@ impl Vmo {
             id: VMO_ID_COUNTER.fetch_add(1, Ordering::Relaxed) as u64,
             meta_pa,
             size: pages * PAGE_SIZE,
+            is_cow: false,
+            parent_id: None,
         })
     }
 
@@ -121,6 +122,49 @@ impl Vmo {
             self.commit_page(i * PAGE_SIZE)?;
         }
         Ok(())
+    }
+
+    pub fn fork(&mut self, new_id: u64) -> Result<Self> {
+        let meta_pa = phys::alloc_page()?;
+        let pages = self.size / PAGE_SIZE;
+
+        unsafe {
+            let base = pa_to_kernel_va(meta_pa.as_usize()) as *mut u8;
+            for i in 0..PAGE_SIZE {
+                core::ptr::write_volatile(base.add(i), 0);
+            }
+
+            let header = self.header();
+            let new_header = pa_to_kernel_va(meta_pa.as_usize()) as *mut VmoHeader;
+            (*new_header).magic = VMO_MAGIC;
+            (*new_header).version = VMO_VERSION;
+            (*new_header).capacity_pages = pages as u64;
+            (*new_header).committed = (*header).committed;
+            (*new_header).size_bytes = (*header).size_bytes;
+
+            for i in 0..pages {
+                let old_slot = self.page_slot(i);
+                let new_slot = {
+                    let base = pa_to_kernel_va(meta_pa.as_usize()) as *mut u8;
+                    let offset = core::mem::size_of::<VmoHeader>()
+                        + i * core::mem::size_of::<Option<PhysAddr>>();
+                    base.add(offset) as *mut Option<PhysAddr>
+                };
+                (*new_slot) = (*old_slot);
+            }
+        }
+
+        Ok(Vmo {
+            id: new_id,
+            meta_pa,
+            size: self.size,
+            is_cow: true,
+            parent_id: Some(self.id),
+        })
+    }
+
+    pub fn make_cow(&mut self) {
+        self.is_cow = true;
     }
 
     /// Read up to `buf.len()` bytes from the VMO at byte `offset`.

@@ -7,7 +7,24 @@ use crate::mm::phys::{self, PhysAddr};
 pub const KERNEL_STACK_PAGES: usize = 4;
 pub const KERNEL_STACK_SIZE: usize = KERNEL_STACK_PAGES * PAGE_SIZE;
 
+pub const DEFAULT_TIME_SLICE: usize = 5;
+
 static THREAD_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Priority {
+    Realtime = 0,
+    High = 1,
+    Normal = 2,
+    Low = 3,
+    Idle = 4,
+}
+
+impl Default for Priority {
+    fn default() -> Self {
+        Priority::Normal
+    }
+}
 
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy)]
@@ -25,7 +42,9 @@ pub struct Thread {
     pub id: usize,
     pub name: &'static str,
     pub state: ThreadState,
-    pub priority: u8,
+    pub priority: Priority,
+    pub time_slice: usize,
+    pub remaining_ticks: usize,
     pub process_id: u64,
     pub entry: usize,
     pub kernel_stack_base_pa: PhysAddr,
@@ -33,7 +52,6 @@ pub struct Thread {
     pub kernel_sp: usize,
     pub context: ThreadContext,
 
-    // === IPC 会合传输上下文 ===
     pub ipc_buf_ptr: usize,
     pub ipc_buf_len: usize,
     pub ipc_actual_len: usize,
@@ -106,7 +124,9 @@ impl Thread {
             id: THREAD_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             name,
             state: ThreadState::Initial,
-            priority: 128,
+            priority: Priority::Normal,
+            time_slice: DEFAULT_TIME_SLICE,
+            remaining_ticks: DEFAULT_TIME_SLICE,
             process_id: 0,
             entry: entry as usize,
             kernel_stack_base_pa: stack_pa0,
@@ -150,7 +170,9 @@ impl Thread {
             id: THREAD_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             name,
             state: ThreadState::Initial,
-            priority: 128,
+            priority: Priority::Normal,
+            time_slice: DEFAULT_TIME_SLICE,
+            remaining_ticks: DEFAULT_TIME_SLICE,
             process_id: 0,
             entry,
             kernel_stack_base_pa: stack_pa0,
@@ -165,6 +187,111 @@ impl Thread {
             ipc_transfer_slots: [None, None],
             port_packet_slot: None,
         })
+    }
+
+    pub fn new_kernel_with_priority(name: &'static str, entry: extern "C" fn(), priority: Priority) -> Result<Self> {
+        let stack_pa0 = phys::alloc_page()?;
+        for _ in 1..KERNEL_STACK_PAGES {
+            let _ = phys::alloc_page()?;
+        }
+        let kernel_stack_va = pa_to_kernel_va(stack_pa0.as_usize());
+        let stack_top = kernel_stack_va + KERNEL_STACK_SIZE;
+
+        let mut ctx = ThreadContext::default();
+        ctx.sp = stack_top as u64;
+        ctx.elr = thread_bootstrap as usize as u64;
+        ctx.r[0] = entry as usize as u64;
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            ctx.spsr = 0x005;
+            ctx.r[11] = thread_bootstrap as usize as u64;
+        }
+        #[cfg(target_arch = "riscv64")]
+        {
+            ctx.spsr = 0x102;
+        }
+
+        Ok(Thread {
+            id: THREAD_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
+            name,
+            state: ThreadState::Initial,
+            priority,
+            time_slice: DEFAULT_TIME_SLICE,
+            remaining_ticks: DEFAULT_TIME_SLICE,
+            process_id: 0,
+            entry: entry as usize,
+            kernel_stack_base_pa: stack_pa0,
+            kernel_stack_size: KERNEL_STACK_SIZE,
+            kernel_sp: stack_top,
+            context: ctx,
+            ipc_buf_ptr: 0,
+            ipc_buf_len: 0,
+            ipc_actual_len: 0,
+            ipc_transfer_handles: [None; 4],
+            handle_table: core::ptr::null(),
+            ipc_transfer_slots: [None, None],
+            port_packet_slot: None,
+        })
+    }
+
+    pub fn new_user_with_priority(name: &'static str, entry: usize, stack_top: usize, priority: Priority) -> Result<Self> {
+        let stack_pa0 = phys::alloc_page()?;
+        for _ in 1..KERNEL_STACK_PAGES {
+            let _ = phys::alloc_page()?;
+        }
+        let kernel_stack_va = pa_to_kernel_va(stack_pa0.as_usize());
+        let kernel_stack_top = kernel_stack_va + KERNEL_STACK_SIZE;
+
+        let mut ctx = ThreadContext::default();
+        ctx.sp = kernel_stack_top as u64;
+        ctx.user_sp = stack_top as u64;
+        ctx.elr = entry as u64;
+        ctx.spsr = 0x3c0;
+        ctx.r[0] = entry as u64;
+        ctx.r[1] = stack_top as u64;
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            ctx.r[11] = user_eret_stub as usize as u64;
+        }
+
+        Ok(Thread {
+            id: THREAD_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
+            name,
+            state: ThreadState::Initial,
+            priority,
+            time_slice: DEFAULT_TIME_SLICE,
+            remaining_ticks: DEFAULT_TIME_SLICE,
+            process_id: 0,
+            entry,
+            kernel_stack_base_pa: stack_pa0,
+            kernel_stack_size: KERNEL_STACK_SIZE,
+            kernel_sp: kernel_stack_top,
+            context: ctx,
+            ipc_buf_ptr: 0,
+            ipc_buf_len: 0,
+            ipc_actual_len: 0,
+            ipc_transfer_handles: [None; 4],
+            handle_table: core::ptr::null(),
+            ipc_transfer_slots: [None, None],
+            port_packet_slot: None,
+        })
+    }
+
+    pub fn reset_time_slice(&mut self) {
+        self.remaining_ticks = self.time_slice;
+    }
+
+    pub fn decay_priority(&mut self) {
+        match self.priority {
+            Priority::Realtime => self.priority = Priority::High,
+            Priority::High => self.priority = Priority::Normal,
+            Priority::Normal => self.priority = Priority::Low,
+            Priority::Low => self.priority = Priority::Low,
+            Priority::Idle => self.priority = Priority::Idle,
+        }
+        self.reset_time_slice();
     }
 }
 

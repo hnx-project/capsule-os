@@ -104,8 +104,8 @@ pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
             // but updating here makes sure that a syscall that immediately
             // causes a context switch (or a syscall return that is then
             // preempted) still has the right resume PC.
-            if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_mut() {
-                t.context.elr = (*frame).elr;
+            if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
+                unsafe { (*t).context.elr = (*frame).elr; }
             }
         }
     } else {
@@ -115,13 +115,13 @@ pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
             let far = (*frame).far;
             let elr = (*frame).elr;
             let spsr = (*frame).spsr;
-            if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_mut() {
+            if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
                 crate::log_error!(
                     "EL0-FAULT",
                     "EC={:#x} ESR={:#x} ELR={:#x} FAR={:#x} SPSR={:#x} thread=#{} -- KILLED thread to prevent looping exception",
-                    ec, esr, elr, far, spsr, t.id
+                    ec, esr, elr, far, spsr, (*t).id
                 );
-                t.state = crate::task::thread::ThreadState::Dead;
+                (*t).state = crate::task::thread::ThreadState::Dead;
                 crate::task::scheduler::SCHEDULER.schedule();
             } else {
                 crate::log_error!(

@@ -76,9 +76,8 @@ impl Port {
         }
 
         // 2. Queue is empty, register ourselves as waiter and block
-        let cur_thread_ptr = unsafe {
-            crate::task::scheduler::SCHEDULER.get_current_thread_mut().ok_or(Status::ThreadNotFound)? as *mut crate::task::thread::Thread
-        };
+        let cur_thread_ptr = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() }
+            .ok_or(Status::ThreadNotFound)?;
         let cur_thread = unsafe { &mut *cur_thread_ptr };
 
         cur_thread.port_packet_slot = None;
@@ -97,16 +96,63 @@ impl Port {
         Ok(pkt)
     }
 
+    pub fn wait_with_timeout(&mut self, timeout_ms: u64) -> Result<PortPacket> {
+        let p = self.queue_va as *mut Option<PortPacket>;
+
+        if self.head != self.tail {
+            unsafe {
+                if let Some(pkt) = (*p.add(self.head)).take() {
+                    self.head = (self.tail + 1) % PORT_QUEUE_MAX;
+                    return Ok(pkt);
+                }
+            }
+        }
+
+        let cur_thread_ptr = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() }
+            .ok_or(Status::ThreadNotFound)?;
+        let cur_thread = unsafe { &mut *cur_thread_ptr };
+
+        cur_thread.port_packet_slot = None;
+        cur_thread.state = crate::task::thread::ThreadState::Blocked;
+        self.waiter = Some(cur_thread.id);
+
+        let deadline = if timeout_ms > 0 {
+            Some(crate::drivers::timer::get_ticks() + timeout_ms * 1000 / 10)
+        } else {
+            None
+        };
+
+        unsafe {
+            crate::task::scheduler::SCHEDULER.schedule();
+        }
+
+        let woken_thread = unsafe { &mut *cur_thread_ptr };
+
+        if deadline.is_some() {
+            let current_ticks = crate::drivers::timer::get_ticks();
+            if current_ticks >= deadline.unwrap() {
+                self.waiter = None;
+                if cur_thread.state == crate::task::thread::ThreadState::Blocked {
+                    cur_thread.state = crate::task::thread::ThreadState::Ready;
+                }
+                return Err(Status::TimedOut);
+            }
+        }
+
+        let pkt = woken_thread.port_packet_slot.take().ok_or(Status::Canceled)?;
+        Ok(pkt)
+    }
+
     pub fn queue(&mut self, packet: &PortPacket) -> Result<()> {
         // 1. Check if there is already a service thread waiting
         if let Some(waiter_tid) = self.waiter.take() {
-            unsafe {
-                if let Some(waiter) = crate::task::scheduler::SCHEDULER.get_thread_mut(waiter_tid) {
-                    // Copy packet directly to waiter's TCB slot
-                    waiter.port_packet_slot = Some(*packet);
-                    waiter.state = crate::task::thread::ThreadState::Ready;
-                    return Ok(());
+            if let Some(waiter) = unsafe { crate::task::scheduler::SCHEDULER.get_thread_ptr(waiter_tid) } {
+                // Copy packet directly to waiter's TCB slot
+                unsafe {
+                    (*waiter).port_packet_slot = Some(*packet);
+                    (*waiter).state = crate::task::thread::ThreadState::Ready;
                 }
+                return Ok(());
             }
         }
 

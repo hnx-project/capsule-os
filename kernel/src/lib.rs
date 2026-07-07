@@ -14,6 +14,7 @@ pub mod object;
 pub mod syscall;
 pub mod sync;
 pub mod kcore;
+pub mod vfs;
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
