@@ -111,9 +111,12 @@ impl Scheduler {
             if current_dead {
                 crate::log_error!("SCHED", "No runnable threads left and current thread is DEAD! Halting CPU safely...");
                 unsafe {
-                    crate::arch::aarch64::trap::disable_irqs();
+                    crate::arch::trap::disable_irqs();
                     loop {
+                        #[cfg(target_arch = "aarch64")]
                         core::arch::asm!("wfe");
+                        #[cfg(target_arch = "riscv64")]
+                        core::arch::asm!("wfi");
                     }
                 }
             }
