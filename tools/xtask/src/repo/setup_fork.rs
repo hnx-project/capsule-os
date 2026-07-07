@@ -1,5 +1,4 @@
 use crate::repo::{load_config, run_cmd, run_cmd_status};
-use std::path::Path;
 
 pub fn handle_setup_fork(username: &str) -> Result<(), String> {
     let config = load_config()?;
@@ -35,42 +34,14 @@ pub fn handle_setup_fork(username: &str) -> Result<(), String> {
     println!("⚙️ Binding local develop branch to origin/develop as tracker...");
     let _ = run_cmd_status(&["git", "branch", "--set-upstream-to=origin/develop"], None);
 
-    // 2. Setup Submodules dynamically from xtask.toml config
-    for (local_path, sub_cfg) in &config.submodules {
-        let sub_dir = Path::new(local_path);
-        if sub_dir.exists() {
-            println!("🚀 Transitioning '{}' submodule remote...", local_path);
-            let sub_origin =
-                run_cmd(&["git", "remote", "get-url", "origin"], Some(sub_dir)).unwrap_or_default();
-            if sub_origin.contains(&sub_cfg.upstream)
-                || sub_origin.contains(&config.gitcode.upstream_owner)
-            {
-                let _ = run_cmd_status(
-                    &["git", "remote", "rename", "origin", "upstream"],
-                    Some(sub_dir),
-                );
-                let sub_new_origin =
-                    format!("git@gitcode.com:{}/{}.git", username, sub_cfg.fork_repo);
-                let _ = run_cmd_status(
-                    &["git", "remote", "add", "origin", &sub_new_origin],
-                    Some(sub_dir),
-                );
-                println!("✅ Added {} fork: {}", local_path, sub_new_origin);
+    // 2. Setup Subtrees Remotes
+    println!("🚀 Setting up Subtree Upstream Remotes...");
+    let _ = run_cmd_status(&["git", "remote", "add", "bootloader-up", "git@gitcode.com:hnx-project/capsule-bootloader.git"], None);
+    let _ = run_cmd_status(&["git", "remote", "add", "kernel-up", "git@gitcode.com:hnx-project/hnx-core.git"], None);
+    let _ = run_cmd_status(&["git", "remote", "add", "ohlink-cc-up", "git@gitcode.com:hnx-project/ohlink-cc.git"], None);
 
-                // Ensure submodules track origin/develop to eliminate visual push warnings
-                let _ = run_cmd_status(
-                    &["git", "branch", "--set-upstream-to=origin/develop"],
-                    Some(sub_dir),
-                );
-            } else {
-                println!(
-                    "ℹ️ Submodule '{}' remote already customized: {}",
-                    local_path, sub_origin
-                );
-            }
-        }
-    }
+    let _ = run_cmd_status(&["git", "fetch", "--all"], None);
 
-    println!("🎉 Fork topology set up completed perfectly!");
+    println!("🎉 Fork topology and Subtree remotes set up completed perfectly!");
     Ok(())
 }

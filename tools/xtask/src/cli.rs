@@ -17,15 +17,15 @@ pub enum Commands {
         #[command(subcommand)]
         sub: RepoSubcommands,
     },
-    #[command(about = "Operating System development and execution (Build, Run, Check Env)")]
-    Os {
+    #[command(about = "Operating System code development and execution (Build, Run, Check Env)")]
+    Code {
         #[command(subcommand)]
-        sub: OsSubcommands,
+        sub: CodeSubcommands,
     },
 }
 
 #[derive(Subcommand, Debug, Clone)]
-pub enum OsSubcommands {
+pub enum CodeSubcommands {
     #[command(about = "Build CapsuleOS kernel, standard library, and userspace programs")]
     Build {
         #[arg(

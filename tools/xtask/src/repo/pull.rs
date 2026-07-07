@@ -1,7 +1,6 @@
 use crate::repo::{run_cmd, run_cmd_status, XtaskConfig};
-use std::path::Path;
 
-pub fn handle_pull(config: &XtaskConfig) -> Result<(), String> {
+pub fn handle_pull(_config: &XtaskConfig) -> Result<(), String> {
     println!("📥 [1/2] Fetching and aligning with your personal Fork (origin)...");
 
     let dirty_check = run_cmd(&["git", "status", "--porcelain"], None).unwrap_or_default();
@@ -25,25 +24,17 @@ pub fn handle_pull(config: &XtaskConfig) -> Result<(), String> {
         let _ = run_cmd_status(&["git", "rebase", "origin/develop"], None);
     }
 
-    println!("📦 [2/2] Aligning and fetching all submodules...");
-    for (local_path, _sub_cfg) in &config.submodules {
-        let sub_dir = Path::new(local_path);
-        if sub_dir.exists() {
-            println!(
-                "📥 Pulling/Fetching Submodule '{}' from origin...",
-                local_path
-            );
-            let _ = run_cmd_status(&["git", "fetch", "origin"], Some(sub_dir));
-        }
-    }
+    println!("📦 [2/2] Pulling and synchronizing all Git Subtrees from Upstream...");
+    
+    println!("📥 Pulling Subtree 'bootloader' (develop-pangu)...");
+    let _ = run_cmd_status(&["git", "subtree", "pull", "--prefix=bootloader", "bootloader-up", "develop-pangu", "--squash"], None);
 
-    println!("⚙️ Recursively updating submodules pointers...");
-    run_cmd_status(
-        &["git", "submodule", "update", "--init", "--recursive"],
-        None,
-    )
-    .map_err(|_| "Failed to recursively update submodules pointers.".to_string())?;
+    println!("📥 Pulling Subtree 'kernel' (develop)...");
+    let _ = run_cmd_status(&["git", "subtree", "pull", "--prefix=kernel", "kernel-up", "develop", "--squash"], None);
 
-    println!("\n🚀 \x1B[1;32mOne-key pull complete! Local branch and all submodules are 100% synchronized and up-to-date with your personal Fork (origin).\x1B[0m\n");
+    println!("📥 Pulling Subtree 'tools/ohlink-cc' (main)...");
+    let _ = run_cmd_status(&["git", "subtree", "pull", "--prefix=tools/ohlink-cc", "ohlink-cc-up", "main", "--squash"], None);
+
+    println!("\n🚀 \x1B[1;32mOne-key pull complete! Local branch and all subtrees are 100% synchronized and up-to-date!\x1B[0m\n");
     Ok(())
 }
