@@ -1,0 +1,13 @@
+[package]
+name = "ohc-tool"
+version = "0.1.0"
+edition = "2021"
+description = "Tool to pack/unpack .ohc capsule files"
+
+[[bin]]
+name = "ohc-tool"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.0", features = ["derive"] }
+crc32fast = "1.3"
