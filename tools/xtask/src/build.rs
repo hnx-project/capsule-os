@@ -21,6 +21,9 @@ pub fn build(plat: &Platform) -> Result<(), String> {
         BOLD_CYAN, RESET, plat.arch
     );
 
+    // Bootstrap self-built ohlink-cc tools on host first!
+    bootstrap_ohlink_tools()?;
+
     for (crate_name, _out_name) in USERCRATE_S {
         build_userspace_program(plat, crate_name)?;
     }
@@ -39,6 +42,29 @@ pub fn build(plat: &Platform) -> Result<(), String> {
         BOLD_GREEN, RESET
     );
     Ok(())
+}
+
+fn bootstrap_ohlink_tools() -> Result<(), String> {
+    print!("{}  Bootstrapping{} OHLINK Toolchain (Host)...", BOLD_CYAN, RESET);
+    let result = run_silent(
+        Command::new("cargo").args([
+            "build",
+            "--release",
+            "--manifest-path",
+            "tools/ohlink-cc/Cargo.toml",
+        ]),
+        || {
+            println!(
+                "\r{}  Bootstrapping{} OHLINK Toolchain (Host)... Done",
+                BOLD_CYAN, RESET
+            );
+        },
+    );
+    if !result.success {
+        Err("failed to bootstrap OHLINK toolchain".to_string())
+    } else {
+        Ok(())
+    }
 }
 
 fn build_userspace_program(plat: &Platform, crate_name: &str) -> Result<(), String> {

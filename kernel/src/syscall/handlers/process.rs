@@ -22,28 +22,39 @@ pub fn sys_exec(table: &HandleTable, program_name: &str) -> Result<()> {
         }
     };
 
-    if bytes.len() < 32 {
-        crate::log_error!("EXEC", "Invalid OHLINK for {}", program_name);
-        return Err(Status::InvalidArgs);
-    }
+    let parser = ohlink_format::parser::OHLK_Parser::new(bytes).map_err(|e| {
+        crate::log_error!("EXEC", "Invalid OHLINK format for {}: {:?}", program_name, e);
+        Status::InvalidArgs
+    })?;
 
-    let magic = &bytes[0..4];
-    if magic != b"OHLK" {
-        crate::log_error!("EXEC", "Invalid magic for {}", program_name);
-        return Err(Status::InvalidArgs);
+    let header = parser.header();
+    
+    // In OHLINK-SPEC.md, there is no explicit entry_point in OHLK_Header.
+    // Let's deduce entry point relative to virtual address of the first Text segment, or use default.
+    let mut entry = if program_name == "init" { 4096 } else { 65536 };
+    let mut segments_count = 0;
+    
+    for idx in 0..header.header_count {
+        if let Ok(entry_meta) = parser.get_entry(idx) {
+            if entry_meta.ty == ohlink_format::SegmentType::Text.to_u32() {
+                entry = entry_meta.offset as usize;
+            }
+            if entry_meta.ty == ohlink_format::SegmentType::Text.to_u32()
+                || entry_meta.ty == ohlink_format::SegmentType::Data.to_u32()
+                || entry_meta.ty == ohlink_format::SegmentType::Rodata.to_u32()
+                || entry_meta.ty == ohlink_format::SegmentType::Bss.to_u32()
+            {
+                segments_count += 1;
+            }
+        }
     }
-
-    let entry = u64::from_le_bytes([
-        bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13],
-    ]) as usize;
-    let segment_count = u16::from_le_bytes([bytes[14], bytes[15]]) as usize;
 
     crate::log_info!(
         "EXEC",
         "Loading {}: entry={:#x}, segments={}",
         program_name,
         entry,
-        segment_count
+        segments_count
     );
 
     let (proc, name_str) = match program_name {
@@ -54,48 +65,22 @@ pub fn sys_exec(table: &HandleTable, program_name: &str) -> Result<()> {
     };
     let pid = proc.id;
 
-    let mut offset = 32;
-    let payload_start = 32 + segment_count * 24;
-
-    for i in 0..segment_count {
-        if offset + 24 > bytes.len() {
-            crate::log_error!("EXEC", "Segment {} descriptor out of bounds", i);
-            return Err(Status::InvalidArgs);
+    for idx in 0..header.header_count {
+        let entry_meta = match parser.get_entry(idx) {
+            Ok(e) => e,
+            _ => continue,
+        };
+        if entry_meta.ty != ohlink_format::SegmentType::Text.to_u32()
+            && entry_meta.ty != ohlink_format::SegmentType::Data.to_u32()
+            && entry_meta.ty != ohlink_format::SegmentType::Rodata.to_u32()
+            && entry_meta.ty != ohlink_format::SegmentType::Bss.to_u32()
+        {
+            continue;
         }
-        let virt_addr = u64::from_le_bytes([
-            bytes[offset],
-            bytes[offset + 1],
-            bytes[offset + 2],
-            bytes[offset + 3],
-            bytes[offset + 4],
-            bytes[offset + 5],
-            bytes[offset + 6],
-            bytes[offset + 7],
-        ]) as usize;
-        let file_offset = u64::from_le_bytes([
-            bytes[offset + 8],
-            bytes[offset + 9],
-            bytes[offset + 10],
-            bytes[offset + 11],
-            bytes[offset + 12],
-            bytes[offset + 13],
-            bytes[offset + 14],
-            bytes[offset + 15],
-        ]) as usize;
-        let size = u32::from_le_bytes([
-            bytes[offset + 16],
-            bytes[offset + 17],
-            bytes[offset + 18],
-            bytes[offset + 19],
-        ]) as usize;
-        let flags_raw = u32::from_le_bytes([
-            bytes[offset + 20],
-            bytes[offset + 21],
-            bytes[offset + 22],
-            bytes[offset + 23],
-        ]);
 
-        offset += 24;
+        let virt_addr = entry_meta.offset as usize;
+        let size = entry_meta.mem_size as usize;
+        let flags_raw = entry_meta.flags;
 
         let aligned_vaddr = virt_addr & !(4096 - 1);
         let alignment_offset = virt_addr - aligned_vaddr;
@@ -105,9 +90,13 @@ pub fn sys_exec(table: &HandleTable, program_name: &str) -> Result<()> {
         let flags = VmarFlags::from_bits(flags_raw);
 
         let mut vmo = Vmo::create_with_size(aligned_size)?;
-        let segment_payload =
-            &bytes[payload_start + file_offset..payload_start + file_offset + size];
-        vmo.write(alignment_offset, segment_payload)?;
+        if entry_meta.file_size > 0 {
+            let segment_payload = parser.get_segment_data(&entry_meta).map_err(|e| {
+                crate::log_error!("EXEC", "Failed to retrieve segment payload for {}: {:?}", program_name, e);
+                Status::InvalidArgs
+            })?;
+            vmo.write(alignment_offset, segment_payload)?;
+        }
         proc.root_vmar
             .map(&mut vmo, 0, target_va, aligned_size, flags)?;
     }

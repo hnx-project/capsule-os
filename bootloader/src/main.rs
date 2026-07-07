@@ -44,8 +44,8 @@ extern "C" fn rust_main(dtb_ptr: *const u8) -> ! {
         header[i] = unsafe { core::ptr::read_volatile(ohc_base.add(i)) };
     }
 
-    // 检查 Magic 字段 ("OHC\0")
-    if &header[0..4] != b"OHC\0" {
+    // 检查 Magic 字段 ("OHLK")
+    if &header[0..4] != b"OHLK" {
         log_error!(
             "BOOT",
             "Invalid OHC magic! Found: {}{}{}{}",
