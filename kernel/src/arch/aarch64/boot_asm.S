@@ -30,7 +30,8 @@ _start:
     //    with SP_ELx (so the trap stubs' IRQ-EL1-SP_ELx slot fires).
     msr     spsel, #1
 
-    // 3. Enable FP/SIMD at EL1 (CPACR_EL1.FPEN = 3).
+    // 3. Enable FP/SIMD at EL1 & EL0 (CPACR_EL1.FPEN = 3).
+    // Bits [21:20] = 0b11 (Non-trapping for EL0 and EL1)
     mov     x1, #0x300000
     msr     cpacr_el1, x1
     isb

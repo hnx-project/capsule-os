@@ -47,13 +47,13 @@ extern "C" fn rust_main(dtb_ptr: *const u8) -> ! {
 
     // 2. 解析 OHC Header
     let ohc_base = platform::OHC_BASE as *const u8;
-    let mut header = [0u8; 32];
-    for i in 0..32 {
+    let mut header = [0u8; 48];
+    for i in 0..48 {
         header[i] = unsafe { core::ptr::read_volatile(ohc_base.add(i)) };
     }
 
     // 检查 Magic 字段 ("OHLK")
-    if &header[0..4] != b"OHLK" {
+    if &header[0..4] != b"KLHO" {
         log_error!(
             "BOOT",
             "Invalid OHC magic! Found: {}{}{}{}",
@@ -66,26 +66,50 @@ extern "C" fn rust_main(dtb_ptr: *const u8) -> ! {
         arch::halt();
     }
 
-    // 提取字段 (使用小端序)
-    let version = u16::from_le_bytes([header[4], header[5]]);
-    let entry = u64::from_le_bytes([
-        header[6], header[7], header[8], header[9], header[10], header[11], header[12], header[13],
-    ]);
-    let segment_count = u16::from_le_bytes([header[14], header[15]]);
-    let size = u32::from_le_bytes([header[18], header[19], header[20], header[21]]);
+    // 提取字段 (使用标准 OHLINK 格式)
+    let version_major = u16::from_le_bytes([header[4], header[5]]);
+    let version_minor = u16::from_le_bytes([header[6], header[7]]);
+    let segment_count = u16::from_le_bytes([header[10], header[11]]);
+    let data_offset = u32::from_le_bytes([header[16], header[17], header[18], header[19]]) as usize;
+    let file_size = u64::from_le_bytes([
+        header[20], header[21], header[22], header[23], header[24], header[25], header[26], header[27],
+    ]) as usize;
+
+    // Use Segment #0's offset as the entry point or standard fallback
+    let mut entry = 0x40080000u64;
+    let mut actual_payload_size = file_size - data_offset;
+
+    if segment_count > 0 {
+        // Read Segment #0 descriptor (offset relative to ohc_base + 48)
+        let desc_offset = 48usize;
+        let mut desc_bytes = [0u8; 32];
+        for i in 0..32 {
+            desc_bytes[i] = unsafe { core::ptr::read_volatile(ohc_base.add(desc_offset + i)) };
+        }
+        // Offset field inside OHLK_Entry starts at byte 8 (length 8 bytes)
+        entry = u64::from_le_bytes([
+            desc_bytes[8], desc_bytes[9], desc_bytes[10], desc_bytes[11],
+            desc_bytes[12], desc_bytes[13], desc_bytes[14], desc_bytes[15],
+        ]);
+        // file_size field inside OHLK_Entry starts at byte 16 (length 8 bytes)
+        actual_payload_size = u64::from_le_bytes([
+            desc_bytes[16], desc_bytes[17], desc_bytes[18], desc_bytes[19],
+            desc_bytes[20], desc_bytes[21], desc_bytes[22], desc_bytes[23],
+        ]) as usize;
+    }
 
     log_info!("BOOT", "Valid OHC Image Found!");
-    log_info!("BOOT", "=> Version : {:#06x}", version);
+    log_info!("BOOT", "=> Version : {}.{}", version_major, version_minor);
     log_info!("BOOT", "=> Entry   : {:#018x}", entry);
     log_info!("BOOT", "=> Segments: {}", segment_count);
-    log_info!("BOOT", "=> Size    : {:#010x} bytes", size);
+    log_info!("BOOT", "=> Size    : {:#010x} bytes", actual_payload_size);
 
     // 3. 将内核 Payload 拷贝 to 真实运行地址 (这里直接按 entry 地址来算)
     log_info!("BOOT", "Extracting payload to entry point...");
-    let payload_src = unsafe { ohc_base.add(32 + (segment_count as usize) * 24) };
+    let payload_src = unsafe { ohc_base.add(data_offset) };
     let payload_dst = entry as *mut u8;
 
-    for i in 0..(size as usize) {
+    for i in 0..actual_payload_size {
         unsafe {
             let val = core::ptr::read_volatile(payload_src.add(i));
             core::ptr::write_volatile(payload_dst.add(i), val);

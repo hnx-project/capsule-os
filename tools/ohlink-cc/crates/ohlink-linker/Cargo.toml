@@ -5,3 +5,5 @@ edition = "2021"
 
 [dependencies]
 ohlink-format = { path = "../ohlink-format" }
+clap = { version = "4.0", features = ["derive"] }
+crc32fast = "1.3"

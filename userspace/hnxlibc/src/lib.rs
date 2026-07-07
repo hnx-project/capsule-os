@@ -125,7 +125,6 @@ pub extern "C" fn exec(name: &str) -> i32 {
         return -1;
     }
 
-    print(name);
     syscalls::exec_impl(name) as i32
 }
 

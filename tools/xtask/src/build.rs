@@ -115,11 +115,10 @@ fn pack_user_programs(plat: &Platform) -> Result<(), String> {
             Command::new("cargo").args([
                 "run",
                 "--manifest-path",
-                "kernel/Cargo.toml",
+                "tools/ohlink-cc/Cargo.toml",
                 "-p",
-                "ohc-tool",
+                "ohlink-linker",
                 "--",
-                "pack",
                 "--input",
                 &elf,
                 "--output",
@@ -139,6 +138,12 @@ fn pack_user_programs(plat: &Platform) -> Result<(), String> {
 }
 
 fn build_kernel(plat: &Platform) -> Result<(), String> {
+    // Force cargo clean on the kernel crate to prevent incremental cache retaining stale include_bytes! from previous runs.
+    let _ = Command::new("cargo")
+        .args(["clean"])
+        .current_dir("kernel")
+        .output();
+
     print!("{}  Building{} hnx-core (kernel)...", BOLD_GREEN, RESET);
     let result = run_silent(
         Command::new("cargo")
@@ -230,21 +235,27 @@ fn extract_kernel_raw(plat: &Platform) -> Result<(), String> {
 
 fn pack_kernel_ohc(plat: &Platform) -> Result<(), String> {
     print!("{}  Packing{} dist/kernel/hnxcore...", BOLD_GREEN, RESET);
+    let decimal_entry = if plat.kernel_entry.starts_with("0x") {
+        u64::from_str_radix(plat.kernel_entry.trim_start_matches("0x"), 16)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|_| "1074266112".to_string())
+    } else {
+        plat.kernel_entry.to_string()
+    };
     let result = run_silent(
         Command::new("cargo").args([
             "run",
             "--manifest-path",
-            "kernel/Cargo.toml",
+            "tools/ohlink-cc/Cargo.toml",
             "-p",
-            "ohc-tool",
+            "ohlink-linker",
             "--",
-            "pack",
             "--input",
             "dist/kernel/kernel.raw",
             "--output",
             "dist/kernel/hnxcore",
             "--entry",
-            plat.kernel_entry,
+            &decimal_entry,
         ]),
         || {
             println!(

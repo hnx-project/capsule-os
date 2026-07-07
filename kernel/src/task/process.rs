@@ -39,7 +39,7 @@ impl Process {
         let slot = VMAR_BASE_SLOT.fetch_add(1, Ordering::Relaxed);
 
         #[cfg(target_arch = "aarch64")]
-        let vmar_base = 0x3000_0000usize + slot * 0x1000_0000usize;
+        let vmar_base = 0x1_0000_0000usize + slot * 0x1000_0000usize;
         #[cfg(target_arch = "riscv64")]
         let vmar_base = 0x9000_0000usize + slot * 0x1000_0000usize;
 

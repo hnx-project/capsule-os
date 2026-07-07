@@ -99,6 +99,24 @@ impl Scheduler {
                     switch_to(&mut cur.context, &next.context);
                 }
             }
+        } else {
+            // No runnable threads found.
+            // If the current thread is DEAD, we must halt the CPU to prevent infinite exception/ERET loops!
+            let current_dead = if let Some(cur) = self.get_current_thread_mut() {
+                cur.state == ThreadState::Dead
+            } else {
+                true
+            };
+
+            if current_dead {
+                crate::log_error!("SCHED", "No runnable threads left and current thread is DEAD! Halting CPU safely...");
+                unsafe {
+                    crate::arch::aarch64::trap::disable_irqs();
+                    loop {
+                        core::arch::asm!("wfe");
+                    }
+                }
+            }
         }
     }
 

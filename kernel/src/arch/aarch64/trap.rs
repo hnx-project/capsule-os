@@ -110,26 +110,25 @@ pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
         }
     } else {
         // Non-SVC EL0 exception (data abort, instruction abort, etc.)
-        // Log details so we can diagnose without bringing the whole kernel down.
+        // Log details, kill the faulting user-space thread, and trigger rescheduling to avoid dead EL0 infinite loops!
         unsafe {
             let far = (*frame).far;
             let elr = (*frame).elr;
             let spsr = (*frame).spsr;
-            match crate::task::scheduler::SCHEDULER.get_current_thread_mut() {
-                Some(t) => {
-                    crate::log_error!(
-                        "EL0-FAULT",
-                        "EC={:#x} ESR={:#x} ELR={:#x} FAR={:#x} SPSR={:#x} thread=#{}",
-                        ec, esr, elr, far, spsr, t.id
-                    );
-                }
-                None => {
-                    crate::log_error!(
-                        "EL0-FAULT",
-                        "EC={:#x} ESR={:#x} ELR={:#x} FAR={:#x} SPSR={:#x}",
-                        ec, esr, elr, far, spsr
-                    );
-                }
+            if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_mut() {
+                crate::log_error!(
+                    "EL0-FAULT",
+                    "EC={:#x} ESR={:#x} ELR={:#x} FAR={:#x} SPSR={:#x} thread=#{} -- KILLED thread to prevent looping exception",
+                    ec, esr, elr, far, spsr, t.id
+                );
+                t.state = crate::task::thread::ThreadState::Dead;
+                crate::task::scheduler::SCHEDULER.schedule();
+            } else {
+                crate::log_error!(
+                    "EL0-FAULT",
+                    "EC={:#x} ESR={:#x} ELR={:#x} FAR={:#x} SPSR={:#x}",
+                    ec, esr, elr, far, spsr
+                );
             }
         }
     }

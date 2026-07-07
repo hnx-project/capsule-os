@@ -32,8 +32,8 @@ const PTE_NSH: u64 = 0b00 << 8;      // non-shareable
 const PTE_ISH: u64 = 0b11 << 8;      // inner-shareable
 const PTE_NORMAL_WB: u64 = (0u64 << 2) | PTE_ISH | PTE_AF; // AttrIdx=0, ISH
 const PTE_DEVICE: u64 = (1u64 << 2) | PTE_NSH | PTE_AF;     // AttrIdx=1, nSH
-const PTE_AP_RW: u64 = 0b00 << 6;    // RW, EL1
-const PTE_AP_RO: u64 = 0b10 << 6;    // RO, EL1
+const PTE_AP_RW: u64 = 0b01 << 6;    // EL1 / EL0 read-write (AP[1] = 1, AP[2] = 0)
+const PTE_AP_RO: u64 = 0b11 << 6;    // EL1 / EL0 read-only  (AP[1] = 1, AP[2] = 1)
 const PTE_XN: u64 = 1 << 54;          // never-execute for now
 const PTE_USER: u64 = 1 << 6;        // accessible from EL0 (for user pages)
 const PTE_UXN: u64 = 1 << 53;        // unprivileged execute-never
@@ -73,7 +73,7 @@ unsafe fn write_l1_block(table_pa: usize, idx: usize, pa: usize, attr: MemAttr) 
             MemAttr::NormalCacheable => PTE_NORMAL_WB,
             MemAttr::Device => PTE_DEVICE,
         }
-        | PTE_AP_RW
+        | (0b00u64 << 6) // PTE_AP_RW specifically for privileged EL1-only
         | PTE_XN;
     let ptr = (table_pa as *mut u64).add(idx);
     core::ptr::write_volatile(ptr, entry);
@@ -182,17 +182,23 @@ fn pte_attr_bits(flags: MapFlags) -> u64 {
         MemAttr::Device => PTE_DEVICE,
     };
     if flags.writable {
-        bits |= PTE_AP_RW;
+        if flags.user {
+            bits |= PTE_AP_RW; // (AP[1]=1, AP[2]=0) -> user RW
+        } else {
+            bits |= (0b00u64 << 6); // (AP[1]=0, AP[2]=0) -> kernel RW
+        }
     } else {
-        bits |= PTE_AP_RO;
+        if flags.user {
+            bits |= PTE_AP_RO; // (AP[1]=1, AP[2]=1) -> user RO
+        } else {
+            bits |= (0b10u64 << 6); // (AP[1]=0, AP[2]=1) -> kernel RO
+        }
     }
     if !flags.executable {
         bits |= PTE_XN;
     }
     if flags.user {
         bits |= PTE_USER;
-    } else {
-        bits |= PTE_UXN; // also unprivileged-execute-never for kernel pages
     }
     bits
 }
@@ -224,19 +230,18 @@ unsafe fn shatter_l1_block(l1_pa: usize, l1_idx: usize, original: u64) -> Result
     let new_l2_pa = phys::alloc_page()?.as_usize();
     zero_page(new_l2_pa);
 
-    // Original L1 Block covered 1 GiB starting at its PA.  Recreate that
-    // mapping as 512 2 MiB L2 Block entries.  Preserve attribute bits
-    // (AttrIdx, SH, AF, AP, XN, etc.) from the original entry; just rewrite
-    // bits[1:0] = 01 (Block) per L2 block.
     let block_base_pa = (original & 0x0000_FFFF_FFFF_F000) as usize;
-    // Mask of bits we want to preserve: upper 60 bits except bits[1:0].
-    let preserved = original & !0x3u64;
+    // Original attributes (AttrIdx, SH, AF, AP, XN, etc.)
+    let mut block_attr = original & 0xFFF0_0000_0000_0FFF;
+    // CRITICAL FIX: Ensure user-accessible bits are set so that any user address mapping
+    // in this 1 GiB range is authorized at higher-level table translations!
+    block_attr |= PTE_USER;
 
     for i in 0..512 {
         let entry = pa_to_pte_addr(block_base_pa + i * 0x20_0000)
                   | PTE_VALID
                   | PTE_TYPE_BLOCK
-                  | (preserved & !0x0000_FFFF_FFFF_F000);
+                  | block_attr;
         write_pte(new_l2_pa, i, entry);
     }
 
@@ -253,7 +258,11 @@ unsafe fn shatter_l2_block(l2_pa: usize, l2_idx: usize, original: u64) -> Result
     zero_page(new_l3_pa);
 
     let block_pa = (original & 0x0000_FFFF_FFFF_F000) as usize;
-    let block_attr = original & 0xFFF0_0000_0000_0FFF; // attr, AP, XN, AF, ...
+    let mut block_attr = original & 0xFFF0_0000_0000_0FFF; // attr, AP, XN, AF, ...
+    // CRITICAL FIX: Ensure user-accessible bits are set so that any user address mapping
+    // in this 2 MiB range is authorized at higher-level table translations!
+    block_attr |= PTE_USER;
+
     for i in 0..512 {
         let entry = pa_to_pte_addr(block_pa + i * 0x1000)
                   | PTE_VALID
@@ -436,7 +445,12 @@ pub fn enable_inner(ram_base: usize, ram_size: usize, _uart_base: usize) -> Resu
         asm!("msr ttbr1_el1, {0}", in(reg) l0_pa as u64, options(nomem, nostack));
         asm!("isb", options(nomem, nostack));
 
-        // Enable MMU: set M + C + I bits.
+        // Enable MMU: set M + C + I bits, and ENSURE CPACR_EL1 FPEN is also fully preserved and set.
+        // We set CPACR_EL1 explicitly to 0x300000 here to double-secure EL0 FP/SIMD.
+        let mut cpacr: u64 = 0x300000;
+        asm!("msr cpacr_el1, {0}", in(reg) cpacr, options(nomem, nostack));
+        asm!("isb", options(nomem, nostack));
+
         let mut sctlr: u64;
         asm!("mrs {0}, sctlr_el1", out(reg) sctlr, options(nomem, nostack));
         sctlr |= 1u64 << 0;   // M

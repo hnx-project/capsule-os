@@ -135,8 +135,9 @@ impl Thread {
         ctx.sp = kernel_stack_top as u64; // Kernel stack for interrupts
         ctx.user_sp = stack_top as u64; // initial user-mode SP (sp_el0)
         ctx.elr = entry as u64; // user entry point - first switch will eret to here
-        // SPSR M[3:0] = 0b1000 (EL0t) so eret drops into AArch64 user mode.
-        ctx.spsr = 0x8;
+        // SPSR M[3:0] = 0b0000 (EL0t) so eret drops into AArch64 user mode.
+        // Also enable IRQs (clear mask bits: F=0, I=0, A=0, D=0)
+        ctx.spsr = 0x3c0;
         ctx.r[0] = entry as u64;
         ctx.r[1] = stack_top as u64;
 

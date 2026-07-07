@@ -1,7 +1,6 @@
-use crate::{FormatError, OHLK_Header, OHLK_Entry, crc32_ieee};
+use crate::{FormatError, OHLK_Header, OHLK_Entry};
 
-extern crate alloc;
-use alloc::vec::Vec;
+// No alloc import needed
 
 /// Parses an OHLINK binary from a byte slice.
 /// Fully `no_std` compatible.
@@ -22,13 +21,27 @@ impl<'a> OHLK_Parser<'a> {
         }
 
         // Verify Checksum (CRC32-IEEE)
-        // Set checksum field to 0 for validation
         let expected_checksum = header.checksum;
 
-        let mut data_copy = Vec::from(data);
-        // Zero out checksum field (offset 28..32)
-        data_copy[28..32].copy_from_slice(&[0, 0, 0, 0]);
-        let calculated_checksum = crc32_ieee(&data_copy);
+        // Skip dynamic heap allocation (Vec) in parser for `#![no_std]` Microkernel compatibility to avoid kernel panics during boot memory allocation!
+        let mut calculated_checksum = 0u32;
+        if data.len() >= 32 {
+            let mut crc = 0xFFFFFFFF;
+            // Limit loop bound statically to file_size to prevent excessive iteration or reading out-of-bounds bytes
+            let limit = header.file_size as usize;
+            for i in 0..limit {
+                if i >= data.len() {
+                    break;
+                }
+                let byte = if i >= 28 && i < 32 {
+                    0u8 // zero out checksum field
+                } else {
+                    data[i]
+                };
+                crc = (crc >> 8) ^ crate::crc32::CRC32_TABLE[((crc ^ byte as u32) & 0xFF) as usize];
+            }
+            calculated_checksum = !crc;
+        }
 
         if expected_checksum != calculated_checksum {
             return Err(FormatError::ChecksumMismatch {

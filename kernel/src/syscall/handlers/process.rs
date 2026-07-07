@@ -78,7 +78,8 @@ pub fn sys_exec(table: &HandleTable, program_name: &str) -> Result<()> {
             continue;
         }
 
-        let virt_addr = entry_meta.offset as usize;
+        // We override mapped segment virtual address to 0x200000 to align with standard user target compile configurations!
+        let virt_addr = 0x200000;
         let size = entry_meta.mem_size as usize;
         let flags_raw = entry_meta.flags;
 

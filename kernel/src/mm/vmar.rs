@@ -358,6 +358,7 @@ fn translate_flags(f: VmarFlags) -> arch_mmu::MapFlags {
     out.writable = f.writable();
     out.executable = f.executable();
     out.user = f.user();
+    
     if f.readable() && !f.writable() && !f.executable() {
         out = arch_mmu::MapFlags::kernel_ro();
         out.user = f.user();
@@ -365,6 +366,7 @@ fn translate_flags(f: VmarFlags) -> arch_mmu::MapFlags {
     if f.executable() && !f.writable() {
         out = arch_mmu::MapFlags::kernel_rx();
         out.user = f.user();
+        out.readable = f.readable();
     }
     out
 }
