@@ -43,6 +43,11 @@ pub enum CodeSubcommands {
             help = "The target architecture (aarch64 / riscv64)"
         )]
         arch: String,
+        #[arg(
+            long,
+            help = "Start QEMU in suspended state, listening on TCP port 1234 for GDB connection"
+        )]
+        gdb: bool,
     },
     #[command(
         about = "Verify if the local environment and cross-compilation toolchain are properly configured"

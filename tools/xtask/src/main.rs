@@ -27,7 +27,7 @@ fn main() {
                     }
                 }
             }
-            CodeSubcommands::Build { arch } | CodeSubcommands::Run { arch } => {
+            CodeSubcommands::Build { arch } => {
                 let plat = match Platform::for_arch(arch) {
                     Some(p) => p,
                     None => {
@@ -39,11 +39,22 @@ fn main() {
                     eprintln!("Build failed: {}", e);
                     std::process::exit(1);
                 }
-                if matches!(sub, CodeSubcommands::Run { .. }) {
-                    if let Err(e) = run::run(&plat) {
-                        eprintln!("Run failed: {}", e);
+            }
+            CodeSubcommands::Run { arch, gdb } => {
+                let plat = match Platform::for_arch(arch) {
+                    Some(p) => p,
+                    None => {
+                        eprintln!("Unsupported architecture: {}", arch);
                         std::process::exit(1);
                     }
+                };
+                if let Err(e) = build::build(&plat) {
+                    eprintln!("Build failed: {}", e);
+                    std::process::exit(1);
+                }
+                if let Err(e) = run::run(&plat, *gdb) {
+                    eprintln!("Run failed: {}", e);
+                    std::process::exit(1);
                 }
             }
         },

@@ -228,7 +228,16 @@ fn ttbr0_el1() -> u64 {
 
 #[inline(always)]
 fn root_for_va(va: usize) -> u64 {
-    if va >= KERNEL_OFFSET { ttbr1_el1() } else { ttbr0_el1() }
+    if va >= KERNEL_OFFSET {
+        ttbr1_el1()
+    } else {
+        let t0 = ttbr0_el1();
+        if t0 != 0 {
+            t0
+        } else {
+            ttbr1_el1()
+        }
+    }
 }
 
 /// Shatter an L1 Block entry: replace the 1 GiB block with a fresh L2 table
@@ -406,6 +415,14 @@ pub fn unmap_page(va: usize) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[inline(always)]
+pub fn set_ttbr0_el1(l0_pa: usize) {
+    unsafe {
+        core::arch::asm!("msr ttbr0_el1, {0}", in(reg) l0_pa as u64, options(nomem, nostack));
+        core::arch::asm!("isb", options(nomem, nostack));
+    }
 }
 
 pub fn build_and_enable(boot: &BootInfo) -> Result<()> {

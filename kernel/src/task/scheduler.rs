@@ -145,6 +145,20 @@ impl Scheduler {
                 }
             }
 
+            let next_process_id = self.threads[idx].as_ref().unwrap().process_id;
+            #[cfg(target_arch = "aarch64")]
+            {
+                if next_process_id > 0 {
+                    if let Some(proc) = crate::task::process::find_process_mut(next_process_id) {
+                        crate::arch::aarch64::mmu::set_ttbr0_el1(proc.l0_user_pa);
+                    }
+                } else {
+                    crate::arch::aarch64::mmu::set_ttbr0_el1(0);
+                }
+                use crate::mm::mmu::ArchMmu;
+                crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
+            }
+
             let mut dummy_ctx = crate::task::thread::ThreadContext::default();
             unsafe {
                 switch_to(&mut dummy_ctx, &mut self.threads[idx].as_mut().unwrap().context);
@@ -203,6 +217,20 @@ impl Scheduler {
 
             let prev_context_ptr = &mut self.threads[prev_idx].as_mut().unwrap().context as *mut _;
             let next_context_ptr = &mut self.threads[next_idx].as_mut().unwrap().context as *mut _;
+
+            let next_process_id = self.threads[next_idx].as_ref().unwrap().process_id;
+            #[cfg(target_arch = "aarch64")]
+            {
+                if next_process_id > 0 {
+                    if let Some(proc) = crate::task::process::find_process_mut(next_process_id) {
+                        crate::arch::aarch64::mmu::set_ttbr0_el1(proc.l0_user_pa);
+                    }
+                } else {
+                    crate::arch::aarch64::mmu::set_ttbr0_el1(0);
+                }
+                use crate::mm::mmu::ArchMmu;
+                crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
+            }
 
             self.unlock();
 

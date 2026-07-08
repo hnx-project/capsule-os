@@ -18,6 +18,7 @@ pub struct Process {
     pub root_vmar: Vmar,
     pub handle_table: HandleTable,
     pub thread_count: usize,
+    pub l0_user_pa: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +40,7 @@ impl Process {
         let slot = VMAR_BASE_SLOT.fetch_add(1, Ordering::Relaxed);
 
         #[cfg(target_arch = "aarch64")]
-        let vmar_base = 0x1_0000_0000usize + slot * 0x1000_0000usize;
+        let vmar_base = 0x9000_0000usize + slot * 0x1000_0000usize;
         #[cfg(target_arch = "riscv64")]
         let vmar_base = 0x9000_0000usize + slot * 0x1000_0000usize;
 
@@ -53,6 +54,7 @@ impl Process {
             root_vmar,
             handle_table,
             thread_count: 0,
+            l0_user_pa: 0,
         })
     }
 
@@ -86,6 +88,29 @@ impl Process {
         // 1. Allocate the process from our global list
         let proc = allocate_process(name)?;
         let pid = proc.id;
+
+        // Allocate and zero-initialize process-specific L0 page table 
+        // now that MMU and phys-allocator are 100% active, avoiding bootstrapping lock deadlines!
+        let l0_user_pa = crate::mm::phys::alloc_page()?.as_usize();
+        proc.l0_user_pa = l0_user_pa;
+
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            // Read TTBR1_EL1 which contains the master kernel L0 physical address.
+            let mut ttbr1: u64;
+            core::arch::asm!("mrs {0}, ttbr1_el1", out(reg) ttbr1, options(nomem, nostack));
+            let kernel_l0_pa = (ttbr1 & 0x0000_FFFF_FFFF_F000) as usize;
+
+            // Compute kernel virtual addresses for both structures so we can securely write-volatile them.
+            let kernel_l0_va = crate::mm::mmu::pa_to_kernel_va(kernel_l0_pa) as *const u64;
+            let user_l0_va = crate::mm::mmu::pa_to_kernel_va(l0_user_pa) as *mut u64;
+
+            // Copy the entire kernel high-half region (slots 256..512) into the new user-isolated L0 table!
+            for i in 256..512 {
+                let entry = core::ptr::read_volatile(kernel_l0_va.add(i));
+                core::ptr::write_volatile(user_l0_va.add(i), entry);
+            }
+        }
 
         // 2. Parse and map OHLINK segments
         for idx in 0..header.header_count {
@@ -155,7 +180,16 @@ impl Process {
         );
 
         proc.root_vmar.map(&mut stack_vmo, 0, stack_va, stack_size, stack_flags)?;
+
         let stack_top = (stack_va + stack_size) & !(15usize);
+
+        // CRITICAL TLB FLUSH: Since mapping user segments has allocated new intermediate L1/L2 table descriptors
+        // that were previously zero (invalid) in the shared page table directory, we MUST flush all TLB and translation 
+        // table walk caches (PTW) globally. Otherwise, the hardware CPU's TLB branch predictor will fetch from old cached invalid table Walks
+        // and trigger an immediate Level-1 or Level-2 Translation Fault.
+        use crate::mm::mmu::ArchMmu;
+        #[cfg(target_arch = "aarch64")]
+        crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
 
         // 4. Create Thread and add to scheduler
         // Calculate the real physical offset inside the compiled program segment.

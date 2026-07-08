@@ -8,13 +8,13 @@ const BOLD_GREEN: &str = "\x1b[1;32m";
 const GRAY: &str = "\x1b[90m";
 const RESET: &str = "\x1b[0m";
 
-pub fn run(plat: &Platform) -> Result<(), String> {
+pub fn run(plat: &Platform, gdb: bool) -> Result<(), String> {
     println!(
         "{}    Booting{} Launching CapsuleOS in QEMU Emulator...",
         BOLD_BLUE, RESET
     );
     generate_qemu_dtb(plat)?;
-    launch_qemu(plat);
+    launch_qemu(plat, gdb);
     Ok(())
 }
 
@@ -86,7 +86,7 @@ fn generate_qemu_dtb(plat: &Platform) -> Result<(), String> {
     Ok(())
 }
 
-fn launch_qemu(plat: &Platform) {
+fn launch_qemu(plat: &Platform, gdb: bool) {
     println!(
         "{}  Running{} QEMU virtual machine. {}[Ctrl+A, X to exit]{}",
         BOLD_GREEN, RESET, GRAY, RESET
@@ -134,5 +134,12 @@ fn launch_qemu(plat: &Platform) {
         qemu.arg(arg);
     }
     qemu.arg("-semihosting");
+    if gdb {
+        qemu.args(["-s", "-S"]);
+        println!(
+            "{}  GDB Server Enabled{} Listening on TCP port 1234. QEMU CPU suspended. Waiting for GDB...",
+            BOLD_BLUE, RESET
+        );
+    }
     let _ = qemu.status();
 }
