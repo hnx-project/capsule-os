@@ -96,6 +96,7 @@ impl Scheduler {
 
         let slot = self.find_empty_slot();
         if let Some(idx) = slot {
+            
             let priority_idx = Self::priority_to_index(thread.priority);
             thread.state = ThreadState::Ready;
             self.threads[idx] = Some(thread);
@@ -103,6 +104,8 @@ impl Scheduler {
             if !self.queues[priority_idx].push(idx) {
                 self.threads[idx] = None;
                 panic!("[SCHED] Queue overflow!");
+            } else {
+                crate::log_info!("SCHED", "ADDED");
             }
         } else {
             panic!("[SCHED] Max thread count exceeded!");

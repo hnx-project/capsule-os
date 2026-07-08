@@ -183,6 +183,7 @@ impl MapFlags {
     }
     pub const fn user_rw() -> Self { Self::kernel_rw() }
     pub const fn user_ro() -> Self { Self::kernel_ro() }
+    pub const fn user_rx() -> Self { Self::kernel_rx() }
     pub const fn device_rw() -> Self {
         Self {
             mem_attr: crate::mm::mmu::MemAttr::Device,

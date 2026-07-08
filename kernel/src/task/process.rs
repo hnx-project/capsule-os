@@ -120,6 +120,7 @@ impl Process {
 
             let target_va = proc.root_vmar.base + aligned_vaddr;
             let flags = VmarFlags::from_bits(flags_raw);
+            crate::log_info!("LAUNCHER", "Mapping segment: ty={:#x}, flags={:?} (raw={:#x}), target_va={:#x}, size={}", entry_meta.ty, flags, flags_raw, target_va, aligned_size);
 
             let mut vmo = Vmo::create_with_size(aligned_size)?;
             vmo.commit_all()?; // Commit physical pages so memory is backed

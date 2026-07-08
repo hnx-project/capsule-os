@@ -360,13 +360,18 @@ fn translate_flags(f: VmarFlags) -> arch_mmu::MapFlags {
     out.user = f.user();
     
     if f.readable() && !f.writable() && !f.executable() {
-        out = arch_mmu::MapFlags::kernel_ro();
-        out.user = f.user();
+        if f.user() {
+            out = arch_mmu::MapFlags::user_ro();
+        } else {
+            out = arch_mmu::MapFlags::kernel_ro();
+        }
     }
     if f.executable() && !f.writable() {
-        out = arch_mmu::MapFlags::kernel_rx();
-        out.user = f.user();
-        out.readable = f.readable();
+        if f.user() {
+            out = arch_mmu::MapFlags::user_rx();
+        } else {
+            out = arch_mmu::MapFlags::kernel_rx();
+        }
     }
     out
 }

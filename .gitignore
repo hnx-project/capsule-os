@@ -34,3 +34,4 @@ qemu_pids/
 *.dtb
 *.ohc
 *.ohlib
+kernel/files/

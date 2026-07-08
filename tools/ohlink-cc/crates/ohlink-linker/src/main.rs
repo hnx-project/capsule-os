@@ -61,7 +61,6 @@ fn main() -> io::Result<()> {
         // Input is ELF. To prevent 4 KiB page table translation faults on ARM64 due to segment overlaps (Data and Text residing on same 4KB page), 
         // we merge all loaded segments into a single, cohesive OHLK segment.
         let mut merged_payload = Vec::new();
-        let mut merged_size = 0u64;
         let mut lowest_vaddr = u64::MAX;
 
         // Parse ELF64 header
@@ -103,7 +102,6 @@ fn main() -> io::Result<()> {
                 if p_filesz > 0 && p_offset + p_filesz <= buffer.len() {
                     let segment_payload = &buffer[p_offset..p_offset + p_filesz];
                     merged_payload.extend_from_slice(segment_payload);
-                    merged_size += p_filesz as u64;
                     if p_vaddr < lowest_vaddr && p_vaddr > 0 {
                         lowest_vaddr = p_vaddr;
                     }

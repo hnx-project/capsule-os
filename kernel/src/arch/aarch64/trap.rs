@@ -119,6 +119,7 @@ pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
             let elr = (*frame).elr;
             let spsr = (*frame).spsr;
             if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
+                let far = unsafe { (*frame).far };
                 crate::log_error!(
                     "EL0-FAULT",
                     "EC={:#x} ESR={:#x} ELR={:#x} FAR={:#x} SPSR={:#x} thread=#{} -- KILLED thread to prevent looping exception",
@@ -127,6 +128,7 @@ pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
                 (*t).state = crate::task::thread::ThreadState::Dead;
                 crate::task::scheduler::SCHEDULER.schedule();
             } else {
+                let far = unsafe { (*frame).far };
                 crate::log_error!(
                     "EL0-FAULT",
                     "EC={:#x} ESR={:#x} ELR={:#x} FAR={:#x} SPSR={:#x}",

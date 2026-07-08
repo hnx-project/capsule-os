@@ -102,6 +102,7 @@ fn build_userspace_program(plat: &Platform, crate_name: &str) -> Result<(), Stri
 }
 
 fn pack_user_programs(plat: &Platform) -> Result<(), String> {
+    std::fs::create_dir_all("kernel/files").map_err(|e| e.to_string())?;
     for (crate_name, out_name) in USERCRATE_S {
         print!("{}  Packing{} {}...", BOLD_GREEN, RESET, out_name);
         let elf = format!(

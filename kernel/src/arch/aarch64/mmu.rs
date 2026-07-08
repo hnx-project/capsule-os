@@ -74,6 +74,7 @@ unsafe fn write_l1_block(table_pa: usize, idx: usize, pa: usize, attr: MemAttr) 
             MemAttr::Device => PTE_DEVICE,
         }
         | (0b00u64 << 6) // PTE_AP_RW specifically for privileged EL1-only
+        // | PTE_USER       // Make sure it allows user access by default in shared identity region
         | PTE_XN;
     let ptr = (table_pa as *mut u64).add(idx);
     core::ptr::write_volatile(ptr, entry);
@@ -164,6 +165,15 @@ impl MapFlags {
             user: true,
         }
     }
+    pub const fn user_rx() -> Self {
+        Self {
+            mem_attr: MemAttr::NormalCacheable,
+            readable: true,
+            writable: false,
+            executable: true,
+            user: true,
+        }
+    }
     pub const fn device_rw() -> Self {
         Self {
             mem_attr: MemAttr::Device,
@@ -183,6 +193,7 @@ fn pte_attr_bits(flags: MapFlags) -> u64 {
     };
     if flags.user {
         bits |= PTE_AP_USER; // AP[1]=1 (User mode accessible)
+        bits |= PTE_USER;    // Ensure PTE_USER/PTE_AP_USER are fully set
         if !flags.writable {
             bits |= PTE_AP_RO; // AP[2]=1 (User Read-Only)
         }
@@ -232,6 +243,10 @@ unsafe fn shatter_l1_block(l1_pa: usize, l1_idx: usize, original: u64) -> Result
     // CRITICAL FIX: Ensure user-accessible bits are set so that any user address mapping
     // in this 1 GiB range is authorized at higher-level table translations!
     block_attr |= PTE_USER;
+    // CRITICAL FIX: Remove execute-never (PTE_XN / PTE_UXN) from the shattered blocks if they are user regions,
+    // so user executable code mapped inside shattered block space is allowed to run.
+    block_attr &= !PTE_XN;
+    block_attr &= !PTE_UXN;
 
     for i in 0..512 {
         let entry = pa_to_pte_addr(block_base_pa + i * 0x20_0000)
@@ -258,6 +273,9 @@ unsafe fn shatter_l2_block(l2_pa: usize, l2_idx: usize, original: u64) -> Result
     // CRITICAL FIX: Ensure user-accessible bits are set so that any user address mapping
     // in this 2 MiB range is authorized at higher-level table translations!
     block_attr |= PTE_AP_USER;
+    // CRITICAL FIX: Remove execute-never (PTE_XN / PTE_UXN) from the shattered blocks so user executable code can run.
+    block_attr &= !PTE_XN;
+    block_attr &= !PTE_UXN;
 
     for i in 0..512 {
         let entry = pa_to_pte_addr(block_pa + i * 0x1000)

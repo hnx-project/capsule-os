@@ -92,4 +92,3 @@ switch_to:
 extern "C" {
     pub fn switch_to(current: *mut thread::ThreadContext, next: *const thread::ThreadContext);
 }
-
