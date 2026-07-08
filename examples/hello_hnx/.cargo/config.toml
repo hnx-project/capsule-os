@@ -1,0 +1,15 @@
+[unstable]
+codegen-backend = true
+build-std = ["core"]
+
+[build]
+target = "aarch64-unknown-none"
+rustflags = [
+    "-Zcodegen-backend=../../target/release/librustc_codegen_ohlink.dylib",
+]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
