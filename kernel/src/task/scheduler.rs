@@ -1,5 +1,6 @@
 use crate::task::thread::{Priority, Thread, ThreadState};
 use crate::task::switch_to;
+use crate::arch::trap::{disable_irqs, enable_irqs};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 pub const MAX_THREADS: usize = 16;
@@ -69,6 +70,9 @@ impl Scheduler {
     }
 
     fn lock(&self) {
+        unsafe {
+            disable_irqs();
+        }
         while SCHEDULER_LOCK.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
             core::hint::spin_loop();
         }
@@ -76,6 +80,9 @@ impl Scheduler {
 
     fn unlock(&self) {
         SCHEDULER_LOCK.store(false, Ordering::Release);
+        unsafe {
+            enable_irqs();
+        }
     }
 
     fn priority_to_index(priority: Priority) -> usize {
@@ -145,21 +152,14 @@ impl Scheduler {
                 }
             }
 
-            let next_process_id = self.threads[idx].as_ref().unwrap().process_id;
             #[cfg(target_arch = "aarch64")]
             {
-                if next_process_id > 0 {
-                    if let Some(proc) = crate::task::process::find_process_mut(next_process_id) {
-                        crate::arch::aarch64::mmu::set_ttbr0_el1(proc.l0_user_pa);
-                    }
-                } else {
-                    crate::arch::aarch64::mmu::set_ttbr0_el1(0);
-                }
                 use crate::mm::mmu::ArchMmu;
                 crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
             }
 
             let mut dummy_ctx = crate::task::thread::ThreadContext::default();
+            self.unlock();
             unsafe {
                 switch_to(&mut dummy_ctx, &mut self.threads[idx].as_mut().unwrap().context);
             }
@@ -218,16 +218,8 @@ impl Scheduler {
             let prev_context_ptr = &mut self.threads[prev_idx].as_mut().unwrap().context as *mut _;
             let next_context_ptr = &mut self.threads[next_idx].as_mut().unwrap().context as *mut _;
 
-            let next_process_id = self.threads[next_idx].as_ref().unwrap().process_id;
             #[cfg(target_arch = "aarch64")]
             {
-                if next_process_id > 0 {
-                    if let Some(proc) = crate::task::process::find_process_mut(next_process_id) {
-                        crate::arch::aarch64::mmu::set_ttbr0_el1(proc.l0_user_pa);
-                    }
-                } else {
-                    crate::arch::aarch64::mmu::set_ttbr0_el1(0);
-                }
                 use crate::mm::mmu::ArchMmu;
                 crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
             }

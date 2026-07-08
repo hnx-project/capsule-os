@@ -94,6 +94,8 @@ impl Process {
         let l0_user_pa = crate::mm::phys::alloc_page()?.as_usize();
         proc.l0_user_pa = l0_user_pa;
 
+        let mut old_ttbr0: usize = 0;
+
         #[cfg(target_arch = "aarch64")]
         unsafe {
             // Read TTBR1_EL1 which contains the master kernel L0 physical address.
@@ -105,11 +107,22 @@ impl Process {
             let kernel_l0_va = crate::mm::mmu::pa_to_kernel_va(kernel_l0_pa) as *const u64;
             let user_l0_va = crate::mm::mmu::pa_to_kernel_va(l0_user_pa) as *mut u64;
 
-            // Copy the entire kernel high-half region (slots 256..512) into the new user-isolated L0 table!
-            for i in 256..512 {
+            // Copy the entire master L0 table (slots 0..512) temporarily into the user L0 table
+            // to ensure the active physical identity mapping (EL1 code/data) remains fully translated
+            // during the loader segment-mapping phase!
+            for i in 0..512 {
                 let entry = core::ptr::read_volatile(kernel_l0_va.add(i));
                 core::ptr::write_volatile(user_l0_va.add(i), entry);
             }
+
+            // Save the currently active TTBR0_EL1 value so we can restore it before leaving launch_user_program!
+            let mut ttbr0_reg: u64;
+            core::arch::asm!("mrs {0}, ttbr0_el1", out(reg) ttbr0_reg, options(nomem, nostack));
+            old_ttbr0 = (ttbr0_reg & 0x0000_FFFF_FFFF_F000) as usize;
+
+            // Load this new process L0 page table root into TTBR0_EL1 immediately!
+            // This guarantees all subsequent mapping (map/map_page) walks are registered under this process page table.
+            crate::arch::aarch64::mmu::set_ttbr0_el1(l0_user_pa);
         }
 
         // 2. Parse and map OHLINK segments
@@ -137,7 +150,14 @@ impl Process {
                 }
             }
 
-            let flags_raw = entry_meta.flags;
+            let mut flags_raw = entry_meta.flags;
+            // CRITICAL W^X ALIGNMENT: AArch64 hardware enforcing strict W^X (Write-XOR-Execute) rule.
+            // Any user-space (EL0) page mapped with BOTH Writable and Executable permissions will be
+            // immediately trapped as Instruction Abort. We must clear the Writable bit (bit 1, value 2)
+            // for the code segment (Text segment) to ensure smooth EL0 fetch and execution!
+            if entry_meta.ty == ohlink_format::SegmentType::Text.to_u32() {
+                flags_raw &= !2; // Strip Writable bit (VmarFlags::WRITE is bit 1)
+            }
 
             let aligned_vaddr = virt_addr & !(4096 - 1);
             let alignment_offset = virt_addr - aligned_vaddr;
@@ -154,7 +174,9 @@ impl Process {
                     crate::log_error!("LAUNCHER", "Failed to retrieve segment payload: {:?}", e);
                     Status::InvalidArgs
                 })?;
-                vmo.write(alignment_offset, segment_payload)?;
+                let load_bias = entry_offset & !0xFFF;
+                let write_offset = alignment_offset + load_bias;
+                vmo.write(write_offset, segment_payload)?;
             }
 
             // Restore entry_meta offset to keep it compatible with relative jump setups
@@ -166,6 +188,9 @@ impl Process {
             // the actual newly written instructions on the execution pipeline.
             #[cfg(target_arch = "aarch64")]
             crate::arch::aarch64::mmu::sync_instruction_cache(target_va, aligned_size);
+
+            #[cfg(target_arch = "aarch64")]
+            crate::arch::aarch64::mmu::debug_walk_va(proc.l0_user_pa, 0x902101d0);
         }
 
         // 3. Map Stack
@@ -199,6 +224,7 @@ impl Process {
         // actual_entry (0x2101d0) - lowest_vaddr (0x200000) = 0x101d0.
         // In the kernel mapping, we map this merged segment to proc.root_vmar.base + 0x200000.
         // Thus, the physical entry_point is proc.root_vmar.base + 0x200000 + entry_offset.
+        // let user_entry = proc.root_vmar.base + 0x200000 + entry_offset;
         let user_entry = proc.root_vmar.base + 0x200000 + entry_offset;
         let mut thread = Thread::new_user(name, user_entry, stack_top)?;
         thread.process_id = pid;
@@ -210,6 +236,12 @@ impl Process {
         }
 
         crate::log_info!("LAUNCHER", "Successfully launched program '{}' at EL0 (entry={:#x}, pid={})", name, user_entry, pid);
+        
+        // Restore the original TTBR0_EL1 value before returning!
+        // This ensures the current CPU execution state is fully preserved.
+        #[cfg(target_arch = "aarch64")]
+        crate::arch::aarch64::mmu::set_ttbr0_el1(old_ttbr0);
+
         Ok(())
     }
 }

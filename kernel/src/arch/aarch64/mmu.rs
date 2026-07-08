@@ -210,6 +210,34 @@ fn pte_attr_bits(flags: MapFlags) -> u64 {
     bits
 }
 
+pub fn debug_walk_va(l0_pa: usize, va: usize) {
+    unsafe {
+        let l0_idx = va_l0_index(va);
+        let l0e = read_pte(l0_pa, l0_idx);
+        crate::log_info!("PTE_WALK", "VA={:#x} L0_PA={:#x} L0_IDX={} L0E={:#x}", va, l0_pa, l0_idx, l0e);
+        if l0e & 1 == 0 { return; }
+        
+        let l1_pa = (l0e & 0x0000_FFFF_FFFF_F000) as usize;
+        let l1_idx = va_l1_index(va);
+        let l1e = read_pte(l1_pa, l1_idx);
+        crate::log_info!("PTE_WALK", "  L1_PA={:#x} L1_IDX={} L1E={:#x}", l1_pa, l1_idx, l1e);
+        if l1e & 1 == 0 { return; }
+        if l1e & 0b10 == 0 { return; }
+        
+        let l2_pa = (l1e & 0x0000_FFFF_FFFF_F000) as usize;
+        let l2_idx = va_l2_index(va);
+        let l2e = read_pte(l2_pa, l2_idx);
+        crate::log_info!("PTE_WALK", "    L2_PA={:#x} L2_IDX={} L2E={:#x}", l2_pa, l2_idx, l2e);
+        if l2e & 1 == 0 { return; }
+        if l2e & 0b10 == 0 { return; }
+        
+        let l3_pa = (l2e & 0x0000_FFFF_FFFF_F000) as usize;
+        let l3_idx = va_l3_index(va);
+        let l3e = read_pte(l3_pa, l3_idx);
+        crate::log_info!("PTE_WALK", "      L3_PA={:#x} L3_IDX={} L3E={:#x}", l3_pa, l3_idx, l3e);
+    }
+}
+
 /// Read TTBR1_EL1 (kernel page table root).
 #[inline(always)]
 fn ttbr1_el1() -> u64 {
@@ -321,7 +349,11 @@ pub fn map_page(va: usize, pa: usize, flags: MapFlags) -> Result<()> {
             // Allocate L1.
             let new_l1 = phys::alloc_page()?.as_usize();
             zero_page(new_l1);
-            write_pte(l0_pa, l0_idx, pa_to_pte_addr(new_l1) | PTE_VALID | PTE_TYPE_TABLE);
+            // CRITICAL FIX: Ensure the Table Descriptor has UXNTable (bit 60), PXNTable (bit 61), 
+            // and APTable (bits 62:61) set to 0. This allows lower levels (EL0 user) to fully execute code.
+            let entry = pa_to_pte_addr(new_l1) | PTE_VALID | PTE_TYPE_TABLE;
+            let clean_entry = entry & 0x07FF_FFFF_FFFF_FFFFu64;
+            write_pte(l0_pa, l0_idx, clean_entry);
             new_l1
         };
 
@@ -336,7 +368,10 @@ pub fn map_page(va: usize, pa: usize, flags: MapFlags) -> Result<()> {
         } else {
             let new_l2 = phys::alloc_page()?.as_usize();
             zero_page(new_l2);
-            write_pte(l1_pa, l1_idx, pa_to_pte_addr(new_l2) | PTE_VALID | PTE_TYPE_TABLE);
+            // CRITICAL FIX: Ensure UXNTable / PXNTable / APTable are zeroed out on this Table Descriptor
+            let entry = pa_to_pte_addr(new_l2) | PTE_VALID | PTE_TYPE_TABLE;
+            let clean_entry = entry & 0x07FF_FFFF_FFFF_FFFFu64;
+            write_pte(l1_pa, l1_idx, clean_entry);
             new_l2
         };
 
@@ -351,7 +386,10 @@ pub fn map_page(va: usize, pa: usize, flags: MapFlags) -> Result<()> {
         } else {
             let new_l3 = phys::alloc_page()?.as_usize();
             zero_page(new_l3);
-            write_pte(l2_pa, l2_idx, pa_to_pte_addr(new_l3) | PTE_VALID | PTE_TYPE_TABLE);
+            // CRITICAL FIX: Ensure UXNTable / PXNTable / APTable are zeroed out on this Table Descriptor
+            let entry = pa_to_pte_addr(new_l3) | PTE_VALID | PTE_TYPE_TABLE;
+            let clean_entry = entry & 0x07FF_FFFF_FFFF_FFFFu64;
+            write_pte(l2_pa, l2_idx, clean_entry);
             new_l3
         };
 
@@ -421,6 +459,9 @@ pub fn unmap_page(va: usize) -> Result<()> {
 pub fn set_ttbr0_el1(l0_pa: usize) {
     unsafe {
         core::arch::asm!("msr ttbr0_el1, {0}", in(reg) l0_pa as u64, options(nomem, nostack));
+        core::arch::asm!("dsb ish", options(nomem, nostack));
+        core::arch::asm!("tlbi vmalle1is", options(nomem, nostack));
+        core::arch::asm!("dsb ish", options(nomem, nostack));
         core::arch::asm!("isb", options(nomem, nostack));
     }
 }
@@ -456,13 +497,13 @@ pub fn enable_inner(ram_base: usize, ram_size: usize, _uart_base: usize) -> Resu
 
         // MAIR: index 0 = Normal WB (0xFF), index 1 = Device nGnRnE (0x00).
         let mair: u64 = 0xFFu64 | (0x00u64 << 8);
-        // T0SZ=16, T1SZ=16, TG0=4K, TG1=4K, IPS=010 (40-bit PA, QEMU virt),
+        // T0SZ=16, T1SZ=16, TG0=4K, TG1=4K, IPS=000 (32-bit PA, perfectly matching QEMU 512MB RAM),
         // SH0/1=ISH, ORGN/IRGN=WB.
         let tcr: u64 = (16u64 << 0)
                      | (16u64 << 16)
                      | (0b00u64 << 14)
-                     | (0b00u64 << 30)
-                     | (0b010u64 << 32)
+                     | (0b10u64 << 30)
+                     | (0b000u64 << 32)
                      | (0b11u64 << 12)
                      | (0b11u64 << 28)
                      | (0b01u64 << 10)
@@ -552,24 +593,33 @@ impl ArchMmu for AArch64Mmu {
 /// on newly written/mapped EL0 user program segments.
 pub fn sync_instruction_cache(va: usize, size: usize) {
     unsafe {
-        let start = va & !(4096 - 1);
-        let end = (va + size + 4095) & !(4095);
+        let mut ctr: u64;
+        core::arch::asm!("mrs {0}, ctr_el0", out(reg) ctr, options(nomem, nostack));
         
-        let mut cur = start;
+        let dlog2 = (ctr >> 16) & 0xf;
+        let d_step = 4 << dlog2;
+        
+        let ilog2 = ctr & 0xf;
+        let i_step = 4 << ilog2;
+
+        let start = va;
+        let end = va + size;
+
+        let mut cur = start & !(d_step - 1);
         while cur < end {
             // Clean data cache to PoU
-            asm!("dc cvau, {0}", in(reg) cur, options(nomem, nostack));
-            cur += 8; // Safely step by 8 bytes or cache line
+            core::arch::asm!("dc cvau, {0}", in(reg) cur, options(nomem, nostack));
+            cur += d_step;
         }
-        asm!("dsb ish", options(nomem, nostack));
+        core::arch::asm!("dsb ish", options(nomem, nostack));
         
-        cur = start;
+        cur = start & !(i_step - 1);
         while cur < end {
             // Invalidate instruction cache to PoU
-            asm!("ic ivau, {0}", in(reg) cur, options(nomem, nostack));
-            cur += 8;
+            core::arch::asm!("ic ivau, {0}", in(reg) cur, options(nomem, nostack));
+            cur += i_step;
         }
-        asm!("dsb ish", options(nomem, nostack));
-        asm!("isb", options(nomem, nostack));
+        core::arch::asm!("dsb ish", options(nomem, nostack));
+        core::arch::asm!("isb", options(nomem, nostack));
     }
 }

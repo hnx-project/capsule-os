@@ -154,7 +154,7 @@ fn panic_unhandled(frame: &TrapFrame, class: u64) {
 /// Mask IRQs at the CPU level (set `PSTATE.I`).
 #[inline]
 pub fn disable_irqs() {
-    unsafe { core::arch::asm!("msr daifset, #1", options(nomem, preserves_flags)) }
+    unsafe { core::arch::asm!("msr daifset, #2", "isb", options(nomem, preserves_flags)) }
 }
 
 /// Unmask IRQs at the CPU level (clear PSTATE.I).
