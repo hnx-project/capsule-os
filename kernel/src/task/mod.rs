@@ -1,6 +1,7 @@
 pub mod scheduler;
 pub mod thread;
 pub mod process;
+pub mod smoke;
 
 pub use scheduler::Scheduler;
 pub use thread::{Thread, Priority};

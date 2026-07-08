@@ -11,7 +11,9 @@ pub fn sys_write(fd: usize, ptr: usize, len: usize) -> usize {
         }
         let slice = unsafe { core::slice::from_raw_parts(ptr as *const u8, len) };
         if let Ok(s) = core::str::from_utf8(slice) {
-            crate::print(s);
+            for &b in s.as_bytes() {
+                crate::arch::console_putchar(b);
+            }
         } else {
             for &b in slice {
                 crate::arch::console_putchar(b);

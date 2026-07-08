@@ -4,6 +4,7 @@ pub mod phys;
 pub mod elf;
 pub mod mmu;
 pub mod slab;
+pub mod smoke;
 
 pub use vmo::Vmo;
 pub use vmar::Vmar;
