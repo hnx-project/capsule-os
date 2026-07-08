@@ -62,6 +62,7 @@ fn main() -> io::Result<()> {
         // we merge all loaded segments into a single, cohesive OHLK segment.
         let mut merged_payload = Vec::new();
         let mut merged_size = 0u64;
+        let mut lowest_vaddr = u64::MAX;
 
         // Parse ELF64 header
         let e_phoff = u64::from_le_bytes([
@@ -103,6 +104,9 @@ fn main() -> io::Result<()> {
                     let segment_payload = &buffer[p_offset..p_offset + p_filesz];
                     merged_payload.extend_from_slice(segment_payload);
                     merged_size += p_filesz as u64;
+                    if p_vaddr < lowest_vaddr && p_vaddr > 0 {
+                        lowest_vaddr = p_vaddr;
+                    }
                 }
             }
         }
@@ -136,8 +140,13 @@ fn main() -> io::Result<()> {
         binary_data[64..72].copy_from_slice(&size_bytes); // file_size of Segment #0 (actual bytes to read from file!)
         binary_data[72..80].copy_from_slice(&size_bytes); // mem_size of Segment #0 in memory
 
-        let actual_entry_bytes = actual_entry.to_le_bytes();
-        binary_data[36..44].copy_from_slice(&actual_entry_bytes); // Save ELF entry point virtual address (like 0x210160) inside reserved field!
+        let relative_entry = if actual_entry >= lowest_vaddr && lowest_vaddr != u64::MAX {
+            actual_entry - lowest_vaddr
+        } else {
+            0
+        };
+        let relative_entry_bytes = relative_entry.to_le_bytes();
+        binary_data[36..44].copy_from_slice(&relative_entry_bytes); // Save relative entry point offset inside reserved field!
 
         // Recalculate whole file checksum
         binary_data[28..32].copy_from_slice(&[0, 0, 0, 0]);

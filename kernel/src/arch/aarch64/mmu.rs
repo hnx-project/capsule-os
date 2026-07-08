@@ -32,10 +32,10 @@ const PTE_NSH: u64 = 0b00 << 8;      // non-shareable
 const PTE_ISH: u64 = 0b11 << 8;      // inner-shareable
 const PTE_NORMAL_WB: u64 = (0u64 << 2) | PTE_ISH | PTE_AF; // AttrIdx=0, ISH
 const PTE_DEVICE: u64 = (1u64 << 2) | PTE_NSH | PTE_AF;     // AttrIdx=1, nSH
-const PTE_AP_RW: u64 = 0b01 << 6;    // EL1 / EL0 read-write (AP[1] = 1, AP[2] = 0)
-const PTE_AP_RO: u64 = 0b11 << 6;    // EL1 / EL0 read-only  (AP[1] = 1, AP[2] = 1)
-const PTE_XN: u64 = 1 << 54;          // never-execute for now
 const PTE_USER: u64 = 1 << 6;        // accessible from EL0 (for user pages)
+const PTE_AP_USER: u64 = 1 << 6;    // AP[1]=1 (user accessible bit)
+const PTE_AP_RO: u64 = 1 << 7;      // AP[2]=1 (read-only bit)
+const PTE_XN: u64 = 1 << 54;          // never-execute for now
 const PTE_UXN: u64 = 1 << 53;        // unprivileged execute-never
 
 #[inline(always)]
@@ -181,24 +181,20 @@ fn pte_attr_bits(flags: MapFlags) -> u64 {
         MemAttr::NormalCacheable => PTE_NORMAL_WB,
         MemAttr::Device => PTE_DEVICE,
     };
-    if flags.writable {
-        if flags.user {
-            bits |= PTE_AP_RW; // (AP[1]=1, AP[2]=0) -> user RW
-        } else {
-            bits |= (0b00u64 << 6); // (AP[1]=0, AP[2]=0) -> kernel RW
+    if flags.user {
+        bits |= PTE_AP_USER; // AP[1]=1 (User mode accessible)
+        if !flags.writable {
+            bits |= PTE_AP_RO; // AP[2]=1 (User Read-Only)
         }
     } else {
-        if flags.user {
-            bits |= PTE_AP_RO; // (AP[1]=1, AP[2]=1) -> user RO
-        } else {
-            bits |= (0b10u64 << 6); // (AP[1]=0, AP[2]=1) -> kernel RO
+        // Kernel-only pages (AP[1]=0)
+        if !flags.writable {
+            bits |= PTE_AP_RO; // AP[2]=1 (Kernel Read-Only)
         }
     }
     if !flags.executable {
         bits |= PTE_XN;
-    }
-    if flags.user {
-        bits |= PTE_USER;
+        bits |= PTE_UXN; // User pages get Unprivileged Execute Never when not executable
     }
     bits
 }
@@ -261,7 +257,7 @@ unsafe fn shatter_l2_block(l2_pa: usize, l2_idx: usize, original: u64) -> Result
     let mut block_attr = original & 0xFFF0_0000_0000_0FFF; // attr, AP, XN, AF, ...
     // CRITICAL FIX: Ensure user-accessible bits are set so that any user address mapping
     // in this 2 MiB range is authorized at higher-level table translations!
-    block_attr |= PTE_USER;
+    block_attr |= PTE_AP_USER;
 
     for i in 0..512 {
         let entry = pa_to_pte_addr(block_pa + i * 0x1000)
@@ -456,6 +452,8 @@ pub fn enable_inner(ram_base: usize, ram_size: usize, _uart_base: usize) -> Resu
         sctlr |= 1u64 << 0;   // M
         sctlr |= 1u64 << 2;   // C
         sctlr |= 1u64 << 12;  // I
+        sctlr &= !(1u64 << 25); // Disable EL0 Stack Alignment Check (SP0) to prevent traps
+        sctlr &= !(1u64 << 1);  // Disable strict memory alignment checks (A)
         asm!("msr sctlr_el1, {0}", in(reg) sctlr, options(nomem, nostack));
         asm!("isb", options(nomem, nostack));
         // Invalidate all TLB entries.
@@ -512,5 +510,31 @@ impl ArchMmu for AArch64Mmu {
             asm!("dsb sy", options(nomem, nostack));
             asm!("isb", options(nomem, nostack));
         }
+    }
+}
+
+/// Dynamic cache coherency helper to clean data cache and invalidate instruction cache
+/// on newly written/mapped EL0 user program segments.
+pub fn sync_instruction_cache(va: usize, size: usize) {
+    unsafe {
+        let start = va & !(4096 - 1);
+        let end = (va + size + 4095) & !(4095);
+        
+        let mut cur = start;
+        while cur < end {
+            // Clean data cache to PoU
+            asm!("dc cvau, {0}", in(reg) cur, options(nomem, nostack));
+            cur += 8; // Safely step by 8 bytes or cache line
+        }
+        asm!("dsb ish", options(nomem, nostack));
+        
+        cur = start;
+        while cur < end {
+            // Invalidate instruction cache to PoU
+            asm!("ic ivau, {0}", in(reg) cur, options(nomem, nostack));
+            cur += 8;
+        }
+        asm!("dsb ish", options(nomem, nostack));
+        asm!("isb", options(nomem, nostack));
     }
 }

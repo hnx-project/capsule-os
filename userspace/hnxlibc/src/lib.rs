@@ -3,6 +3,66 @@
 pub mod syscalls;
 pub use syscalls::*;
 
+extern "Rust" {
+    fn main() -> i32;
+}
+
+#[cfg(target_arch = "aarch64")]
+core::arch::global_asm!(
+    r#"
+.section .text
+.global _start
+_start:
+    // 1. Force SP alignment to 16 bytes by masking off low 4 bits
+    mov     x0, sp
+    and     x0, x0, #~0xf
+    mov     sp, x0
+
+    // 2. Zero FP and LR to terminate call-stack unwinding
+    mov     x29, #0
+    mov     x30, #0
+
+    // 3. Jump to the common Rust-based entry runner
+    bl      _hnx_user_entry
+
+.global _hnx_exit_fallback
+_hnx_exit_fallback:
+    mov     x0, #0
+    bl      exit
+    b       _hnx_exit_fallback
+"#
+);
+
+#[cfg(target_arch = "riscv64")]
+core::arch::global_asm!(
+    r#"
+.section .text
+.global _start
+_start:
+    // 1. Align SP on RV64 (must be 16-byte aligned as well)
+    andi    sp, sp, -16
+
+    // 2. Zero FP (s0) and RA (ra) to terminate unwinding
+    mv      s0, zero
+    mv      ra, zero
+
+    // 3. Jump to Rust-based entry
+    call    _hnx_user_entry
+
+.global _hnx_exit_fallback
+_hnx_exit_fallback:
+    li      a0, 0
+    call    exit
+    j       _hnx_exit_fallback
+"#
+);
+
+#[no_mangle]
+pub unsafe extern "C" fn _hnx_user_entry() -> ! {
+    let code = main();
+    exit(code);
+}
+
 #[no_mangle]
 pub extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     unsafe {

@@ -15,10 +15,10 @@ fn println(s: &str) {
 }
 
 #[no_mangle]
-extern "C" fn _start() {
+pub fn main() -> i32 {
     println("init: starting...");
     println("init: about to exec");
     println("init: exec devmgr handed off");
     hnxlibc::exec("devmgr");
-    loop {}
+    0
 }

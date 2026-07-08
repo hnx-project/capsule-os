@@ -23,7 +23,7 @@ pub enum FileAgentCmd {
 static mut FILE_AGENT_RUNNING: bool = false;
 
 #[no_mangle]
-pub extern "C" fn main() -> i32 {
+pub fn main() -> i32 {
     unsafe {
         FILE_AGENT_RUNNING = true;
     }

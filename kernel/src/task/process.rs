@@ -78,6 +78,11 @@ impl Process {
 
         let header = parser.header();
 
+        let mut entry_offset = u64::from_le_bytes([
+            header.reserved[0], header.reserved[1], header.reserved[2], header.reserved[3],
+            header.reserved[4], header.reserved[5], header.reserved[6], header.reserved[7],
+        ]) as usize;
+
         // 1. Allocate the process from our global list
         let proc = allocate_process(name)?;
         let pid = proc.id;
@@ -97,7 +102,16 @@ impl Process {
             }
 
             let virt_addr = 0x200000;
-            let size = entry_meta.mem_size as usize;
+            let mut size = entry_meta.mem_size as usize;
+            
+            // Expand size if this is the Text segment to fully envelope the real entry point!
+            if entry_meta.ty == ohlink_format::SegmentType::Text.to_u32() {
+                let required_size = entry_offset + 4096;
+                if size < required_size {
+                    size = required_size;
+                }
+            }
+
             let flags_raw = entry_meta.flags;
 
             let aligned_vaddr = virt_addr & !(4096 - 1);
@@ -121,6 +135,11 @@ impl Process {
             entry_meta.offset = 0x200000;
 
             proc.root_vmar.map(&mut vmo, 0, target_va, aligned_size, flags)?;
+
+            // Clean data cache and invalidate instruction cache to ensure the CPU reads
+            // the actual newly written instructions on the execution pipeline.
+            #[cfg(target_arch = "aarch64")]
+            crate::arch::aarch64::mmu::sync_instruction_cache(target_va, aligned_size);
         }
 
         // 3. Map Stack
@@ -135,20 +154,17 @@ impl Process {
         );
 
         proc.root_vmar.map(&mut stack_vmo, 0, stack_va, stack_size, stack_flags)?;
-        let stack_top = stack_va + stack_size;
+        let stack_top = (stack_va + stack_size) & !(15usize);
 
         // 4. Create Thread and add to scheduler
-        let mut entry_offset = u64::from_le_bytes([
-            header.reserved[0], header.reserved[1], header.reserved[2], header.reserved[3],
-            header.reserved[4], header.reserved[5], header.reserved[6], header.reserved[7],
-        ]) as usize;
-
-        // If the entry offset was not written (such as fallback paths), default to base 0x200000
-        if entry_offset == 0 {
-            entry_offset = 0x200000;
-        }
-
-        let user_entry = proc.root_vmar.base + (entry_offset - 0x200000);
+        // Calculate the real physical offset inside the compiled program segment.
+        // In the new merged single-segment OHLINK format, the entire ELF's load segments (including text at 0x210158 etc.)
+        // are merged into a single segment starting at 0x200000.
+        // Therefore, the virtual entry offset relative to the segment's starting virtual address is:
+        // actual_entry (0x2101d0) - lowest_vaddr (0x200000) = 0x101d0.
+        // In the kernel mapping, we map this merged segment to proc.root_vmar.base + 0x200000.
+        // Thus, the physical entry_point is proc.root_vmar.base + 0x200000 + entry_offset.
+        let user_entry = proc.root_vmar.base + 0x200000 + entry_offset;
         let mut thread = Thread::new_user(name, user_entry, stack_top)?;
         thread.process_id = pid;
         thread.handle_table = &proc.handle_table;

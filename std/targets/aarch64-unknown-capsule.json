@@ -1,4 +1,5 @@
 {
+  "abi": "softfloat",
   "arch": "aarch64",
   "data-layout": "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32",
   "llvm-target": "aarch64-unknown-none",
@@ -18,6 +19,8 @@
   "has-rpath": false,
   "max-atomic-width": 128,
   "supported-sanitizers": [],
+  "features": "+v8a,+strict-align,-neon",
+  "rustc-abi": "softfloat",
   "pre-link-args": {
     "ld.lld": [
       "--gc-sections",

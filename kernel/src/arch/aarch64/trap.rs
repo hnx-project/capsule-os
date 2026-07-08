@@ -63,7 +63,10 @@ pub struct TrapFrame {
 
 #[no_mangle]
 pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
-    let esr = unsafe { (*frame).esr };
+    let esr = unsafe { (*frame).esr };  
+    let elr = unsafe { (*frame).elr };
+    let spsr = unsafe { (*frame).spsr };
+    crate::log_debug!("TRAP", " EL0 Trap Intercepted! ESR={:#x}, ELR={:#x}, SPSR={:#x}", esr, elr, spsr);
     let ec = (esr >> 26) & 0x3F; // Exception Class
 
     if ec == 0x11 || ec == 0x15 {

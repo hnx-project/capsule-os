@@ -236,6 +236,18 @@ impl Vmo {
                 core::ptr::copy_nonoverlapping(buf.as_ptr().add(written),
                                                dst as *mut u8,
                                                real);
+                // Clean data cache to PoU (point of unification) for the written bytes!
+                #[cfg(target_arch = "aarch64")]
+                {
+                    use core::arch::asm;
+                    let mut addr = dst as usize & !(64 - 1);
+                    let end_addr = (dst as usize + real + 63) & !(64 - 1);
+                    while addr < end_addr {
+                        asm!("dc cvau, {0}", in(reg) addr, options(nomem, nostack));
+                        addr += 64;
+                    }
+                    asm!("dsb ish", options(nomem, nostack));
+                }
             }
             written += real;
             cur = end;

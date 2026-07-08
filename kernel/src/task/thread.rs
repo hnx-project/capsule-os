@@ -37,6 +37,14 @@ pub struct ThreadContext {
     pub spsr: u64,      // saved PSTATE (saved copy of user SPSR on trap)
 }
 
+const _ASSERT_LAYOUT: () = {
+    if core::mem::size_of::<[u64; 19]>() != 152 { panic!("x size mismatch"); }
+    if core::mem::size_of::<[u64; 12]>() != 96 { panic!("r size mismatch"); }
+    if core::mem::offset_of!(ThreadContext, user_sp) != 256 { panic!("user_sp offset mismatch"); }
+    if core::mem::offset_of!(ThreadContext, elr) != 264 { panic!("elr offset mismatch"); }
+    if core::mem::offset_of!(ThreadContext, spsr) != 272 { panic!("spsr offset mismatch"); }
+};
+
 #[derive(Debug)]
 pub struct Thread {
     pub id: usize,
@@ -157,7 +165,7 @@ impl Thread {
         ctx.elr = entry as u64; // user entry point - first switch will eret to here
         // SPSR M[3:0] = 0b0000 (EL0t) so eret drops into AArch64 user mode.
         // Also enable IRQs (clear mask bits: F=0, I=0, A=0, D=0)
-        ctx.spsr = 0x3c0;
+        ctx.spsr = 0x000;
         ctx.r[0] = entry as u64;
         ctx.r[1] = stack_top as u64;
 
@@ -204,8 +212,7 @@ impl Thread {
 
         #[cfg(target_arch = "aarch64")]
         {
-            ctx.spsr = 0x005;
-            ctx.r[11] = thread_bootstrap as usize as u64;
+            ctx.spsr = 0x3c0; // EL0t, all interrupts (D, A, I, F) masked initially to prevent premature interrupt traps during user startup bootstrap!
         }
         #[cfg(target_arch = "riscv64")]
         {
@@ -247,7 +254,7 @@ impl Thread {
         ctx.sp = kernel_stack_top as u64;
         ctx.user_sp = stack_top as u64;
         ctx.elr = entry as u64;
-        ctx.spsr = 0x3c0;
+        ctx.spsr = 0x000;
         ctx.r[0] = entry as u64;
         ctx.r[1] = stack_top as u64;
 
@@ -333,6 +340,7 @@ user_eret_stub:
     msr elr_el1, x3
     ldr x4, [x9, #272]    // spsr
     msr spsr_el1, x4
+    isb
     eret
 "#
 );
