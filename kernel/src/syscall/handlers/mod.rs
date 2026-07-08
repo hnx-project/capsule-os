@@ -1,6 +1,7 @@
 pub mod process;
 pub mod memory;
 pub mod ipc;
+pub mod vfs;
 
 use shared::status::Status;
 

@@ -137,6 +137,44 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
             }
         }
 
+        SYSCALL_OPEN => {
+            let path_ptr = arg0;
+            let path_len = arg1;
+            let flags = arg2 as u32;
+            match handlers::vfs::sys_open(path_ptr, path_len, flags) {
+                Ok(fd) => fd as usize,
+                Err(e) => e.to_raw(),
+            }
+        }
+
+        SYSCALL_CLOSE => {
+            let fd = arg0 as u32;
+            match handlers::vfs::sys_close(fd) {
+                Ok(_) => 0,
+                Err(e) => e.to_raw(),
+            }
+        }
+
+        SYSCALL_READ => {
+            let fd = arg0 as u32;
+            let buf_ptr = arg1;
+            let buf_len = arg2;
+            match handlers::vfs::sys_read(fd, buf_ptr, buf_len) {
+                Ok(n) => n,
+                Err(e) => e.to_raw(),
+            }
+        }
+
+        SYSCALL_SEEK => {
+            let fd = arg0 as u32;
+            let offset = arg1 as i64;
+            let whence = arg2 as i32;
+            match handlers::vfs::sys_seek(fd, offset, whence) {
+                Ok(new_off) => new_off as usize,
+                Err(e) => e.to_raw(),
+            }
+        }
+
         _ => Status::NotAllowed.to_raw(),
     }
 }

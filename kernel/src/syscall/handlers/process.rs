@@ -15,7 +15,7 @@ pub fn sys_exec(table: &HandleTable, program_name: &str) -> Result<()> {
     let (name_static, bytes): (&'static str, &'static [u8]) = match program_name {
         "init" => ("init", &include_bytes!("../../../files/init")[..]),
         "devmgr" => ("devmgr", &include_bytes!("../../../files/devmgr")[..]),
-        "vfs" => ("vfs", &include_bytes!("../../../files/vfs")[..]),
+        "fileagent" => ("fileagent", &include_bytes!("../../../files/fileagent")[..]),
         _ => {
             crate::log_error!("EXEC", "Unknown program: {}", program_name);
             return Err(Status::NotFound);
