@@ -1,0 +1,9 @@
+[package]
+name = "ohlink-runner"
+version = "0.1.0"
+edition = "2021"
+authors = ["ohlink-cc Developers"]
+description = "Lightweight user-space emulator for executing AArch64 OHLINK binary images with UART output interception"
+
+[dependencies]
+ohlink-format = { path = "../ohlink-format" }
