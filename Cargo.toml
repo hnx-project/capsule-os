@@ -10,7 +10,7 @@ members = [
     "userspace/hnxlibc",
     "userspace/hnxstd",
     "userspace/services/devmgr",
-    "userspace/services/vfs",
+    "userspace/services/fileagent",
     "userspace/services/loader",
     "userspace/services/init",
     "userspace/programs/shell",

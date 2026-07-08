@@ -11,7 +11,7 @@ const RESET: &str = "\x1b[0m";
 const USERCRATE_S: &[(&str, &str)] = &[
     ("hnx-init", "init"),
     ("hnx-devmgr", "devmgr"),
-    ("hnx-vfs", "vfs"),
+    ("hnx-fileagent", "fileagent"),
     ("hnx-loader", "loader"),
 ];
 

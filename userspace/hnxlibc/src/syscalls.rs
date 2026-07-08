@@ -64,6 +64,40 @@ pub fn channel_create() -> Result<usize, Status> {
     }
 }
 
+pub fn channel_read(handle: usize, buf: &mut [u8], handles: &mut [u32]) -> Result<usize, Status> {
+    let ret = syscall!(
+        SYSCALL_CHANNEL_READ,
+        handle,
+        buf.as_mut_ptr() as usize,
+        buf.len(),
+        handles.as_mut_ptr() as usize,
+        handles.len(),
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret)
+    }
+}
+
+pub fn channel_write(handle: usize, buf: &[u8], handles: &[u32]) -> Result<usize, Status> {
+    let ret = syscall!(
+        SYSCALL_CHANNEL_WRITE,
+        handle,
+        buf.as_ptr() as usize,
+        buf.len(),
+        handles.as_ptr() as usize,
+        handles.len(),
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret)
+    }
+}
+
 pub fn exec_impl(name: &str) -> i32 {
     let mut len = name.len();
     let mut local_name = name.as_bytes();

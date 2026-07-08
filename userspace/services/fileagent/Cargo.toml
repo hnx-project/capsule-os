@@ -1,6 +1,11 @@
 [package]
 name = "hnx-fileagent"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "fileagent"
+path = "src/main.rs"
 
 [dependencies]
+hnxlibc = { path = "../../hnxlibc" }
