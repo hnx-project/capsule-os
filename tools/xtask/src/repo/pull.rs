@@ -54,15 +54,15 @@ pub fn handle_pull(_config: &XtaskConfig) -> Result<(), String> {
         None,
     );
 
-    println!("📥 Pulling Subtree 'tools/ohlink-cc' (main)...");
+    println!("📥 Pulling Subtree 'tools/ohlink-toolchain' (develop)...");
     let _ = run_cmd_status(
         &[
             "git",
             "subtree",
             "pull",
-            "--prefix=tools/ohlink-cc",
-            "ohlink-cc-up",
-            "main",
+            "--prefix=tools/ohlink-toolchain",
+            "ohlink-toolchain-up",
+            "develop",
             "--squash",
         ],
         None,

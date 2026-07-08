@@ -21,7 +21,7 @@ pub fn build(plat: &Platform) -> Result<(), String> {
         BOLD_CYAN, RESET, plat.arch
     );
 
-    // Bootstrap self-built ohlink-cc tools on host first!
+    // Bootstrap self-built ohlink-toolchain tools on host first!
     bootstrap_ohlink_tools()?;
 
     for (crate_name, _out_name) in USERCRATE_S {
@@ -54,7 +54,7 @@ fn bootstrap_ohlink_tools() -> Result<(), String> {
             "build",
             "--release",
             "--manifest-path",
-            "tools/ohlink-cc/Cargo.toml",
+            "tools/ohlink-toolchain/Cargo.toml",
         ]),
         || {
             println!(
@@ -116,7 +116,7 @@ fn pack_user_programs(plat: &Platform) -> Result<(), String> {
             Command::new("cargo").args([
                 "run",
                 "--manifest-path",
-                "tools/ohlink-cc/Cargo.toml",
+                "tools/ohlink-toolchain/Cargo.toml",
                 "-p",
                 "ohlink-linker",
                 "--",
@@ -247,7 +247,7 @@ fn pack_kernel_ohc(plat: &Platform) -> Result<(), String> {
         Command::new("cargo").args([
             "run",
             "--manifest-path",
-            "tools/ohlink-cc/Cargo.toml",
+            "tools/ohlink-toolchain/Cargo.toml",
             "-p",
             "ohlink-linker",
             "--",

@@ -3,12 +3,12 @@ use crate::FormatError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum RelocType {
-    Abs64 = 1,                 // R_AARCH64_ABS64: S + A
-    Call26 = 2,                // R_AARCH64_CALL26: (S + A - P) >> 2
-    AdrPrelPgHi21 = 3,         // R_AARCH64_ADR_PREL_PG_HI21: (Page(S+A) - Page(P)) >> 12
-    AddAbsLo12Nc = 4,          // R_AARCH64_ADD_ABS_LO12_NC: (S + A) & 0xFFF
-    Ldst64AbsLo12Nc = 5,       // R_AARCH64_LDST64_ABS_LO12_NC: ((S + A) & 0xFFF) >> 3
-    Ldst32AbsLo12Nc = 6,       // R_AARCH64_LDST32_ABS_LO12_NC: ((S + A) & 0xFFF) >> 2
+    Abs64 = 1,
+    Call26 = 2,
+    AdrPrelPgHi21 = 3,
+    AddAbsLo12Nc = 4,
+    Ldst64AbsLo12Nc = 5,
+    Ldst32AbsLo12Nc = 6,
     Custom(u32),
 }
 
@@ -41,12 +41,14 @@ impl RelocType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct OHLK_Reloc {
-    pub offset: u64,       // Offset in target section
-    pub ty: u32,           // RelocType as u32
-    pub symbol_idx: u32,   // Symbol index in Symbol Table
-    pub addend: i64,       // Explicit addend
-    pub section_idx: u16,  // Target section index in Header Entry Table (e.g. .text index)
-    pub reserved: [u8; 6], // Padding to 32 bytes
+    pub offset: u64,
+    pub ty: u32,
+    pub symbol_idx: u32,
+    pub bit_size: u8,
+    pub reserved8: u8,
+    pub reserved16: u16,
+    pub addend: i64,
+    pub reserved: [u8; 4],
 }
 
 impl OHLK_Reloc {
@@ -57,9 +59,10 @@ impl OHLK_Reloc {
         bytes[0..8].copy_from_slice(&self.offset.to_le_bytes());
         bytes[8..12].copy_from_slice(&self.ty.to_le_bytes());
         bytes[12..16].copy_from_slice(&self.symbol_idx.to_le_bytes());
-        bytes[16..24].copy_from_slice(&self.addend.to_le_bytes());
-        bytes[24..26].copy_from_slice(&self.section_idx.to_le_bytes());
-        bytes[26..32].copy_from_slice(&self.reserved);
+        bytes[16] = self.bit_size;
+        bytes[17] = self.reserved8;
+        bytes[18..20].copy_from_slice(&self.reserved16.to_le_bytes());
+        bytes[20..28].copy_from_slice(&self.addend.to_le_bytes());
         bytes
     }
 
@@ -72,19 +75,23 @@ impl OHLK_Reloc {
         ]);
         let ty = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
         let symbol_idx = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
+        let bit_size = bytes[16];
+        let reserved8 = bytes[17];
+        let reserved16 = u16::from_le_bytes([bytes[18], bytes[19]]);
         let addend = i64::from_le_bytes([
-            bytes[16], bytes[17], bytes[18], bytes[19], bytes[20], bytes[21], bytes[22], bytes[23],
+            bytes[20], bytes[21], bytes[22], bytes[23], bytes[24], bytes[25], bytes[26], bytes[27],
         ]);
-        let section_idx = u16::from_le_bytes([bytes[24], bytes[25]]);
-        let mut reserved = [0u8; 6];
-        reserved.copy_from_slice(&bytes[26..32]);
+        let mut reserved = [0u8; 4];
+        reserved.copy_from_slice(&bytes[28..32]);
 
         Ok(Self {
             offset,
             ty,
             symbol_idx,
+            bit_size,
+            reserved8,
+            reserved16,
             addend,
-            section_idx,
             reserved,
         })
     }

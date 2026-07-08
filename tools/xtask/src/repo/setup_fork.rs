@@ -61,8 +61,8 @@ pub fn handle_setup_fork(username: &str) -> Result<(), String> {
             "git",
             "remote",
             "add",
-            "ohlink-cc-up",
-            "git@gitcode.com:hnx-project/ohlink-cc.git",
+            "ohlink-toolchain-up",
+            "git@gitcode.com:hnx-project/ohlink-toolchain.git",
         ],
         None,
     );

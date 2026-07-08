@@ -1,17 +1,11 @@
-use crate::{FormatError, OHLK_Header, OHLK_Entry, crc32_ieee};
+use crate::{FormatError, OHLK_Header, OHLK_Entry};
 
-extern crate alloc;
-use alloc::vec::Vec;
-
-/// Parses an OHLINK binary from a byte slice.
-/// Fully `no_std` compatible.
 pub struct OHLK_Parser<'a> {
     data: &'a [u8],
     header: OHLK_Header,
 }
 
 impl<'a> OHLK_Parser<'a> {
-    /// Validates magic numbers, checksum (CRC32), and basic file structure.
     pub fn new(data: &'a [u8]) -> Result<Self, FormatError> {
         if data.len() < OHLK_Header::SIZE {
             return Err(FormatError::BufferTooSmall);
@@ -21,14 +15,25 @@ impl<'a> OHLK_Parser<'a> {
             return Err(FormatError::BufferTooSmall);
         }
 
-        // Verify Checksum (CRC32-IEEE)
-        // Set checksum field to 0 for validation
         let expected_checksum = header.checksum;
 
-        let mut data_copy = Vec::from(data);
-        // Zero out checksum field (offset 28..32)
-        data_copy[28..32].copy_from_slice(&[0, 0, 0, 0]);
-        let calculated_checksum = crc32_ieee(&data_copy);
+        let mut calculated_checksum = 0u32;
+        if data.len() >= 32 {
+            let mut crc = 0xFFFFFFFF;
+            let limit = header.file_size as usize;
+            for i in 0..limit {
+                if i >= data.len() {
+                    break;
+                }
+                let byte = if i >= 30 && i < 34 {
+                    0u8
+                } else {
+                    data[i]
+                };
+                crc = (crc >> 8) ^ crate::crc32::CRC32_TABLE[((crc ^ byte as u32) & 0xFF) as usize];
+            }
+            calculated_checksum = !crc;
+        }
 
         if expected_checksum != calculated_checksum {
             return Err(FormatError::ChecksumMismatch {
@@ -44,7 +49,6 @@ impl<'a> OHLK_Parser<'a> {
         &self.header
     }
 
-    /// Gets an Entry from the Header Table by index.
     pub fn get_entry(&self, index: u16) -> Result<OHLK_Entry, FormatError> {
         if index >= self.header.header_count {
             return Err(FormatError::InvalidEntryIndex);
@@ -57,9 +61,8 @@ impl<'a> OHLK_Parser<'a> {
         OHLK_Entry::from_bytes(&self.data[start..end])
     }
 
-    /// Retrieves raw segment data using an entry.
     pub fn get_segment_data(&self, entry: &OHLK_Entry) -> Result<&'a [u8], FormatError> {
-        let start = entry.offset as usize;
+        let start = entry.file_offset as usize;
         let end = start + entry.file_size as usize;
         if end > self.data.len() {
             return Err(FormatError::BufferTooSmall);
@@ -67,7 +70,6 @@ impl<'a> OHLK_Parser<'a> {
         Ok(&self.data[start..end])
     }
 
-    /// Iterates over all header table entries.
     pub fn entries(&self) -> EntryIterator<'_, 'a> {
         EntryIterator {
             parser: self,

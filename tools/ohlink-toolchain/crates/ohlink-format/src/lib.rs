@@ -13,9 +13,9 @@ pub mod builder;
 #[cfg(test)]
 pub mod tests;
 
-pub use header::OHLK_Header;
+pub use header::{OHLK_Header, FileType};
 pub use entry::{OHLK_Entry, SegmentType};
-pub use symbol::{OHLK_Symbol, SymbolType, SymbolBinding};
+pub use symbol::{OHLK_Symbol, SymbolType, SymbolBinding, SymbolVisibility};
 pub use reloc::{OHLK_Reloc, RelocType};
 pub use crc32::crc32_ieee;
 

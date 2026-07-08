@@ -3,7 +3,5 @@ resolver = "2"
 members = [
     "crates/ohlink-format",
     "crates/ohlink-linker",
-    "crates/rustc_codegen_ohlink",
-    "crates/ohlink-runner",
-    "examples/hello_hnx",
+    "crates/ohlink-read",
 ]

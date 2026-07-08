@@ -4,10 +4,6 @@ use crate::mm::vmar::Vmar;
 use crate::object::handle_table::HandleTable;
 
 static PROCESS_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
-// Reserved for future per-process VMAR work (see commit message).
-// Currently unused: every process shares the legacy base so linker
-// PC-relative references stay correct; `sys_exec` marks its caller
-// Dead to prevent cross-process adr pollution.
 pub static VMAR_BASE_SLOT: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug)]
@@ -31,12 +27,6 @@ pub enum ProcessState {
 
 impl Process {
     pub fn new(name: &'static str) -> Result<Self> {
-        // High-reusability multi-slot address space allocator:
-        // By offsetting each process's virtual mapping base range by 256 MiB,
-        // we guarantee zero virtual overlap across processes. Even under a legacy
-        // shared single page table, this encapsulation guarantees that processes
-        // (loader, init, devmgr, etc.) will never overwrite or step on each other's 
-        // segments, providing elegant EL0 software-level memory isolation.
         let slot = VMAR_BASE_SLOT.fetch_add(1, Ordering::Relaxed);
 
         #[cfg(target_arch = "aarch64")]
@@ -80,17 +70,11 @@ impl Process {
 
         let header = parser.header();
 
-        let mut entry_offset = u64::from_le_bytes([
-            header.reserved[0], header.reserved[1], header.reserved[2], header.reserved[3],
-            header.reserved[4], header.reserved[5], header.reserved[6], header.reserved[7],
-        ]) as usize;
+        let entry_point = header.entry_point;
 
-        // 1. Allocate the process from our global list
         let proc = allocate_process(name)?;
         let pid = proc.id;
 
-        // Allocate and zero-initialize process-specific L0 page table 
-        // now that MMU and phys-allocator are 100% active, avoiding bootstrapping lock deadlines!
         let l0_user_pa = crate::mm::phys::alloc_page()?.as_usize();
         proc.l0_user_pa = l0_user_pa;
 
@@ -98,65 +82,42 @@ impl Process {
 
         #[cfg(target_arch = "aarch64")]
         unsafe {
-            // Read TTBR1_EL1 which contains the master kernel L0 physical address.
             let mut ttbr1: u64;
             core::arch::asm!("mrs {0}, ttbr1_el1", out(reg) ttbr1, options(nomem, nostack));
             let kernel_l0_pa = (ttbr1 & 0x0000_FFFF_FFFF_F000) as usize;
 
-            // Compute kernel virtual addresses for both structures so we can securely write-volatile them.
             let kernel_l0_va = crate::mm::mmu::pa_to_kernel_va(kernel_l0_pa) as *const u64;
             let user_l0_va = crate::mm::mmu::pa_to_kernel_va(l0_user_pa) as *mut u64;
 
-            // Copy the entire master L0 table (slots 0..512) temporarily into the user L0 table
-            // to ensure the active physical identity mapping (EL1 code/data) remains fully translated
-            // during the loader segment-mapping phase!
             for i in 0..512 {
                 let entry = core::ptr::read_volatile(kernel_l0_va.add(i));
                 core::ptr::write_volatile(user_l0_va.add(i), entry);
             }
 
-            // Save the currently active TTBR0_EL1 value so we can restore it before leaving launch_user_program!
             let mut ttbr0_reg: u64;
             core::arch::asm!("mrs {0}, ttbr0_el1", out(reg) ttbr0_reg, options(nomem, nostack));
             old_ttbr0 = (ttbr0_reg & 0x0000_FFFF_FFFF_F000) as usize;
 
-            // Load this new process L0 page table root into TTBR0_EL1 immediately!
-            // This guarantees all subsequent mapping (map/map_page) walks are registered under this process page table.
             crate::arch::aarch64::mmu::set_ttbr0_el1(l0_user_pa);
         }
 
-        // 2. Parse and map OHLINK segments
         for idx in 0..header.header_count {
-            let mut entry_meta = match parser.get_entry(idx) {
+            let entry_meta = match parser.get_entry(idx) {
                 Ok(e) => e,
                 _ => continue,
             };
-            if entry_meta.ty != ohlink_format::SegmentType::Text.to_u32()
-                && entry_meta.ty != ohlink_format::SegmentType::Data.to_u32()
-                && entry_meta.ty != ohlink_format::SegmentType::Rodata.to_u32()
-                && entry_meta.ty != ohlink_format::SegmentType::Bss.to_u32()
-            {
+
+            let ty = entry_meta.ty;
+            if ty != 1 && ty != 2 && ty != 3 && ty != 4 {
                 continue;
             }
 
-            let virt_addr = 0x200000;
-            let mut size = entry_meta.mem_size as usize;
-            
-            // Expand size if this is the Text segment to fully envelope the real entry point!
-            if entry_meta.ty == ohlink_format::SegmentType::Text.to_u32() {
-                let required_size = entry_offset + 4096;
-                if size < required_size {
-                    size = required_size;
-                }
-            }
+            let virt_addr = entry_meta.virtual_address as usize;
+            let size = entry_meta.mem_size as usize;
 
             let mut flags_raw = entry_meta.flags;
-            // CRITICAL W^X ALIGNMENT: AArch64 hardware enforcing strict W^X (Write-XOR-Execute) rule.
-            // Any user-space (EL0) page mapped with BOTH Writable and Executable permissions will be
-            // immediately trapped as Instruction Abort. We must clear the Writable bit (bit 1, value 2)
-            // for the code segment (Text segment) to ensure smooth EL0 fetch and execution!
-            if entry_meta.ty == ohlink_format::SegmentType::Text.to_u32() {
-                flags_raw &= !2; // Strip Writable bit (VmarFlags::WRITE is bit 1)
+            if ty == 1 {
+                flags_raw &= !2;
             }
 
             let aligned_vaddr = virt_addr & !(4096 - 1);
@@ -165,38 +126,29 @@ impl Process {
 
             let target_va = proc.root_vmar.base + aligned_vaddr;
             let flags = VmarFlags::from_bits(flags_raw);
-            crate::log_info!("LAUNCHER", "Mapping segment: ty={:#x}, flags={:?} (raw={:#x}), target_va={:#x}, size={}", entry_meta.ty, flags, flags_raw, target_va, aligned_size);
+            crate::log_info!("LAUNCHER", "Mapping segment: ty={}, flags={:?} (raw={:#x}), target_va={:#x}, size={}",
+                ty, flags, flags_raw, target_va, aligned_size);
 
             let mut vmo = Vmo::create_with_size(aligned_size)?;
-            vmo.commit_all()?; // Commit physical pages so memory is backed
+            vmo.commit_all()?;
             if entry_meta.file_size > 0 {
                 let segment_payload = parser.get_segment_data(&entry_meta).map_err(|e| {
                     crate::log_error!("LAUNCHER", "Failed to retrieve segment payload: {:?}", e);
                     Status::InvalidArgs
                 })?;
-                let load_bias = entry_offset & !0xFFF;
-                let write_offset = alignment_offset + load_bias;
+                let write_offset = alignment_offset;
                 vmo.write(write_offset, segment_payload)?;
             }
 
-            // Restore entry_meta offset to keep it compatible with relative jump setups
-            entry_meta.offset = 0x200000;
-
             proc.root_vmar.map(&mut vmo, 0, target_va, aligned_size, flags)?;
 
-            // Clean data cache and invalidate instruction cache to ensure the CPU reads
-            // the actual newly written instructions on the execution pipeline.
             #[cfg(target_arch = "aarch64")]
             crate::arch::aarch64::mmu::sync_instruction_cache(target_va, aligned_size);
-
-            #[cfg(target_arch = "aarch64")]
-            crate::arch::aarch64::mmu::debug_walk_va(proc.l0_user_pa, 0x902101d0);
         }
 
-        // 3. Map Stack
         let stack_size = 16 * 1024;
         let mut stack_vmo = Vmo::create_with_size(stack_size)?;
-        stack_vmo.commit_all()?; // Commit physical stack pages so it is writable and readable
+        stack_vmo.commit_all()?;
         let stack_vaddr_offset = 0x2000000;
         let stack_va = proc.root_vmar.base + stack_vaddr_offset;
 
@@ -208,24 +160,11 @@ impl Process {
 
         let stack_top = (stack_va + stack_size) & !(15usize);
 
-        // CRITICAL TLB FLUSH: Since mapping user segments has allocated new intermediate L1/L2 table descriptors
-        // that were previously zero (invalid) in the shared page table directory, we MUST flush all TLB and translation 
-        // table walk caches (PTW) globally. Otherwise, the hardware CPU's TLB branch predictor will fetch from old cached invalid table Walks
-        // and trigger an immediate Level-1 or Level-2 Translation Fault.
         use crate::mm::mmu::ArchMmu;
         #[cfg(target_arch = "aarch64")]
         crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
 
-        // 4. Create Thread and add to scheduler
-        // Calculate the real physical offset inside the compiled program segment.
-        // In the new merged single-segment OHLINK format, the entire ELF's load segments (including text at 0x210158 etc.)
-        // are merged into a single segment starting at 0x200000.
-        // Therefore, the virtual entry offset relative to the segment's starting virtual address is:
-        // actual_entry (0x2101d0) - lowest_vaddr (0x200000) = 0x101d0.
-        // In the kernel mapping, we map this merged segment to proc.root_vmar.base + 0x200000.
-        // Thus, the physical entry_point is proc.root_vmar.base + 0x200000 + entry_offset.
-        // let user_entry = proc.root_vmar.base + 0x200000 + entry_offset;
-        let user_entry = proc.root_vmar.base + 0x200000 + entry_offset;
+        let user_entry = proc.root_vmar.base + entry_point as usize;
         let mut thread = Thread::new_user(name, user_entry, stack_top)?;
         thread.process_id = pid;
         thread.handle_table = &proc.handle_table;
@@ -236,9 +175,7 @@ impl Process {
         }
 
         crate::log_info!("LAUNCHER", "Successfully launched program '{}' at EL0 (entry={:#x}, pid={})", name, user_entry, pid);
-        
-        // Restore the original TTBR0_EL1 value before returning!
-        // This ensures the current CPU execution state is fully preserved.
+
         #[cfg(target_arch = "aarch64")]
         crate::arch::aarch64::mmu::set_ttbr0_el1(old_ttbr0);
 
