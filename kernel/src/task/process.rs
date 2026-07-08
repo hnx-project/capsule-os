@@ -65,6 +65,102 @@ impl Process {
             self.thread_count -= 1;
         }
     }
+
+    pub fn launch_user_program(name: &'static str, binary_bytes: &[u8]) -> Result<()> {
+        use crate::mm::vmo::Vmo;
+        use crate::mm::vmar::VmarFlags;
+        use crate::task::thread::{Thread, ThreadState};
+
+        let parser = ohlink_format::parser::OHLK_Parser::new(binary_bytes).map_err(|e| {
+            crate::log_error!("LAUNCHER", "Failed to parse OHLINK format: {:?}", e);
+            Status::InvalidArgs
+        })?;
+
+        let header = parser.header();
+
+        // 1. Allocate the process from our global list
+        let proc = allocate_process(name)?;
+        let pid = proc.id;
+
+        // 2. Parse and map OHLINK segments
+        for idx in 0..header.header_count {
+            let mut entry_meta = match parser.get_entry(idx) {
+                Ok(e) => e,
+                _ => continue,
+            };
+            if entry_meta.ty != ohlink_format::SegmentType::Text.to_u32()
+                && entry_meta.ty != ohlink_format::SegmentType::Data.to_u32()
+                && entry_meta.ty != ohlink_format::SegmentType::Rodata.to_u32()
+                && entry_meta.ty != ohlink_format::SegmentType::Bss.to_u32()
+            {
+                continue;
+            }
+
+            let virt_addr = 0x200000;
+            let size = entry_meta.mem_size as usize;
+            let flags_raw = entry_meta.flags;
+
+            let aligned_vaddr = virt_addr & !(4096 - 1);
+            let alignment_offset = virt_addr - aligned_vaddr;
+            let aligned_size = (size + alignment_offset + 4095) & !(4095);
+
+            let target_va = proc.root_vmar.base + aligned_vaddr;
+            let flags = VmarFlags::from_bits(flags_raw);
+
+            let mut vmo = Vmo::create_with_size(aligned_size)?;
+            vmo.commit_all()?; // Commit physical pages so memory is backed
+            if entry_meta.file_size > 0 {
+                let segment_payload = parser.get_segment_data(&entry_meta).map_err(|e| {
+                    crate::log_error!("LAUNCHER", "Failed to retrieve segment payload: {:?}", e);
+                    Status::InvalidArgs
+                })?;
+                vmo.write(alignment_offset, segment_payload)?;
+            }
+
+            // Restore entry_meta offset to keep it compatible with relative jump setups
+            entry_meta.offset = 0x200000;
+
+            proc.root_vmar.map(&mut vmo, 0, target_va, aligned_size, flags)?;
+        }
+
+        // 3. Map Stack
+        let stack_size = 16 * 1024;
+        let mut stack_vmo = Vmo::create_with_size(stack_size)?;
+        stack_vmo.commit_all()?; // Commit physical stack pages so it is writable and readable
+        let stack_vaddr_offset = 0x2000000;
+        let stack_va = proc.root_vmar.base + stack_vaddr_offset;
+
+        let stack_flags = VmarFlags::from_bits(
+            VmarFlags::READ.bits() | VmarFlags::WRITE.bits() | VmarFlags::USER.bits()
+        );
+
+        proc.root_vmar.map(&mut stack_vmo, 0, stack_va, stack_size, stack_flags)?;
+        let stack_top = stack_va + stack_size;
+
+        // 4. Create Thread and add to scheduler
+        let mut entry_offset = u64::from_le_bytes([
+            header.reserved[0], header.reserved[1], header.reserved[2], header.reserved[3],
+            header.reserved[4], header.reserved[5], header.reserved[6], header.reserved[7],
+        ]) as usize;
+
+        // If the entry offset was not written (such as fallback paths), default to base 0x200000
+        if entry_offset == 0 {
+            entry_offset = 0x200000;
+        }
+
+        let user_entry = proc.root_vmar.base + (entry_offset - 0x200000);
+        let mut thread = Thread::new_user(name, user_entry, stack_top)?;
+        thread.process_id = pid;
+        thread.handle_table = &proc.handle_table;
+        thread.state = ThreadState::Ready;
+
+        unsafe {
+            crate::task::scheduler::SCHEDULER.add(thread);
+        }
+
+        crate::log_info!("LAUNCHER", "Successfully launched program '{}' at EL0 (entry={:#x}, pid={})", name, user_entry, pid);
+        Ok(())
+    }
 }
 
 pub const MAX_PROCESSES: usize = 8;

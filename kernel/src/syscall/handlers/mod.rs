@@ -5,6 +5,7 @@ pub mod ipc;
 use shared::status::Status;
 
 pub fn sys_write(fd: usize, ptr: usize, len: usize) -> usize {
+    crate::log_info!("SYSCALL_WRITE", "fd={}, ptr={:#x}, len={}", fd, ptr, len);
     if fd == 1 || fd == 2 {
         if ptr == 0 || len == 0 {
             return 0;

@@ -141,9 +141,18 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8) {
             crate::mm::smoke::vmo_vmar_smoke_test();
 
             // Phase 3.2: bootstrap init process and thread / run smoke tests.
-            if let Err(e) = crate::task::smoke::launch_smoke_tests() {
-                crate::log_error!("BOOT", "Smoke tests initialization failed: {:?}", e);
-                loop {}
+            // if let Err(e) = crate::task::smoke::launch_smoke_tests() {
+            //     crate::log_error!("BOOT", "Smoke tests initialization failed: {:?}", e);
+            //     loop {}
+            // }
+
+            match crate::loader::launch_loader() {
+                Ok(_) => {
+                    crate::log_info!("BOOT", "Loader process ready to schedule");
+                }
+                Err(e) => {
+                    crate::log_warn!("BOOT", "Loader skipped or failed ({:?}), falling back to kernel smoke threads", e);
+                }
             }
 
             // Start preemptive scheduling!

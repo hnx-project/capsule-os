@@ -103,10 +103,6 @@ fn main() -> io::Result<()> {
                     let segment_payload = &buffer[p_offset..p_offset + p_filesz];
                     merged_payload.extend_from_slice(segment_payload);
                     merged_size += p_filesz as u64;
-                    // Use the lowest segment virtual address as the entry point base!
-                    if p_vaddr < actual_entry && p_vaddr > 0 {
-                        actual_entry = p_vaddr;
-                    }
                 }
             }
         }
@@ -139,6 +135,9 @@ fn main() -> io::Result<()> {
         let size_bytes = (merged_payload.len() as u64).to_le_bytes();
         binary_data[64..72].copy_from_slice(&size_bytes); // file_size of Segment #0 (actual bytes to read from file!)
         binary_data[72..80].copy_from_slice(&size_bytes); // mem_size of Segment #0 in memory
+
+        let actual_entry_bytes = actual_entry.to_le_bytes();
+        binary_data[36..44].copy_from_slice(&actual_entry_bytes); // Save ELF entry point virtual address (like 0x210160) inside reserved field!
 
         // Recalculate whole file checksum
         binary_data[28..32].copy_from_slice(&[0, 0, 0, 0]);
