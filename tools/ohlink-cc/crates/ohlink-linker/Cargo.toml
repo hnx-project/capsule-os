@@ -1,9 +1,0 @@
-[package]
-name = "ohlink-linker"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-ohlink-format = { path = "../ohlink-format" }
-clap = { version = "4.0", features = ["derive"] }
-crc32fast = "1.3"

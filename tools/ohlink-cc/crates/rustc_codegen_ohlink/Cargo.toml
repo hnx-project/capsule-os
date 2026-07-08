@@ -1,7 +1,0 @@
-[package]
-name = "rustc_codegen_ohlink"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-ohlink-format = { path = "../ohlink-format" }
