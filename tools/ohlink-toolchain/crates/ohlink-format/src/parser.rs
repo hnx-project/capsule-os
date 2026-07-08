@@ -1,4 +1,4 @@
-use crate::{FormatError, OHLK_Header, OHLK_Entry};
+use crate::{FormatError, OHLK_Entry, OHLK_Header};
 
 pub struct OHLK_Parser<'a> {
     data: &'a [u8],
@@ -25,11 +25,7 @@ impl<'a> OHLK_Parser<'a> {
                 if i >= data.len() {
                     break;
                 }
-                let byte = if i >= 30 && i < 34 {
-                    0u8
-                } else {
-                    data[i]
-                };
+                let byte = if i >= 30 && i < 34 { 0u8 } else { data[i] };
                 crc = (crc >> 8) ^ crate::crc32::CRC32_TABLE[((crc ^ byte as u32) & 0xFF) as usize];
             }
             calculated_checksum = !crc;

@@ -1,8 +1,8 @@
 use clap::Parser;
+use ohlink_format::parser::OHLK_Parser;
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
-use ohlink_format::parser::OHLK_Parser;
 
 #[derive(Parser, Debug)]
 #[command(name = "ohlink-read")]
@@ -20,11 +20,17 @@ fn main() -> std::io::Result<()> {
     file.read_to_end(&mut buffer)?;
 
     if buffer.is_empty() {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Input file is empty"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Input file is empty",
+        ));
     }
 
     let parser = OHLK_Parser::new(&buffer).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Failed to parse OHLINK: {:?}", e))
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Failed to parse OHLINK: {:?}", e),
+        )
     })?;
 
     let header = parser.header();
@@ -34,8 +40,14 @@ fn main() -> std::io::Result<()> {
     println!();
     println!("Header:");
     println!("  Magic:          0x{:08X}", header.magic);
-    println!("  Version:        {}.{}", header.version_major, header.version_minor);
-    println!("  Endian:         {}", if header.endian == 0 { "Little" } else { "Big" });
+    println!(
+        "  Version:        {}.{}",
+        header.version_major, header.version_minor
+    );
+    println!(
+        "  Endian:         {}",
+        if header.endian == 0 { "Little" } else { "Big" }
+    );
     println!("  Architecture:   {}", arch_name(header.arch));
     println!("  File Type:      {}", file_type_name(header.file_type));
     println!("  Entry Count:    {}", header.header_count);
@@ -48,18 +60,30 @@ fn main() -> std::io::Result<()> {
     println!();
 
     println!("Segments/Entries:");
-    println!("  {:<4} {:<10} {:<10} {:<18} {:<18} {:<12} {:<12} {:<10}",
-             "Idx", "Type", "Flags", "FileOffset", "VirtAddr", "FileSize", "MemSize", "Align");
-    println!("  {:-<4} {:-<10} {:-<10} {:-<18} {:-<18} {:-<12} {:-<12} {:-<10}",
-             "", "", "", "", "", "", "", "");
+    println!(
+        "  {:<4} {:<10} {:<10} {:<18} {:<18} {:<12} {:<12} {:<10}",
+        "Idx", "Type", "Flags", "FileOffset", "VirtAddr", "FileSize", "MemSize", "Align"
+    );
+    println!(
+        "  {:-<4} {:-<10} {:-<10} {:-<18} {:-<18} {:-<12} {:-<12} {:-<10}",
+        "", "", "", "", "", "", "", ""
+    );
 
     for i in 0..header.header_count {
         if let Ok(entry) = parser.get_entry(i) {
             let type_name = segment_type_name(entry.ty);
             let flags_str = format_flags(entry.flags);
-            println!("  {:<4} {:<10} {:<10} 0x{:016X} 0x{:016X} {:<12} {:<12} 0x{:08X}",
-                     i, type_name, flags_str, entry.file_offset, entry.virtual_address,
-                     entry.file_size, entry.mem_size, entry.alignment);
+            println!(
+                "  {:<4} {:<10} {:<10} 0x{:016X} 0x{:016X} {:<12} {:<12} 0x{:08X}",
+                i,
+                type_name,
+                flags_str,
+                entry.file_offset,
+                entry.virtual_address,
+                entry.file_size,
+                entry.mem_size,
+                entry.alignment
+            );
         }
     }
 
@@ -73,13 +97,18 @@ fn main() -> std::io::Result<()> {
         let end = std::cmp::min(row + 16, dump_len);
         let slice = &buffer[row..end];
 
-        let hex_part: Vec<String> = slice.iter()
-            .map(|b| format!("{:02X}", b))
-            .collect();
+        let hex_part: Vec<String> = slice.iter().map(|b| format!("{:02X}", b)).collect();
         let hex_line = hex_part.join(" ");
 
-        let ascii_part: String = slice.iter()
-            .map(|b| if *b >= 0x20 && *b <= 0x7E { *b as char } else { '.' })
+        let ascii_part: String = slice
+            .iter()
+            .map(|b| {
+                if *b >= 0x20 && *b <= 0x7E {
+                    *b as char
+                } else {
+                    '.'
+                }
+            })
             .collect();
 
         println!("  {:04X}  {:<47}  {}", row, hex_line, ascii_part);
@@ -135,9 +164,17 @@ fn segment_type_name(ty: u32) -> &'static str {
 
 fn format_flags(flags: u32) -> String {
     let mut s = String::new();
-    if flags & 1 != 0 { s.push('R'); }
-    if flags & 2 != 0 { s.push('W'); }
-    if flags & 4 != 0 { s.push('X'); }
-    if s.is_empty() { s.push('-'); }
+    if flags & 1 != 0 {
+        s.push('R');
+    }
+    if flags & 2 != 0 {
+        s.push('W');
+    }
+    if flags & 4 != 0 {
+        s.push('X');
+    }
+    if s.is_empty() {
+        s.push('-');
+    }
     s
 }

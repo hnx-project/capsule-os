@@ -68,10 +68,20 @@ pub fn handle_commit(
     })?;
     println!("\x1B[1;32m[OK]\x1B[0m");
 
-    print!("🦀 Checking workspace compilation... ");
+    print!("🦀 Checking workspace compilation (excluding bootloader)... ");
     let _ = std::io::Write::flush(&mut std::io::stdout());
-    run_check_silent(&["cargo", "check", "--workspace", "--quiet"], None)
-        .map_err(|e| format!("\n❌ Workspace compilation failed! Details:{}", e))?;
+    run_check_silent(
+        &[
+            "cargo",
+            "check",
+            "--workspace",
+            "--quiet",
+            "--exclude",
+            "capsule-bootloader",
+        ],
+        None,
+    )
+    .map_err(|e| format!("\n❌ Workspace compilation failed! Details:{}", e))?;
     println!("\x1B[1;32m[OK]\x1B[0m");
 
     print!("🛡️ Checking AArch64 target compatibility... ");

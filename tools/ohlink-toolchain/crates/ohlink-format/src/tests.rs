@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod tests {
-    use crate::crc32_ieee;
     use crate::builder::OHLK_Builder;
-    use crate::parser::OHLK_Parser;
+    use crate::crc32_ieee;
     use crate::entry::SegmentType;
+    use crate::parser::OHLK_Parser;
 
     #[test]
     fn test_crc32() {
@@ -16,7 +16,7 @@ mod tests {
     #[test]
     fn test_builder_and_parser() {
         let mut builder = OHLK_Builder::new(1, 0); // ARM64, flags=0
-        
+
         let text_data = [0xAA, 0xBB, 0xCC, 0xDD];
         let data_data = [0x11, 0x22, 0x33, 0x44, 0x55];
 
@@ -41,7 +41,9 @@ mod tests {
         assert_eq!(entry_0.flags, 5);
         assert_eq!(entry_0.file_size, 4);
 
-        let segment_0_data = parser.get_segment_data(&entry_0).expect("Segment 0 data should be readable");
+        let segment_0_data = parser
+            .get_segment_data(&entry_0)
+            .expect("Segment 0 data should be readable");
         assert_eq!(segment_0_data, &text_data);
 
         let entry_1 = parser.get_entry(1).expect("Entry 1 should exist");
@@ -49,7 +51,9 @@ mod tests {
         assert_eq!(entry_1.flags, 3);
         assert_eq!(entry_1.file_size, 5);
 
-        let segment_1_data = parser.get_segment_data(&entry_1).expect("Segment 1 data should be readable");
+        let segment_1_data = parser
+            .get_segment_data(&entry_1)
+            .expect("Segment 1 data should be readable");
         assert_eq!(segment_1_data, &data_data);
     }
 }

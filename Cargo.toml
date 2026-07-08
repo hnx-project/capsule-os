@@ -6,6 +6,9 @@ edition = "2021"
 members = [
     "bootloader",
     "tools/xtask",
+    "tools/ohlink-toolchain/crates/ohlink-format",
+    "tools/ohlink-toolchain/crates/ohlink-linker",
+    "tools/ohlink-toolchain/crates/ohlink-read",
     # userspace | capsuleOS
     "userspace/hnxlibc",
     "userspace/hnxstd",

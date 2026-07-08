@@ -3,21 +3,22 @@
 #[cfg(feature = "std")]
 extern crate std;
 
-pub mod crc32;
-pub mod header;
-pub mod entry;
-pub mod symbol;
-pub mod reloc;
-pub mod parser;
+#[cfg(feature = "std")]
 pub mod builder;
+pub mod crc32;
+pub mod entry;
+pub mod header;
+pub mod parser;
+pub mod reloc;
+pub mod symbol;
 #[cfg(test)]
 pub mod tests;
 
-pub use header::{OHLK_Header, FileType};
-pub use entry::{OHLK_Entry, SegmentType};
-pub use symbol::{OHLK_Symbol, SymbolType, SymbolBinding, SymbolVisibility};
-pub use reloc::{OHLK_Reloc, RelocType};
 pub use crc32::crc32_ieee;
+pub use entry::{OHLK_Entry, SegmentType};
+pub use header::{FileType, OHLK_Header};
+pub use reloc::{OHLK_Reloc, RelocType};
+pub use symbol::{OHLK_Symbol, SymbolBinding, SymbolType, SymbolVisibility};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormatError {

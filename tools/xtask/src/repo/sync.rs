@@ -46,20 +46,6 @@ pub fn handle_sync() -> Result<(), String> {
         None,
     );
 
-    println!("📥 Updating Subtree 'tools/ohlink-toolchain' (develop)...");
-    let _ = run_cmd_status(
-        &[
-            "git",
-            "subtree",
-            "pull",
-            "--prefix=tools/ohlink-toolchain",
-            "ohlink-toolchain-up",
-            "develop",
-            "--squash",
-        ],
-        None,
-    );
-
     println!("✅ Worktree and subtrees successfully synchronized!");
     Ok(())
 }

@@ -1,6 +1,6 @@
 extern crate alloc;
+use crate::{crc32_ieee, FormatError, OHLK_Entry, OHLK_Header};
 use alloc::vec::Vec;
-use crate::{FormatError, OHLK_Header, OHLK_Entry, crc32_ieee};
 
 pub struct OHLK_Builder {
     header: OHLK_Header,
@@ -101,7 +101,8 @@ impl OHLK_Builder {
         for (i, entry) in self.entries.iter().enumerate() {
             let entry_bytes = entry.to_bytes();
             let entry_offset = OHLK_Header::SIZE + (i * OHLK_Entry::SIZE);
-            final_buf[entry_offset..(entry_offset + OHLK_Entry::SIZE)].copy_from_slice(&entry_bytes);
+            final_buf[entry_offset..(entry_offset + OHLK_Entry::SIZE)]
+                .copy_from_slice(&entry_bytes);
         }
 
         final_buf[30..34].copy_from_slice(&[0, 0, 0, 0]);

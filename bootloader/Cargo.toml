@@ -12,3 +12,4 @@ virt = []
 
 [dependencies]
 fdt = "0.1.5"
+ohlink-format = { path = "../tools/ohlink-toolchain/crates/ohlink-format", default-features = false }

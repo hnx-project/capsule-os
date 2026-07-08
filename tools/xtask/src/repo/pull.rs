@@ -54,20 +54,6 @@ pub fn handle_pull(_config: &XtaskConfig) -> Result<(), String> {
         None,
     );
 
-    println!("📥 Pulling Subtree 'tools/ohlink-toolchain' (develop)...");
-    let _ = run_cmd_status(
-        &[
-            "git",
-            "subtree",
-            "pull",
-            "--prefix=tools/ohlink-toolchain",
-            "ohlink-toolchain-up",
-            "develop",
-            "--squash",
-        ],
-        None,
-    );
-
     println!("\n🚀 \x1B[1;32mOne-key pull complete! Local branch and all subtrees are 100% synchronized and up-to-date!\x1B[0m\n");
     Ok(())
 }

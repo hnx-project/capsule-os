@@ -56,16 +56,6 @@ pub fn handle_setup_fork(username: &str) -> Result<(), String> {
         ],
         None,
     );
-    let _ = run_cmd_status(
-        &[
-            "git",
-            "remote",
-            "add",
-            "ohlink-toolchain-up",
-            "git@gitcode.com:hnx-project/ohlink-toolchain.git",
-        ],
-        None,
-    );
 
     let _ = run_cmd_status(&["git", "fetch", "--all"], None);
 
