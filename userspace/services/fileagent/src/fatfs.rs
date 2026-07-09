@@ -1,5 +1,3 @@
-#![no_std]
-
 pub const FATFS_MAX_VOLUMES: usize = 4;
 
 #[derive(Debug, Clone, Copy)]

@@ -1,9 +1,7 @@
-#![no_std]
-
 pub const RAMFS_MAX_FILES: usize = 64;
 pub const RAMFS_MAX_NAME_LEN: usize = 64;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RamfsNodeType {
     File,
     Directory,
@@ -116,51 +114,66 @@ impl RamFs {
     }
 
     pub fn mkdir(&mut self, parent_idx: usize, name: &str) -> Option<usize> {
-        let parent = self.nodes[parent_idx].as_mut()?;
-        if parent.ntype != RamfsNodeType::Directory {
-            return None;
+        // 先进行父目录类型校验，用一个独立的不可变借用块错开
+        {
+            let parent = self.nodes[parent_idx].as_ref()?;
+            if parent.ntype != RamfsNodeType::Directory {
+                return None;
+            }
         }
 
         let new_node = RamfsNode::new_dir(name)?;
         let new_idx = self.alloc_node(new_node)?;
 
+        // 分配新节点完后，获取 parent 并增加其子节点关系
+        let parent = self.nodes[parent_idx].as_mut()?;
         parent.add_child(new_idx);
         Some(new_idx)
     }
 
     pub fn create(&mut self, parent_idx: usize, name: &str) -> Option<usize> {
-        let parent = self.nodes[parent_idx].as_mut()?;
-        if parent.ntype != RamfsNodeType::Directory {
-            return None;
+        // 先进行父目录类型校验
+        {
+            let parent = self.nodes[parent_idx].as_ref()?;
+            if parent.ntype != RamfsNodeType::Directory {
+                return None;
+            }
         }
 
         let new_node = RamfsNode::new_file(name)?;
         let new_idx = self.alloc_node(new_node)?;
 
+        let parent = self.nodes[parent_idx].as_mut()?;
         parent.add_child(new_idx);
         Some(new_idx)
     }
 
     pub fn write_file(&mut self, idx: usize, data: &[u8], offset: usize) -> usize {
-        let node = self.nodes[idx].as_mut()?;
-        if node.ntype != RamfsNodeType::File {
-            return 0;
-        }
+        if let Some(ref mut node) = self.nodes[idx] {
+            if node.ntype != RamfsNodeType::File {
+                return 0;
+            }
 
-        let write_len = data.len().min(4096 - offset);
-        node.data[offset..offset + write_len].copy_from_slice(&data[..write_len]);
-        node.size = core::cmp::max(node.size, offset + write_len);
-        write_len
+            let write_len = data.len().min(4096 - offset);
+            node.data[offset..offset + write_len].copy_from_slice(&data[..write_len]);
+            node.size = core::cmp::max(node.size, offset + write_len);
+            write_len
+        } else {
+            0
+        }
     }
 
     pub fn read_file(&self, idx: usize, buf: &mut [u8], offset: usize) -> usize {
-        let node = self.nodes[idx].as_ref()?;
-        if node.ntype != RamfsNodeType::File {
-            return 0;
-        }
+        if let Some(ref node) = self.nodes[idx] {
+            if node.ntype != RamfsNodeType::File {
+                return 0;
+            }
 
-        let read_len = buf.len().min(node.size.saturating_sub(offset));
-        buf[..read_len].copy_from_slice(&node.data[offset..offset + read_len]);
-        read_len
+            let read_len = buf.len().min(node.size.saturating_sub(offset));
+            buf[..read_len].copy_from_slice(&node.data[offset..offset + read_len]);
+            read_len
+        } else {
+            0
+        }
     }
 }

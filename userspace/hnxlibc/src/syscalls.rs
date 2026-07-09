@@ -109,8 +109,8 @@ pub fn channel_write(handle: usize, buf: &[u8], handles: &[u32]) -> Result<usize
 }
 
 pub fn exec_impl(name: &str) -> i32 {
-    let mut len = name.len();
-    let mut local_name = name.as_bytes();
+    let len = name.len();
+    let local_name = name.as_bytes();
     let ptr = local_name.as_ptr();
     syscall!(SYSCALL_EXEC, ptr as usize, len, 0, 0, 0, 0) as i32
 }
@@ -198,5 +198,14 @@ pub fn handle_duplicate(handle: usize, rights: u32) -> Result<usize, Status> {
         Err(Status::from_raw(ret as i32))
     } else {
         Ok(ret)
+    }
+}
+
+pub fn close(handle: usize) -> Result<(), Status> {
+    let ret = syscall!(SYSCALL_CLOSE, handle, 0, 0, 0, 0, 0);
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(())
     }
 }
