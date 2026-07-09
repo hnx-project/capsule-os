@@ -145,7 +145,7 @@ fn main() -> std::io::Result<()> {
                     let segment_payload = &buffer[p_offset..p_offset + p_filesz];
 
                     // Map ELF segment flags (PF_X=1, PF_W=2, PF_R=4) to OHLINK segment flags
-                    let mut ohlk_flags = 0;
+                    let mut ohlk_flags = 0x8; // USER bit: OHLINK produced by this linker is always EL0 user-space
                     if p_flags & 1 != 0 {
                         ohlk_flags |= 4;
                     } // Execute (X)
