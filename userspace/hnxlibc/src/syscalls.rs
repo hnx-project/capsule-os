@@ -3,17 +3,22 @@ use shared::status::Status;
 #[macro_export]
 macro_rules! syscall {
     ($num:expr, $a0:expr, $a1:expr, $a2:expr, $a3:expr, $a4:expr, $a5:expr) => {{
-        let ret: usize;
+        let mut r0 = $a0 as usize;
+        let r1 = $a1 as usize;
+        let r2 = $a2 as usize;
+        let r3 = $a3 as usize;
+        let r4 = $a4 as usize;
+        let r5 = $a5 as usize;
         #[cfg(target_arch = "aarch64")]
         unsafe {
             core::arch::asm!(
                 "svc #0",
-                inout("x0") $a0 as usize => ret,
-                in("x1") $a1 as usize,
-                in("x2") $a2 as usize,
-                in("x3") $a3 as usize,
-                in("x4") $a4 as usize,
-                in("x5") $a5 as usize,
+                inout("x0") r0,
+                in("x1") r1,
+                in("x2") r2,
+                in("x3") r3,
+                in("x4") r4,
+                in("x5") r5,
                 in("x16") $num,
             );
         }
@@ -21,16 +26,16 @@ macro_rules! syscall {
         unsafe {
             core::arch::asm!(
                 "ecall",
-                inout("a0") $a0 as usize => ret,
-                in("a1") $a1 as usize,
-                in("a2") $a2 as usize,
-                in("a3") $a3 as usize,
-                in("a4") $a4 as usize,
-                in("a5") $a5 as usize,
+                inout("a0") r0,
+                in("a1") r1,
+                in("a2") r2,
+                in("a3") r3,
+                in("a4") r4,
+                in("a5") r5,
                 in("a7") $num,
             );
         }
-        ret
+        r0
     }};
 }
 
@@ -45,7 +50,10 @@ pub const SYSCALL_CHANNEL_READ: u32 = 11;
 pub const SYSCALL_CHANNEL_WRITE: u32 = 12;
 pub const SYSCALL_CHANNEL_REGISTER: u32 = 14;
 pub const SYSCALL_CHANNEL_LOOKUP: u32 = 15;
+pub const SYSCALL_HANDLE_DUPLICATE: u32 = 16;
 pub const SYSCALL_VMO_CREATE: u32 = 30;
+pub const SYSCALL_VMO_READ: u32 = 31;
+pub const SYSCALL_VMO_WRITE: u32 = 32;
 pub const SYSCALL_EXEC: u32 = 110;
 
 pub fn exit(code: i32) -> ! {
@@ -134,6 +142,58 @@ pub fn channel_lookup(name: &str) -> Result<usize, Status> {
         0,
         0
     );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret)
+    }
+}
+
+pub fn vmo_create(size: usize) -> Result<usize, Status> {
+    let ret = syscall!(SYSCALL_VMO_CREATE, size, 0, 0, 0, 0, 0);
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret)
+    }
+}
+
+pub fn vmo_read(handle: usize, offset: usize, buf: &mut [u8]) -> Result<usize, Status> {
+    let ret = syscall!(
+        SYSCALL_VMO_READ,
+        handle,
+        offset,
+        buf.as_mut_ptr() as usize,
+        buf.len(),
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret)
+    }
+}
+
+pub fn vmo_write(handle: usize, offset: usize, buf: &[u8]) -> Result<usize, Status> {
+    let ret = syscall!(
+        SYSCALL_VMO_WRITE,
+        handle,
+        offset,
+        buf.as_ptr() as usize,
+        buf.len(),
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret)
+    }
+}
+
+pub fn handle_duplicate(handle: usize, rights: u32) -> Result<usize, Status> {
+    let ret = syscall!(SYSCALL_HANDLE_DUPLICATE, handle, rights, 0, 0, 0, 0);
     if (ret as isize) < 0 {
         Err(Status::from_raw(ret as i32))
     } else {

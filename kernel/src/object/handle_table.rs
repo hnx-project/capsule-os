@@ -32,6 +32,13 @@ impl KernelObject {
             KernelObject::Thread(_) => ObjectType::Thread,
         }
     }
+
+    pub fn duplicate(&self) -> Result<Self> {
+        match self {
+            KernelObject::Vmo(vmo) => Ok(KernelObject::Vmo(vmo.clone())),
+            _ => Err(Status::NotAllowed),
+        }
+    }
 }
 
 struct Slot {
@@ -135,9 +142,14 @@ impl HandleTable {
                    f: impl FnOnce(&mut KernelObject) -> Result<R>) -> Result<R> {
         acquire_lock();
         let slots = self.slots_mut();
-        let slot = slots.slots.iter_mut()
-            .find_map(|s| s.as_mut().filter(|s| s.value == hv))
-            .ok_or(Status::BadHandle)?;
+        let slot_opt = slots.slots.iter_mut()
+            .find_map(|s| s.as_mut().filter(|s| s.value == hv));
+        
+        if slot_opt.is_none() {
+            release_lock();
+            return Err(Status::BadHandle);
+        }
+        let slot = slot_opt.unwrap();
         if !Self::check_rights(slot.rights, required_rights) {
             release_lock();
             return Err(Status::AccessDenied);
@@ -205,6 +217,43 @@ impl HandleTable {
                 _ => Err(Status::WrongType),
             }
         })
+    }
+
+    pub fn duplicate_handle(&self, hv: HandleValue, required_rights: u32) -> Result<HandleValue> {
+        acquire_lock();
+        let slots = self.slots_mut();
+        
+        let mut found_idx = None;
+        for i in 0..MAX_HANDLES {
+            if let Some(slot) = &slots.slots[i] {
+                if slot.value == hv {
+                    found_idx = Some(i);
+                    break;
+                }
+            }
+        }
+
+        if found_idx.is_none() {
+            release_lock();
+            return Err(Status::BadHandle);
+        }
+        
+        let slot_ref = slots.slots[found_idx.unwrap()].as_ref().unwrap();
+        if !Self::check_rights(slot_ref.rights, required_rights) {
+            release_lock();
+            return Err(Status::AccessDenied);
+        }
+        let dup_obj = match slot_ref.object.duplicate() {
+            Ok(o) => o,
+            Err(e) => {
+                release_lock();
+                return Err(e);
+            }
+        };
+        let rights = slot_ref.rights;
+        release_lock();
+
+        self.add(dup_obj, rights)
     }
 
     pub fn remove(&self, hv: HandleValue) -> Result<KernelObject> {

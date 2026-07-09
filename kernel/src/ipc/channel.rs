@@ -219,10 +219,19 @@ impl Channel {
                     if !cur_thread.handle_table.is_null() && !unsafe { (*receiver).handle_table }.is_null() {
                         let mut h_idx = 0;
                         for &h_val in handles.iter().take(2) {
-                            if let Ok((obj, rights)) = unsafe { &*cur_thread.handle_table }.remove_with_rights(h_val) {
-                                if let Ok(new_hv) = unsafe { &*(*receiver).handle_table }.add(obj, rights) {
-                                    unsafe { (*receiver).ipc_transfer_handles[h_idx] = Some(new_hv.get()); }
-                                    h_idx += 1;
+                            if let Ok(dup_hv) = unsafe { &*cur_thread.handle_table }.duplicate_handle(h_val, 0) {
+                                if let Ok((obj, rights)) = unsafe { &*cur_thread.handle_table }.remove_with_rights(dup_hv) {
+                                    if let Ok(new_hv) = unsafe { &*(*receiver).handle_table }.add(obj, rights) {
+                                        unsafe { (*receiver).ipc_transfer_handles[h_idx] = Some(new_hv.get()); }
+                                        h_idx += 1;
+                                    }
+                                }
+                            } else {
+                                if let Ok((obj, rights)) = unsafe { &*cur_thread.handle_table }.remove_with_rights(h_val) {
+                                    if let Ok(new_hv) = unsafe { &*(*receiver).handle_table }.add(obj, rights) {
+                                        unsafe { (*receiver).ipc_transfer_handles[h_idx] = Some(new_hv.get()); }
+                                        h_idx += 1;
+                                    }
                                 }
                             }
                         }
@@ -253,9 +262,16 @@ impl Channel {
         if !cur_thread.handle_table.is_null() {
             let mut h_idx = 0;
             for &h_val in handles.iter().take(2) {
-                if let Ok((obj, rights)) = unsafe { &*cur_thread.handle_table }.remove_with_rights(h_val) {
-                    cur_thread.ipc_transfer_slots[h_idx] = Some((obj, rights));
-                    h_idx += 1;
+                if let Ok(dup_hv) = unsafe { &*cur_thread.handle_table }.duplicate_handle(h_val, 0) {
+                    if let Ok((obj, rights)) = unsafe { &*cur_thread.handle_table }.remove_with_rights(dup_hv) {
+                        cur_thread.ipc_transfer_slots[h_idx] = Some((obj, rights));
+                        h_idx += 1;
+                    }
+                } else {
+                    if let Ok((obj, rights)) = unsafe { &*cur_thread.handle_table }.remove_with_rights(h_val) {
+                        cur_thread.ipc_transfer_slots[h_idx] = Some((obj, rights));
+                        h_idx += 1;
+                    }
                 }
             }
         }

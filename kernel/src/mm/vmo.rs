@@ -282,3 +282,15 @@ impl Vmo {
 fn round_up_to_pages(size: usize) -> usize {
     (size + PAGE_SIZE - 1) / PAGE_SIZE
 }
+
+impl Clone for Vmo {
+    fn clone(&self) -> Self {
+        Vmo {
+            id: self.id,
+            meta_pa: self.meta_pa,
+            size: self.size,
+            is_cow: self.is_cow,
+            parent_id: self.parent_id,
+        }
+    }
+}

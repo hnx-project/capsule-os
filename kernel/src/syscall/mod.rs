@@ -6,6 +6,7 @@ pub use numbers::*;
 pub use validation::*;
 
 use shared::status::Status;
+use shared::types::HandleValue;
 use crate::object::handle_table::HandleTable;
 
 /// Global handle table pointer, set once during kernel init.
@@ -154,6 +155,15 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
             let name_len = arg1;
             match handlers::ipc::sys_channel_lookup(table, name_ptr, name_len) {
                 Ok(h) => h.get() as usize,
+                Err(e) => e.to_raw(),
+            }
+        }
+
+        SYSCALL_HANDLE_DUPLICATE => {
+            let handle = arg0 as u32;
+            let rights = arg1 as u32;
+            match table.duplicate_handle(HandleValue::new(handle), rights) {
+                Ok(new_hv) => new_hv.get() as usize,
                 Err(e) => e.to_raw(),
             }
         }
