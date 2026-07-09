@@ -72,6 +72,48 @@ fn main() -> std::io::Result<()> {
             buffer[31],
         ]);
 
+        // First pass: locate the lowest LOAD virtual address to anchor our OHLINK relative layout
+        for i in 0..e_phnum {
+            let offset = e_phoff + i * e_phentsize;
+            if offset + 56 > buffer.len() {
+                break;
+            }
+            let p_type = u32::from_le_bytes([
+                buffer[offset],
+                buffer[offset + 1],
+                buffer[offset + 2],
+                buffer[offset + 3],
+            ]);
+
+            if p_type == 1 {
+                let p_vaddr = u64::from_le_bytes([
+                    buffer[offset + 16],
+                    buffer[offset + 17],
+                    buffer[offset + 18],
+                    buffer[offset + 19],
+                    buffer[offset + 20],
+                    buffer[offset + 21],
+                    buffer[offset + 22],
+                    buffer[offset + 23],
+                ]);
+                let p_filesz = u64::from_le_bytes([
+                    buffer[offset + 32],
+                    buffer[offset + 33],
+                    buffer[offset + 34],
+                    buffer[offset + 35],
+                    buffer[offset + 36],
+                    buffer[offset + 37],
+                    buffer[offset + 38],
+                    buffer[offset + 39],
+                ]) as usize;
+
+                if p_filesz > 0 && p_vaddr < lowest_vaddr && p_vaddr > 0 {
+                    lowest_vaddr = p_vaddr;
+                }
+            }
+        }
+
+        // Second pass: merge sections by enforcing strictly 16-byte segment alignment padding (zero file size bloating)
         for i in 0..e_phnum {
             let offset = e_phoff + i * e_phentsize;
             if offset + 56 > buffer.len() {
@@ -119,6 +161,13 @@ fn main() -> std::io::Result<()> {
                 if p_filesz > 0 && p_offset + p_filesz <= buffer.len() {
                     let segment_payload = &buffer[p_offset..p_offset + p_filesz];
 
+                    // Align segment payload in the merged file strictly to 16 bytes for safe memory copies!
+                    let current_len = merged_payload.len();
+                    let padding = (16 - (current_len % 16)) % 16;
+                    if padding > 0 {
+                        merged_payload.resize(current_len + padding, 0);
+                    }
+
                     // Calculate entry_offset within merged payload BEFORE extending
                     if !entry_offset_found
                         && e_entry >= p_vaddr
@@ -129,10 +178,6 @@ fn main() -> std::io::Result<()> {
                     }
 
                     merged_payload.extend_from_slice(segment_payload);
-
-                    if p_vaddr < lowest_vaddr && p_vaddr > 0 {
-                        lowest_vaddr = p_vaddr;
-                    }
                 }
             }
         }
