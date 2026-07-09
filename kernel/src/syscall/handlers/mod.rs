@@ -11,15 +11,36 @@ pub fn sys_write(fd: usize, ptr: usize, len: usize) -> usize {
         if ptr == 0 || len == 0 {
             return 0;
         }
-        let slice = unsafe { core::slice::from_raw_parts(ptr as *const u8, len) };
-        if let Ok(s) = core::str::from_utf8(slice) {
-            for &b in s.as_bytes() {
-                crate::arch::console_putchar(b);
+
+        let thread_ptr = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() };
+        let l0_pa = if let Some(t) = thread_ptr {
+            let proc_id = unsafe { (*t).process_id };
+            if let Some(proc) = crate::task::process::find_process_mut(proc_id) {
+                proc.l0_user_pa
+            } else {
+                0
             }
         } else {
-            for &b in slice {
-                crate::arch::console_putchar(b);
-            }
+            0
+        };
+
+        for i in 0..len {
+            let user_va = ptr + i;
+            let pa = if l0_pa != 0 {
+                match crate::arch::translate_user_va(l0_pa, user_va) {
+                    Some(p) => p,
+                    None => {
+                        crate::log_error!("SYSCALL_WRITE", "Invalid user memory address: {:#x}", user_va);
+                        return i;
+                    }
+                }
+            } else {
+                user_va
+            };
+
+            let kernel_va = crate::mm::mmu::pa_to_kernel_va(pa);
+            let byte = unsafe { *(kernel_va as *const u8) };
+            crate::arch::console_putchar(byte);
         }
         len
     } else {

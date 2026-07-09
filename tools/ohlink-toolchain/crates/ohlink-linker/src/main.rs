@@ -56,11 +56,6 @@ fn main() -> std::io::Result<()> {
         let mut output_file = File::create(&cli.output)?;
         output_file.write_all(&binary_data)?;
     } else {
-        let mut merged_payload = Vec::new();
-        let mut lowest_vaddr = u64::MAX;
-        let mut entry_offset_in_merged: u64 = 0;
-        let mut entry_offset_found = false;
-
         let e_phoff = u64::from_le_bytes([
             buffer[32], buffer[33], buffer[34], buffer[35], buffer[36], buffer[37], buffer[38],
             buffer[39],
@@ -72,7 +67,9 @@ fn main() -> std::io::Result<()> {
             buffer[31],
         ]);
 
-        // First pass: locate the lowest LOAD virtual address to anchor our OHLINK relative layout
+        let mut builder = OHLK_Builder::new(1, 1, 0, e_entry);
+
+        // Preserve and pack all segments cleanly without merging or size bloating!
         for i in 0..e_phnum {
             let offset = e_phoff + i * e_phentsize;
             if offset + 56 > buffer.len() {
@@ -86,47 +83,7 @@ fn main() -> std::io::Result<()> {
             ]);
 
             if p_type == 1 {
-                let p_vaddr = u64::from_le_bytes([
-                    buffer[offset + 16],
-                    buffer[offset + 17],
-                    buffer[offset + 18],
-                    buffer[offset + 19],
-                    buffer[offset + 20],
-                    buffer[offset + 21],
-                    buffer[offset + 22],
-                    buffer[offset + 23],
-                ]);
-                let p_filesz = u64::from_le_bytes([
-                    buffer[offset + 32],
-                    buffer[offset + 33],
-                    buffer[offset + 34],
-                    buffer[offset + 35],
-                    buffer[offset + 36],
-                    buffer[offset + 37],
-                    buffer[offset + 38],
-                    buffer[offset + 39],
-                ]) as usize;
-
-                if p_filesz > 0 && p_vaddr < lowest_vaddr && p_vaddr > 0 {
-                    lowest_vaddr = p_vaddr;
-                }
-            }
-        }
-
-        // Second pass: merge sections by enforcing strictly 16-byte segment alignment padding (zero file size bloating)
-        for i in 0..e_phnum {
-            let offset = e_phoff + i * e_phentsize;
-            if offset + 56 > buffer.len() {
-                break;
-            }
-            let p_type = u32::from_le_bytes([
-                buffer[offset],
-                buffer[offset + 1],
-                buffer[offset + 2],
-                buffer[offset + 3],
-            ]);
-
-            if p_type == 1 {
+                // PT_LOAD
                 let p_offset = u64::from_le_bytes([
                     buffer[offset + 8],
                     buffer[offset + 9],
@@ -157,51 +114,68 @@ fn main() -> std::io::Result<()> {
                     buffer[offset + 38],
                     buffer[offset + 39],
                 ]) as usize;
+                let p_memsz = u64::from_le_bytes([
+                    buffer[offset + 40],
+                    buffer[offset + 41],
+                    buffer[offset + 42],
+                    buffer[offset + 43],
+                    buffer[offset + 44],
+                    buffer[offset + 45],
+                    buffer[offset + 46],
+                    buffer[offset + 47],
+                ]);
+                let p_flags = u32::from_le_bytes([
+                    buffer[offset + 4],
+                    buffer[offset + 5],
+                    buffer[offset + 6],
+                    buffer[offset + 7],
+                ]);
+                let p_align = u64::from_le_bytes([
+                    buffer[offset + 48],
+                    buffer[offset + 49],
+                    buffer[offset + 50],
+                    buffer[offset + 51],
+                    buffer[offset + 52],
+                    buffer[offset + 53],
+                    buffer[offset + 54],
+                    buffer[offset + 55],
+                ]);
 
                 if p_filesz > 0 && p_offset + p_filesz <= buffer.len() {
                     let segment_payload = &buffer[p_offset..p_offset + p_filesz];
 
-                    // Align segment payload in the merged file strictly to 16 bytes for safe memory copies!
-                    let current_len = merged_payload.len();
-                    let padding = (16 - (current_len % 16)) % 16;
-                    if padding > 0 {
-                        merged_payload.resize(current_len + padding, 0);
-                    }
+                    // Map ELF segment flags (PF_X=1, PF_W=2, PF_R=4) to OHLINK segment flags
+                    let mut ohlk_flags = 0;
+                    if p_flags & 1 != 0 {
+                        ohlk_flags |= 4;
+                    } // Execute (X)
+                    if p_flags & 2 != 0 {
+                        ohlk_flags |= 2;
+                    } // Write (W)
+                    if p_flags & 4 != 0 {
+                        ohlk_flags |= 1;
+                    } // Read (R)
 
-                    // Calculate entry_offset within merged payload BEFORE extending
-                    if !entry_offset_found
-                        && e_entry >= p_vaddr
-                        && e_entry < p_vaddr + p_filesz as u64
-                    {
-                        entry_offset_in_merged = merged_payload.len() as u64 + (e_entry - p_vaddr);
-                        entry_offset_found = true;
-                    }
+                    // Map segment type
+                    let ohlk_type = if p_flags & 1 != 0 {
+                        SegmentType::Text.to_u32()
+                    } else if p_flags & 2 != 0 {
+                        SegmentType::Data.to_u32()
+                    } else {
+                        SegmentType::Rodata.to_u32()
+                    };
 
-                    merged_payload.extend_from_slice(segment_payload);
+                    builder.add_segment(
+                        ohlk_type,
+                        ohlk_flags,
+                        segment_payload,
+                        p_memsz,
+                        p_vaddr,
+                        p_align,
+                    );
                 }
             }
         }
-
-        // Calculate the correct entry_point for OHLINK header.
-        // The OHLINK entry_point should be the absolute virtual address where the entry
-        // point will reside after loading. Since the kernel maps segments starting at
-        // root_vmar.base + lowest_vaddr, the entry point in the OHLINK header must be
-        // lowest_vaddr + entry_offset_in_merged.
-        let entry_point = if lowest_vaddr != u64::MAX && entry_offset_found {
-            lowest_vaddr + entry_offset_in_merged
-        } else {
-            e_entry
-        };
-
-        let mut builder = OHLK_Builder::new(1, 1, 0, entry_point);
-        builder.add_segment(
-            SegmentType::Text.to_u32(),
-            1 | 2 | 4 | 8,
-            &merged_payload,
-            merged_payload.len() as u64,
-            lowest_vaddr,
-            4096,
-        );
 
         let binary_data = builder.build().map_err(|e| {
             std::io::Error::new(

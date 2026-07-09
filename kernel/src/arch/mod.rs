@@ -37,3 +37,8 @@ pub fn console_putbytes(s: &[u8]) {
 pub use aarch64::trap;
 #[cfg(target_arch = "riscv64")]
 pub use riscv64::trap;
+
+#[cfg(target_arch = "aarch64")]
+pub use aarch64::mmu::translate_user_va;
+#[cfg(target_arch = "riscv64")]
+pub use riscv64::mmu::translate_user_va;

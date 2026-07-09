@@ -623,3 +623,44 @@ pub fn sync_instruction_cache(va: usize, size: usize) {
         core::arch::asm!("isb", options(nomem, nostack));
     }
 }
+
+pub fn translate_user_va(l0_pa: usize, va: usize) -> Option<usize> {
+    unsafe {
+        let l0_idx = va_l0_index(va);
+        let l0e = read_pte(l0_pa, l0_idx);
+        if l0e & 1 == 0 {
+            return None;
+        }
+
+        let l1_pa = (l0e & 0x0000_FFFF_FFFF_F000) as usize;
+        let l1_idx = va_l1_index(va);
+        let l1e = read_pte(l1_pa, l1_idx);
+        if l1e & 1 == 0 {
+            return None;
+        }
+        if l1e & 0b10 == 0 {
+            return None;
+        }
+
+        let l2_pa = (l1e & 0x0000_FFFF_FFFF_F000) as usize;
+        let l2_idx = va_l2_index(va);
+        let l2e = read_pte(l2_pa, l2_idx);
+        if l2e & 1 == 0 {
+            return None;
+        }
+        if l2e & 0b10 == 0 {
+            return None;
+        }
+
+        let l3_pa = (l2e & 0x0000_FFFF_FFFF_F000) as usize;
+        let l3_idx = va_l3_index(va);
+        let l3e = read_pte(l3_pa, l3_idx);
+        if l3e & 1 == 0 {
+            return None;
+        }
+
+        let page_pa = (l3e & 0x0000_FFFF_FFFF_F000) as usize;
+        let offset = va & 0xFFF;
+        Some(page_pa + offset)
+    }
+}

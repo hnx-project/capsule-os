@@ -439,3 +439,7 @@ impl ArchMmu for RiscV64Mmu {
         }
     }
 }
+
+pub fn translate_user_va(_l0_pa: usize, va: usize) -> Option<usize> {
+    Some(va)
+}
