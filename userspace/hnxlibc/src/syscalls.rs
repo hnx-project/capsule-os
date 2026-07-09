@@ -43,6 +43,8 @@ pub const SYSCALL_GET_TID: u32 = 5;
 pub const SYSCALL_CHANNEL_CREATE: u32 = 10;
 pub const SYSCALL_CHANNEL_READ: u32 = 11;
 pub const SYSCALL_CHANNEL_WRITE: u32 = 12;
+pub const SYSCALL_CHANNEL_REGISTER: u32 = 14;
+pub const SYSCALL_CHANNEL_LOOKUP: u32 = 15;
 pub const SYSCALL_VMO_CREATE: u32 = 30;
 pub const SYSCALL_EXEC: u32 = 110;
 
@@ -103,4 +105,38 @@ pub fn exec_impl(name: &str) -> i32 {
     let mut local_name = name.as_bytes();
     let ptr = local_name.as_ptr();
     syscall!(SYSCALL_EXEC, ptr as usize, len, 0, 0, 0, 0) as i32
+}
+
+pub fn channel_register(name: &str, handle: usize) -> Result<(), Status> {
+    let ret = syscall!(
+        SYSCALL_CHANNEL_REGISTER,
+        name.as_ptr() as usize,
+        name.len(),
+        handle,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(())
+    }
+}
+
+pub fn channel_lookup(name: &str) -> Result<usize, Status> {
+    let ret = syscall!(
+        SYSCALL_CHANNEL_LOOKUP,
+        name.as_ptr() as usize,
+        name.len(),
+        0,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret)
+    }
 }

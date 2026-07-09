@@ -6,7 +6,7 @@ pub mod vfs;
 use shared::status::Status;
 
 pub fn sys_write(fd: usize, ptr: usize, len: usize) -> usize {
-    crate::log_info!("SYSCALL_WRITE", "fd={}, ptr={:#x}, len={}", fd, ptr, len);
+    crate::log_debug!("SYSCALL_WRITE", "fd={}, ptr={:#x}, len={}", fd, ptr, len);
     if fd == 1 || fd == 2 {
         if ptr == 0 || len == 0 {
             return 0;
@@ -40,6 +40,9 @@ pub fn sys_write(fd: usize, ptr: usize, len: usize) -> usize {
 
             let kernel_va = crate::mm::mmu::pa_to_kernel_va(pa);
             let byte = unsafe { *(kernel_va as *const u8) };
+            if byte == b'\n' {
+                crate::arch::console_putchar(b'\r');
+            }
             crate::arch::console_putchar(byte);
         }
         len
