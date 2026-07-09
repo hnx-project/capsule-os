@@ -55,6 +55,7 @@ pub const SYSCALL_VMO_CREATE: u32 = 30;
 pub const SYSCALL_VMO_READ: u32 = 31;
 pub const SYSCALL_VMO_WRITE: u32 = 32;
 pub const SYSCALL_EXEC: u32 = 110;
+pub const SYSCALL_LOAD_BINARY: u32 = 111;
 
 pub fn exit(code: i32) -> ! {
     syscall!(SYSCALL_EXIT, code as usize, 0, 0, 0, 0, 0);
@@ -113,6 +114,23 @@ pub fn exec_impl(name: &str) -> i32 {
     let local_name = name.as_bytes();
     let ptr = local_name.as_ptr();
     syscall!(SYSCALL_EXEC, ptr as usize, len, 0, 0, 0, 0) as i32
+}
+
+pub fn load_binary(vmo_handle: usize, name: &str) -> Result<u64, Status> {
+    let ret = syscall!(
+        SYSCALL_LOAD_BINARY,
+        vmo_handle,
+        name.as_ptr() as usize,
+        name.len(),
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret as u64)
+    }
 }
 
 pub fn channel_register(name: &str, handle: usize) -> Result<(), Status> {

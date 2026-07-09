@@ -58,6 +58,11 @@ pub struct Vmo {
 }
 
 impl Vmo {
+    /// Total size in bytes (always a multiple of PAGE_SIZE).
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
     /// Create a VMO with `size` bytes capacity.  No physical pages are
     /// committed yet; callers must call `commit_page(offset)` (or
     /// `commit_all()`) before reading/writing.

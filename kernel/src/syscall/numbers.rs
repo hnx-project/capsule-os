@@ -49,5 +49,6 @@ pub const SYSCALL_READ: u32 = 102;
 pub const SYSCALL_SEEK: u32 = 103;
 
 pub const SYSCALL_EXEC: u32 = 110;
+pub const SYSCALL_LOAD_BINARY: u32 = 111;
 
-pub const SYSCALL_NR: u32 = 111;
+pub const SYSCALL_NR: u32 = 112;
