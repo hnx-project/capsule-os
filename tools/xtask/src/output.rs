@@ -2,7 +2,9 @@ use std::process::{Command, Output};
 
 pub struct SilentOutput {
     pub success: bool,
+    #[allow(dead_code)]
     pub stdout: String,
+    #[allow(dead_code)]
     pub stderr: String,
 }
 

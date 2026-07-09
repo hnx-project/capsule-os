@@ -144,6 +144,7 @@ fn launch_qemu(plat: &Platform, gdb: bool) {
     let _ = qemu.status();
 }
 
+#[allow(dead_code)]
 fn get_latest_dist_image(arch: &str) -> Result<String, String> {
     let cargo_toml = std::fs::read_to_string("Cargo.toml").map_err(|e| e.to_string())?;
     let version = cargo_toml

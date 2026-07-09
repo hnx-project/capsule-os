@@ -4,11 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use zip::write::FileOptions;
-use zip::ZipWriter;
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct XtaskConfig {
@@ -19,6 +16,7 @@ pub struct XtaskConfig {
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct ProjectConfig {
+    #[allow(dead_code)]
     pub name: String,
     pub codename: String,
 }
@@ -31,7 +29,9 @@ pub struct GitCodeConfig {
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct SubmoduleConfig {
+    #[allow(dead_code)]
     pub upstream: String,
+    #[allow(dead_code)]
     pub fork_repo: String,
 }
 
@@ -53,8 +53,11 @@ pub struct GitCodePermissionResponse {
 
 pub struct GitCodeSession {
     pub token: String,
+    #[allow(dead_code)]
     pub username: String,
+    #[allow(dead_code)]
     pub permission: String,
+    #[allow(dead_code)]
     pub is_admin: bool,
 }
 

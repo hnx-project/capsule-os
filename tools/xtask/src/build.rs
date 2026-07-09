@@ -31,7 +31,7 @@ pub fn build(plat: &Platform) -> Result<(), String> {
 
     build_kernel(plat)?;
     link_kernel(plat)?;
-    extract_kernel_raw(plat)?;
+    extract_kernel_raw()?;
     pack_kernel_ohc(plat)?;
     build_bootloader(plat)?;
     extract_bootloader_bin(plat)?;
@@ -218,7 +218,7 @@ fn link_kernel(plat: &Platform) -> Result<(), String> {
     }
 }
 
-fn extract_kernel_raw(plat: &Platform) -> Result<(), String> {
+fn extract_kernel_raw() -> Result<(), String> {
     print!(
         "{}  Extracting{} dist/kernel/kernel.raw...",
         BOLD_GREEN, RESET
