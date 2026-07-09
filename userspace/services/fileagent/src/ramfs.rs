@@ -129,6 +129,73 @@ impl RamFs {
         Some(new_idx)
     }
 
+    pub fn mkdir_path(&mut self, path: &str) -> Option<usize> {
+        let clean = if path.starts_with('/') {
+            &path[1..]
+        } else {
+            path
+        };
+        let mut current = self.root_idx?;
+        if clean.is_empty() {
+            return Some(current);
+        }
+        for component in clean.split('/').filter(|c| !c.is_empty()) {
+            if let Some(existing) = self.find_child_idx(current, component) {
+                current = existing;
+                continue;
+            }
+            current = self.mkdir(current, component)?;
+        }
+        Some(current)
+    }
+
+    fn find_child_idx(&self, parent_idx: usize, name: &str) -> Option<usize> {
+        let parent = self.nodes[parent_idx].as_ref()?;
+        if parent.ntype != RamfsNodeType::Directory {
+            return None;
+        }
+        for i in 0..parent.child_count {
+            if let Some(child_idx) = parent.children[i] {
+                if let Some(child) = self.nodes[child_idx].as_ref() {
+                    let name_len = child
+                        .name
+                        .iter()
+                        .position(|&b| b == 0)
+                        .unwrap_or(RAMFS_MAX_NAME_LEN);
+                    if let Ok(name_str) = core::str::from_utf8(&child.name[..name_len]) {
+                        if name_str == name {
+                            return Some(child_idx);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn parent_of(&self, child_idx: usize) -> Option<usize> {
+        let root = self.root_idx?;
+        if child_idx == root {
+            return None;
+        }
+        for i in 0..RAMFS_MAX_FILES {
+            if i == child_idx {
+                continue;
+            }
+            if let Some(ref node) = self.nodes[i] {
+                if node.ntype != RamfsNodeType::Directory {
+                    continue;
+                }
+                for j in 0..node.child_count {
+                    if node.children[j] == Some(child_idx) {
+                        return Some(i);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     pub fn create(&mut self, parent_idx: usize, name: &str) -> Option<usize> {
         // 先进行父目录类型校验
         {
@@ -173,5 +240,96 @@ impl RamFs {
         } else {
             0
         }
+    }
+
+    pub fn resolve_path(&self, path: &str) -> Option<usize> {
+        let clean = if path.starts_with('/') {
+            &path[1..]
+        } else {
+            path
+        };
+        if clean.is_empty() {
+            return self.root_idx;
+        }
+
+        let mut current = self.root_idx?;
+        for component in clean.split('/').filter(|c| !c.is_empty()) {
+            let node = self.nodes[current].as_ref()?;
+            if node.ntype != RamfsNodeType::Directory {
+                return None;
+            }
+            let mut next = None;
+            for i in 0..node.child_count {
+                if let Some(child_idx) = node.children[i] {
+                    if let Some(child) = self.nodes[child_idx].as_ref() {
+                        let name_len = child
+                            .name
+                            .iter()
+                            .position(|&b| b == 0)
+                            .unwrap_or(RAMFS_MAX_NAME_LEN);
+                        if let Ok(name_str) = core::str::from_utf8(&child.name[..name_len]) {
+                            if name_str == component {
+                                next = Some(child_idx);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            current = next?;
+        }
+        Some(current)
+    }
+
+    pub fn rmdir(&mut self, parent_idx: usize, child_idx: usize) -> bool {
+        let node = match self.nodes[child_idx].as_ref() {
+            Some(n) => n,
+            None => return false,
+        };
+        if node.ntype != RamfsNodeType::Directory {
+            return false;
+        }
+        if node.child_count > 0 {
+            return false;
+        }
+        if !self.detach_child(parent_idx, child_idx) {
+            return false;
+        }
+        self.nodes[child_idx] = None;
+        true
+    }
+
+    pub fn unlink(&mut self, parent_idx: usize, child_idx: usize) -> bool {
+        let node = match self.nodes[child_idx].as_ref() {
+            Some(n) => n,
+            None => return false,
+        };
+        if node.ntype != RamfsNodeType::File {
+            return false;
+        }
+        if !self.detach_child(parent_idx, child_idx) {
+            return false;
+        }
+        self.nodes[child_idx] = None;
+        true
+    }
+
+    fn detach_child(&mut self, parent_idx: usize, child_idx: usize) -> bool {
+        let parent = match self.nodes[parent_idx].as_mut() {
+            Some(p) => p,
+            None => return false,
+        };
+        for i in 0..parent.child_count {
+            if parent.children[i] == Some(child_idx) {
+                parent.children[i] = None;
+                for j in i..parent.child_count.saturating_sub(1) {
+                    parent.children[j] = parent.children[j + 1];
+                }
+                parent.children[parent.child_count - 1] = None;
+                parent.child_count -= 1;
+                return true;
+            }
+        }
+        false
     }
 }

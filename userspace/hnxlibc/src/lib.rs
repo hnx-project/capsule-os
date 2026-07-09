@@ -172,6 +172,18 @@ enum FileAgentCmd {
         len: usize,
         vmo_handle: u32,
     },
+    MkDir {
+        path: [u8; 128],
+        path_len: u32,
+    },
+    RmDir {
+        path: [u8; 128],
+        path_len: u32,
+    },
+    Unlink {
+        path: [u8; 128],
+        path_len: u32,
+    },
 }
 
 #[no_mangle]
@@ -428,6 +440,89 @@ pub extern "C" fn exec(name: &str) -> i32 {
         return -1;
     }
     syscalls::exec_impl(name) as i32
+}
+
+fn send_dir_command(cmd: &FileAgentCmd) -> i32 {
+    let session_chan = match syscalls::channel_lookup("svc.vfs") {
+        Ok(ch) => ch,
+        Err(_) => return -1,
+    };
+
+    let cmd_slice = unsafe {
+        core::slice::from_raw_parts(
+            cmd as *const FileAgentCmd as *const u8,
+            core::mem::size_of::<FileAgentCmd>(),
+        )
+    };
+    if let Err(_) = syscalls::channel_write(session_chan, cmd_slice, &[]) {
+        let _ = syscalls::close(session_chan);
+        return -1;
+    }
+
+    let mut resp_buf = [0u8; 8];
+    let mut resp_handles = [0u32; 2];
+    let result = match syscalls::channel_read(session_chan, &mut resp_buf, &mut resp_handles) {
+        Ok(read_len) if read_len >= 8 => unsafe {
+            core::ptr::read_unaligned(resp_buf.as_ptr() as *const i64)
+        },
+        _ => -1,
+    };
+
+    let _ = syscalls::close(session_chan);
+    result as i32
+}
+
+fn build_path_cmd(path: *const u8, kind: u8) -> Option<FileAgentCmd> {
+    if path.is_null() {
+        return None;
+    }
+    let mut len = 0;
+    while len < 128 {
+        let b = unsafe { *path.add(len) };
+        if b == 0 {
+            break;
+        }
+        len += 1;
+    }
+    let mut path_buf = [0u8; 128];
+    Some(match kind {
+        0 => FileAgentCmd::MkDir {
+            path: path_buf,
+            path_len: len as u32,
+        },
+        1 => FileAgentCmd::RmDir {
+            path: path_buf,
+            path_len: len as u32,
+        },
+        _ => FileAgentCmd::Unlink {
+            path: path_buf,
+            path_len: len as u32,
+        },
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn mkdir(path: *const u8) -> i32 {
+    match build_path_cmd(path, 0) {
+        Some(cmd) => send_dir_command(&cmd),
+        None => -1,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rmdir(path: *const u8) -> i32 {
+    match build_path_cmd(path, 1) {
+        Some(cmd) => send_dir_command(&cmd),
+        None => -1,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn unlink(path: *const u8) -> i32 {
+    match build_path_cmd(path, 2) {
+        Some(cmd) => send_dir_command(&cmd),
+        None => -1,
+    }
 }
 
 #[panic_handler]

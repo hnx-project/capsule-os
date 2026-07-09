@@ -40,6 +40,18 @@ pub enum FileAgentCmd {
         len: usize,
         vmo_handle: u32,
     },
+    MkDir {
+        path: [u8; 128],
+        path_len: u32,
+    },
+    RmDir {
+        path: [u8; 128],
+        path_len: u32,
+    },
+    Unlink {
+        path: [u8; 128],
+        path_len: u32,
+    },
 }
 
 #[no_mangle]
@@ -214,6 +226,51 @@ fn handle_command(cmd: FileAgentCmd, channel: usize, handles: &[u32]) {
                 &[],
             );
         }
+        FileAgentCmd::MkDir { path, path_len } => {
+            let path_str = if let Ok(s) = core::str::from_utf8(&path[..path_len.min(128) as usize])
+            {
+                s
+            } else {
+                ""
+            };
+            let result = do_mkdir(path_str) as i64;
+            let response = result as u64;
+            let _ = syscalls::channel_write(
+                channel,
+                unsafe { core::slice::from_raw_parts(&response as *const u64 as *const u8, 8) },
+                &[],
+            );
+        }
+        FileAgentCmd::RmDir { path, path_len } => {
+            let path_str = if let Ok(s) = core::str::from_utf8(&path[..path_len.min(128) as usize])
+            {
+                s
+            } else {
+                ""
+            };
+            let result = do_rmdir(path_str) as i64;
+            let response = result as u64;
+            let _ = syscalls::channel_write(
+                channel,
+                unsafe { core::slice::from_raw_parts(&response as *const u64 as *const u8, 8) },
+                &[],
+            );
+        }
+        FileAgentCmd::Unlink { path, path_len } => {
+            let path_str = if let Ok(s) = core::str::from_utf8(&path[..path_len.min(128) as usize])
+            {
+                s
+            } else {
+                ""
+            };
+            let result = do_unlink(path_str) as i64;
+            let response = result as u64;
+            let _ = syscalls::channel_write(
+                channel,
+                unsafe { core::slice::from_raw_parts(&response as *const u64 as *const u8, 8) },
+                &[],
+            );
+        }
     }
 }
 
@@ -304,6 +361,47 @@ fn do_write(fd: u32, data: &[u8]) -> i32 {
                     let written = fs.write_file(of.node_idx, data, of.offset);
                     of.offset += written;
                     return written as i32;
+                }
+            }
+        }
+    }
+    -1
+}
+
+fn do_mkdir(path: &str) -> i32 {
+    unsafe {
+        if let Some(ref mut fs) = RAM_FS {
+            if fs.mkdir_path(path).is_some() {
+                return 0;
+            }
+        }
+    }
+    -1
+}
+
+fn do_rmdir(path: &str) -> i32 {
+    unsafe {
+        if let Some(ref mut fs) = RAM_FS {
+            if let Some(child_idx) = fs.resolve_path(path) {
+                if let Some(parent_idx) = fs.parent_of(child_idx) {
+                    if fs.rmdir(parent_idx, child_idx) {
+                        return 0;
+                    }
+                }
+            }
+        }
+    }
+    -1
+}
+
+fn do_unlink(path: &str) -> i32 {
+    unsafe {
+        if let Some(ref mut fs) = RAM_FS {
+            if let Some(child_idx) = fs.resolve_path(path) {
+                if let Some(parent_idx) = fs.parent_of(child_idx) {
+                    if fs.unlink(parent_idx, child_idx) {
+                        return 0;
+                    }
                 }
             }
         }
