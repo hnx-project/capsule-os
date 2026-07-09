@@ -1,8 +1,8 @@
-use shared::status::{Result, Status};
-use shared::types::HandleValue;
 use crate::ipc::channel::Channel;
 use crate::object::handle_table::{HandleTable, KernelObject};
 use crate::object::rights::Rights;
+use shared::status::{Result, Status};
+use shared::types::HandleValue;
 
 /// Helper function to safely copy data from user virtual space to kernel buffer
 fn safe_copy_from_user(l0_pa: usize, src_user_va: usize, len: usize, dest: &mut [u8]) -> Result<()> {
@@ -151,4 +151,86 @@ pub fn sys_channel_write(table: &HandleTable, handle_raw: u32,
     })??;
 
     Ok(written_bytes)
+}
+
+pub fn sys_channel_register(table: &HandleTable, name_ptr: usize, name_len: usize,
+                            handle_raw: u32) -> Result<()> {
+    let thread_ptr = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() };
+    let l0_pa = if let Some(t) = thread_ptr {
+        let proc_id = unsafe { (*t).process_id };
+        if let Some(proc) = crate::task::process::find_process_mut(proc_id) {
+            proc.l0_user_pa
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    if l0_pa == 0 {
+        return Err(Status::InvalidArgs);
+    }
+
+    let mut name_buf = [0u8; 16];
+    let actual_len = core::cmp::min(name_len, 16);
+    safe_copy_from_user(l0_pa, name_ptr, actual_len, &mut name_buf[..actual_len])?;
+
+    let hv = HandleValue::new(handle_raw);
+    let rights = Rights::READ.bits() | Rights::WRITE.bits();
+    let chan_ptr = table.with_channel(hv, rights, |c| c as *mut Channel)?;
+
+    crate::ipc::registry::register_service(&name_buf[..actual_len], chan_ptr)?;
+    crate::log_info!("NAMING", "Successfully registered system service: '{}'", core::str::from_utf8(&name_buf[..actual_len]).unwrap_or("unknown"));
+
+    Ok(())
+}
+
+pub fn sys_channel_lookup(table: &HandleTable, name_ptr: usize, name_len: usize) -> Result<HandleValue> {
+    let thread_ptr = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() };
+    let l0_pa = if let Some(t) = thread_ptr {
+        let proc_id = unsafe { (*t).process_id };
+        if let Some(proc) = crate::task::process::find_process_mut(proc_id) {
+            proc.l0_user_pa
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    if l0_pa == 0 {
+        return Err(Status::InvalidArgs);
+    }
+
+    let mut name_buf = [0u8; 16];
+    let actual_len = core::cmp::min(name_len, 16);
+    safe_copy_from_user(l0_pa, name_ptr, actual_len, &mut name_buf[..actual_len])?;
+
+    // Find the server service registration channel endpoint
+    let server_service_chan_ptr = crate::ipc::registry::lookup_service(&name_buf[..actual_len])?;
+
+    // Create a new distinct connection channel pair for communication
+    let client_chan = Channel::new()?;
+    let server_chan = Channel::new()?;
+    let rights = Rights::READ.bits() | Rights::WRITE.bits();
+
+    let h_client = table.add(KernelObject::Channel(client_chan), rights)?;
+    let h_server = table.add(KernelObject::Channel(server_chan), rights)?;
+
+    let c_client_ptr = table.with_channel(h_client, rights, |c| c as *mut Channel)?;
+    let c_server_ptr = table.with_channel(h_server, rights, |c| c as *mut Channel)?;
+
+    table.with_channel(h_client, rights, |c| c.peer = Some(c_server_ptr))?;
+    table.with_channel(h_server, rights, |c| c.peer = Some(c_client_ptr))?;
+
+    // Pass h_server directly to the server's registered service endpoint through Handle Passing!
+    // This wakes up the server listener and injects the new connection handle to the server's table.
+    unsafe {
+        (*server_service_chan_ptr).write(&[], &[h_server])?;
+    }
+
+    crate::log_info!("NAMING", "Successfully resolved and connected client to service: '{}'", core::str::from_utf8(&name_buf[..actual_len]).unwrap_or("unknown"));
+
+    // Return the client handle endpoint to the caller
+    Ok(h_client)
 }

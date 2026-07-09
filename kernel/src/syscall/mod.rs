@@ -139,6 +139,25 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
             }
         }
 
+        SYSCALL_CHANNEL_REGISTER => {
+            let name_ptr = arg0;
+            let name_len = arg1;
+            let handle = arg2 as u32;
+            match handlers::ipc::sys_channel_register(table, name_ptr, name_len, handle) {
+                Ok(_) => 0,
+                Err(e) => e.to_raw(),
+            }
+        }
+
+        SYSCALL_CHANNEL_LOOKUP => {
+            let name_ptr = arg0;
+            let name_len = arg1;
+            match handlers::ipc::sys_channel_lookup(table, name_ptr, name_len) {
+                Ok(h) => h.get() as usize,
+                Err(e) => e.to_raw(),
+            }
+        }
+
         SYSCALL_EXEC => {
             let name_ptr = arg0 as *const u8;
             let name_len = arg1;
