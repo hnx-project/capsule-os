@@ -179,11 +179,6 @@ impl Process {
 
         let user_entry = proc.root_vmar.base + lowest_vaddr + entry_offset;
 
-        #[cfg(target_arch = "aarch64")]
-        crate::arch::aarch64::mmu::debug_walk_va(proc.l0_user_pa, user_entry);
-        #[cfg(target_arch = "aarch64")]
-        crate::arch::aarch64::mmu::debug_walk_va(proc.l0_user_pa, user_entry & !0xFFF);
-
         let mut thread = Thread::new_user(name, user_entry, stack_top)?;
         thread.process_id = pid;
         thread.handle_table = &proc.handle_table;
