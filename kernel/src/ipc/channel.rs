@@ -29,10 +29,16 @@ pub struct Channel {
     pub read_refs: AtomicU32,
     pub write_refs: AtomicU32,
     
+    // Peer channel endpoint pointer
+    pub peer: Option<*mut Channel>,
+
     // Waiting queues storing Thread IDs
     pub send_waiters: [Option<usize>; MAX_WAITERS],
     pub recv_waiters: [Option<usize>; MAX_WAITERS],
 }
+
+unsafe impl Send for Channel {}
+unsafe impl Sync for Channel {}
 
 impl Channel {
     pub fn new() -> Result<Self> {
@@ -41,6 +47,7 @@ impl Channel {
             state: ChannelState::Open,
             read_refs: AtomicU32::new(1),
             write_refs: AtomicU32::new(1),
+            peer: None,
             send_waiters: [None; MAX_WAITERS],
             recv_waiters: [None; MAX_WAITERS],
         })
@@ -101,56 +108,58 @@ impl Channel {
             return Err(Status::PeerClosed);
         }
 
-        // Get our own thread mut
         let cur_thread_ptr = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() }
             .ok_or(Status::ThreadNotFound)?;
         let cur_thread = unsafe { &mut *cur_thread_ptr };
 
-        // 1. Check if there is a waiting sender
-        if let Some(sender_tid) = self.pop_sender() {
-            if let Some(sender) = unsafe { crate::task::scheduler::SCHEDULER.get_thread_ptr(sender_tid) } {
-                // Copy directly from sender's registered buffer
-                let src_slice = unsafe {
-                    core::slice::from_raw_parts((*sender).ipc_buf_ptr as *const u8, (*sender).ipc_buf_len)
-                };
-                let copy_len = core::cmp::min(src_slice.len(), data.len());
-                data[..copy_len].copy_from_slice(&src_slice[..copy_len]);
+        // 1. Check if there is a waiting sender on our peer (opposite end)
+        if let Some(peer_ptr) = self.peer {
+            let peer = unsafe { &mut *peer_ptr };
+            if let Some(sender_tid) = peer.pop_sender() {
+                if let Some(sender) = unsafe { crate::task::scheduler::SCHEDULER.get_thread_ptr(sender_tid) } {
+                    // Copy directly from sender's registered buffer
+                    let src_slice = unsafe {
+                        core::slice::from_raw_parts((*sender).ipc_buf_ptr as *const u8, (*sender).ipc_buf_len)
+                    };
+                    let copy_len = core::cmp::min(src_slice.len(), data.len());
+                    data[..copy_len].copy_from_slice(&src_slice[..copy_len]);
 
-                // Handle Transfer: take stashed handles from sender and inject to our handle table
-                if !cur_thread.handle_table.is_null() {
-                    let mut h_idx = 0;
-                    for slot in unsafe { (*sender).ipc_transfer_slots.iter_mut() } {
-                        if let Some((obj, rights)) = slot.take() {
-                            if let Ok(new_hv) = unsafe { (&*cur_thread.handle_table).add(obj, rights) } {
-                                cur_thread.ipc_transfer_handles[h_idx] = Some(new_hv.get());
-                                h_idx += 1;
+                    // Handle Transfer: take stashed handles from sender and inject to our handle table
+                    if !cur_thread.handle_table.is_null() {
+                        let mut h_idx = 0;
+                        for slot in unsafe { (*sender).ipc_transfer_slots.iter_mut() } {
+                            if let Some((obj, rights)) = slot.take() {
+                                if let Ok(new_hv) = unsafe { (&*cur_thread.handle_table).add(obj, rights) } {
+                                    cur_thread.ipc_transfer_handles[h_idx] = Some(new_hv.get());
+                                    h_idx += 1;
+                                }
                             }
                         }
                     }
-                }
 
-                // Update sender's result and wake them up
-                unsafe {
-                    (*sender).ipc_actual_len = copy_len;
-                    (*sender).state = crate::task::thread::ThreadState::Ready;
-                }
+                    // Update sender's result and wake them up
+                    unsafe {
+                        (*sender).ipc_actual_len = copy_len;
+                        (*sender).state = crate::task::thread::ThreadState::Ready;
+                    }
 
-                // Extract the newly injected handles to output slice
-                let mut h_copied = 0;
-                for i in 0..handles.len() {
-                    if i < cur_thread.ipc_transfer_handles.len() {
-                        if let Some(h_raw) = cur_thread.ipc_transfer_handles[i].take() {
-                            handles[i] = HandleValue::new(h_raw);
-                            h_copied += 1;
+                    // Extract the newly injected handles to output slice
+                    for i in 0..handles.len() {
+                        if i < cur_thread.ipc_transfer_handles.len() {
+                            if let Some(h_raw) = cur_thread.ipc_transfer_handles[i].take() {
+                                handles[i] = HandleValue::new(h_raw);
+                            }
                         }
                     }
-                }
 
-                return Ok(copy_len);
+                    return Ok(copy_len);
+                }
             }
+        } else {
+            return Err(Status::PeerClosed);
         }
 
-        // 2. No sender is waiting. We register ourselves and block
+        // 2. No sender is waiting. We register ourselves on OUR OWN recv_waiters and block
         cur_thread.ipc_buf_ptr = data.as_mut_ptr() as usize;
         cur_thread.ipc_buf_len = data.len();
         cur_thread.ipc_actual_len = 0;
@@ -174,12 +183,10 @@ impl Channel {
         let woken_thread = unsafe { &mut *cur_thread_ptr };
         let actual_len = woken_thread.ipc_actual_len;
 
-        let mut h_copied = 0;
         for i in 0..handles.len() {
             if i < woken_thread.ipc_transfer_handles.len() {
                 if let Some(h_raw) = woken_thread.ipc_transfer_handles[i].take() {
                     handles[i] = HandleValue::new(h_raw);
-                    h_copied += 1;
                 }
             }
         }
@@ -192,51 +199,54 @@ impl Channel {
             return Err(Status::PeerClosed);
         }
 
-        // Get our own thread mut
         let cur_thread_ptr = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() }
             .ok_or(Status::ThreadNotFound)?;
         let cur_thread = unsafe { &mut *cur_thread_ptr };
 
-        // 1. Check if there is a waiting receiver
-        if let Some(receiver_tid) = self.pop_receiver() {
-            if let Some(receiver) = unsafe { crate::task::scheduler::SCHEDULER.get_thread_ptr(receiver_tid) } {
-                // Copy directly to receiver's registered buffer
-                let dest_slice = unsafe {
-                    core::slice::from_raw_parts_mut((*receiver).ipc_buf_ptr as *mut u8, (*receiver).ipc_buf_len)
-                };
-                let copy_len = core::cmp::min(data.len(), dest_slice.len());
-                dest_slice[..copy_len].copy_from_slice(&data[..copy_len]);
+        // 1. Check if there is a waiting receiver on our peer (opposite end)
+        if let Some(peer_ptr) = self.peer {
+            let peer = unsafe { &mut *peer_ptr };
+            if let Some(receiver_tid) = peer.pop_receiver() {
+                if let Some(receiver) = unsafe { crate::task::scheduler::SCHEDULER.get_thread_ptr(receiver_tid) } {
+                    // Copy directly to receiver's registered buffer
+                    let dest_slice = unsafe {
+                        core::slice::from_raw_parts_mut((*receiver).ipc_buf_ptr as *mut u8, (*receiver).ipc_buf_len)
+                    };
+                    let copy_len = core::cmp::min(data.len(), dest_slice.len());
+                    dest_slice[..copy_len].copy_from_slice(&data[..copy_len]);
 
-                // Handle Transfer: take handles from current thread's table and inject directly into receiver's table
-                if !cur_thread.handle_table.is_null() && !unsafe { (*receiver).handle_table }.is_null() {
-                    let mut h_idx = 0;
-                    for &h_val in handles.iter().take(2) {
-                        if let Ok((obj, rights)) = unsafe { &*cur_thread.handle_table }.remove_with_rights(h_val) {
-                            if let Ok(new_hv) = unsafe { &*(*receiver).handle_table }.add(obj, rights) {
-                                unsafe { (*receiver).ipc_transfer_handles[h_idx] = Some(new_hv.get()); }
-                                h_idx += 1;
+                    // Handle Transfer: take handles from current thread's table and inject directly into receiver's table
+                    if !cur_thread.handle_table.is_null() && !unsafe { (*receiver).handle_table }.is_null() {
+                        let mut h_idx = 0;
+                        for &h_val in handles.iter().take(2) {
+                            if let Ok((obj, rights)) = unsafe { &*cur_thread.handle_table }.remove_with_rights(h_val) {
+                                if let Ok(new_hv) = unsafe { &*(*receiver).handle_table }.add(obj, rights) {
+                                    unsafe { (*receiver).ipc_transfer_handles[h_idx] = Some(new_hv.get()); }
+                                    h_idx += 1;
+                                }
                             }
                         }
                     }
-                }
 
-                // Update receiver's result and wake them up
-                unsafe {
-                    (*receiver).ipc_actual_len = copy_len;
-                    (*receiver).state = crate::task::thread::ThreadState::Ready;
-                }
+                    // Update receiver's result and wake them up
+                    unsafe {
+                        (*receiver).ipc_actual_len = copy_len;
+                        (*receiver).state = crate::task::thread::ThreadState::Ready;
+                    }
 
-                return Ok(copy_len);
+                    return Ok(copy_len);
+                }
             }
+        } else {
+            return Err(Status::PeerClosed);
         }
 
-        // 2. No receiver is waiting. We stash our handles and block
+        // 2. No receiver is waiting. We stash our handles and block on OUR OWN send_waiters
         cur_thread.ipc_buf_ptr = data.as_ptr() as usize;
         cur_thread.ipc_buf_len = data.len();
         cur_thread.ipc_actual_len = 0;
         cur_thread.state = crate::task::thread::ThreadState::Blocked;
         
-        // Remove and stash handles inside our own TCB slots
         for slot in cur_thread.ipc_transfer_slots.iter_mut() {
             *slot = None;
         }
@@ -285,41 +295,46 @@ impl Channel {
             .ok_or(Status::ThreadNotFound)?;
         let cur_thread = unsafe { &mut *cur_thread_ptr };
 
-        if let Some(sender_tid) = self.pop_sender() {
-            if let Some(sender) = unsafe { crate::task::scheduler::SCHEDULER.get_thread_ptr(sender_tid) } {
-                let src_slice = unsafe {
-                    core::slice::from_raw_parts((*sender).ipc_buf_ptr as *const u8, (*sender).ipc_buf_len)
-                };
-                let copy_len = core::cmp::min(src_slice.len(), data.len());
-                data[..copy_len].copy_from_slice(&src_slice[..copy_len]);
+        if let Some(peer_ptr) = self.peer {
+            let peer = unsafe { &mut *peer_ptr };
+            if let Some(sender_tid) = peer.pop_sender() {
+                if let Some(sender) = unsafe { crate::task::scheduler::SCHEDULER.get_thread_ptr(sender_tid) } {
+                    let src_slice = unsafe {
+                        core::slice::from_raw_parts((*sender).ipc_buf_ptr as *const u8, (*sender).ipc_buf_len)
+                    };
+                    let copy_len = core::cmp::min(src_slice.len(), data.len());
+                    data[..copy_len].copy_from_slice(&src_slice[..copy_len]);
 
-                if !cur_thread.handle_table.is_null() {
-                    let mut h_idx = 0;
-                    for slot in unsafe { (*sender).ipc_transfer_slots.iter_mut() } {
-                        if let Some((obj, rights)) = slot.take() {
-                            if let Ok(new_hv) = unsafe { (&*cur_thread.handle_table).add(obj, rights) } {
-                                cur_thread.ipc_transfer_handles[h_idx] = Some(new_hv.get());
-                                h_idx += 1;
+                    if !cur_thread.handle_table.is_null() {
+                        let mut h_idx = 0;
+                        for slot in unsafe { (*sender).ipc_transfer_slots.iter_mut() } {
+                            if let Some((obj, rights)) = slot.take() {
+                                if let Ok(new_hv) = unsafe { (&*cur_thread.handle_table).add(obj, rights) } {
+                                    cur_thread.ipc_transfer_handles[h_idx] = Some(new_hv.get());
+                                    h_idx += 1;
+                                }
                             }
                         }
                     }
-                }
 
-                unsafe {
-                    (*sender).ipc_actual_len = copy_len;
-                    (*sender).state = crate::task::thread::ThreadState::Ready;
-                }
+                    unsafe {
+                        (*sender).ipc_actual_len = copy_len;
+                        (*sender).state = crate::task::thread::ThreadState::Ready;
+                    }
 
-                for i in 0..handles.len() {
-                    if i < cur_thread.ipc_transfer_handles.len() {
-                        if let Some(h_raw) = cur_thread.ipc_transfer_handles[i].take() {
-                            handles[i] = HandleValue::new(h_raw);
+                    for i in 0..handles.len() {
+                        if i < cur_thread.ipc_transfer_handles.len() {
+                            if let Some(h_raw) = cur_thread.ipc_transfer_handles[i].take() {
+                                handles[i] = HandleValue::new(h_raw);
+                            }
                         }
                     }
-                }
 
-                return Ok(copy_len);
+                    return Ok(copy_len);
+                }
             }
+        } else {
+            return Err(Status::PeerClosed);
         }
 
         cur_thread.ipc_buf_ptr = data.as_mut_ptr() as usize;
@@ -385,12 +400,28 @@ impl Channel {
     pub fn close(&mut self) {
         self.state = ChannelState::Closed;
 
+        // Wake our own waiters with PeerClosed-like state
         for i in 0..MAX_WAITERS {
             if let Some(tid) = self.send_waiters[i].take() {
                 unsafe { crate::task::scheduler::SCHEDULER.wake_thread(tid); }
             }
             if let Some(tid) = self.recv_waiters[i].take() {
                 unsafe { crate::task::scheduler::SCHEDULER.wake_thread(tid); }
+            }
+        }
+
+        // Safely notify and clear peer endpoint
+        if let Some(peer_ptr) = self.peer.take() {
+            let peer = unsafe { &mut *peer_ptr };
+            peer.peer = None;
+            peer.state = ChannelState::Closed;
+            for i in 0..MAX_WAITERS {
+                if let Some(tid) = peer.send_waiters[i].take() {
+                    unsafe { crate::task::scheduler::SCHEDULER.wake_thread(tid); }
+                }
+                if let Some(tid) = peer.recv_waiters[i].take() {
+                    unsafe { crate::task::scheduler::SCHEDULER.wake_thread(tid); }
+                }
             }
         }
     }

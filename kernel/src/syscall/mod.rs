@@ -119,6 +119,26 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
             }
         }
 
+        SYSCALL_CHANNEL_READ => {
+            let handle = arg0 as u32;
+            let buf_ptr = arg1;
+            let buf_len = arg2;
+            match handlers::ipc::sys_channel_read(table, handle, buf_ptr, buf_len) {
+                Ok(n) => n,
+                Err(e) => e.to_raw(),
+            }
+        }
+
+        SYSCALL_CHANNEL_WRITE => {
+            let handle = arg0 as u32;
+            let buf_ptr = arg1;
+            let buf_len = arg2;
+            match handlers::ipc::sys_channel_write(table, handle, buf_ptr, buf_len) {
+                Ok(n) => n,
+                Err(e) => e.to_raw(),
+            }
+        }
+
         SYSCALL_EXEC => {
             let name_ptr = arg0 as *const u8;
             let name_len = arg1;
