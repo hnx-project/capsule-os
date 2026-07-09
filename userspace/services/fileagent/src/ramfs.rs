@@ -64,9 +64,7 @@ impl RamfsNode {
     pub fn find_child(&self, name: &str) -> Option<usize> {
         for i in 0..self.child_count {
             if let Some(idx) = self.children[i] {
-                let child_name = unsafe {
-                    core::str::from_utf8_unchecked(&self.data[idx..])
-                };
+                let child_name = unsafe { core::str::from_utf8_unchecked(&self.data[idx..]) };
                 if child_name == name {
                     return Some(idx);
                 }

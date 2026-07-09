@@ -3,8 +3,8 @@
 
 extern crate hnxlibc;
 
-pub mod ramfs;
 pub mod fatfs;
+pub mod ramfs;
 
 use hnxlibc::syscalls;
 use ramfs::{RamFs, RamfsNode, RamfsNodeType};
@@ -46,11 +46,15 @@ pub enum FileAgentCmd {
 pub fn main() -> i32 {
     unsafe {
         RAM_FS = Some(RamFs::new());
-        
+
         // 预置一个测试文件，让客户端开箱即用！
         if let Some(ref mut fs) = RAM_FS {
             if let Some(node_idx) = fs.create(0, "welcome.txt") {
-                fs.write_file(node_idx, b"Hello from CapsuleOS RamFS VMO dynamic filesystem!", 0);
+                fs.write_file(
+                    node_idx,
+                    b"Hello from CapsuleOS RamFS VMO dynamic filesystem!",
+                    0,
+                );
             }
         }
     }
@@ -101,7 +105,8 @@ pub fn main() -> i32 {
                 let mut cmd_handles = [0u32; 2];
                 match syscalls::channel_read(session_chan, &mut cmd_buf, &mut cmd_handles) {
                     Ok(len) if len >= core::mem::size_of::<FileAgentCmd>() => {
-                        let cmd = core::ptr::read_unaligned(cmd_buf.as_ptr() as *const FileAgentCmd);
+                        let cmd =
+                            core::ptr::read_unaligned(cmd_buf.as_ptr() as *const FileAgentCmd);
                         // 处理命令并带上客户端传入的句柄列表
                         handle_command(cmd, session_chan, &cmd_handles);
                     }
@@ -119,8 +124,13 @@ pub fn main() -> i32 {
 
 fn handle_command(cmd: FileAgentCmd, channel: usize, handles: &[u32]) {
     match cmd {
-        FileAgentCmd::Open { path, path_len, flags } => {
-            let path_str = if let Ok(s) = core::str::from_utf8(&path[..path_len.min(128) as usize]) {
+        FileAgentCmd::Open {
+            path,
+            path_len,
+            flags,
+        } => {
+            let path_str = if let Ok(s) = core::str::from_utf8(&path[..path_len.min(128) as usize])
+            {
                 s
             } else {
                 ""
@@ -151,7 +161,7 @@ fn handle_command(cmd: FileAgentCmd, channel: usize, handles: &[u32]) {
             if result >= 0 && !data.is_empty() {
                 if let Ok(vmo_handle) = syscalls::vmo_create(data.len()) {
                     let _ = syscalls::vmo_write(vmo_handle, 0, data);
-                    
+
                     let mut response_buf = [0u8; 16];
                     response_buf[0..8].copy_from_slice(&(result as u64).to_le_bytes());
                     response_buf[8..16].copy_from_slice(&(data.len() as u64).to_le_bytes());
@@ -164,7 +174,9 @@ fn handle_command(cmd: FileAgentCmd, channel: usize, handles: &[u32]) {
                     let response = -1i64 as u64;
                     let _ = syscalls::channel_write(
                         channel,
-                        unsafe { core::slice::from_raw_parts(&response as *const u64 as *const u8, 8) },
+                        unsafe {
+                            core::slice::from_raw_parts(&response as *const u64 as *const u8, 8)
+                        },
                         &[],
                     );
                 }
@@ -177,7 +189,11 @@ fn handle_command(cmd: FileAgentCmd, channel: usize, handles: &[u32]) {
                 );
             }
         }
-        FileAgentCmd::Write { fd, len, vmo_handle: _vmo } => {
+        FileAgentCmd::Write {
+            fd,
+            len,
+            vmo_handle: _vmo,
+        } => {
             // ⭐ 核心创新：写操作零拷贝机制！
             // 客户端如果传入了携带着待写入数据的 VMO 句柄 (位于 handles[0])：
             // 服务端直接将 handles[0] 作为 VMO 进行跨进程高能直接读取并落地到 RamFS 中！
@@ -185,7 +201,8 @@ fn handle_command(cmd: FileAgentCmd, channel: usize, handles: &[u32]) {
             if handles[0] != 0 {
                 let mut vmo_buf = [0u8; 1024];
                 let read_len = len.min(1024);
-                if let Ok(_) = syscalls::vmo_read(handles[0] as usize, 0, &mut vmo_buf[..read_len]) {
+                if let Ok(_) = syscalls::vmo_read(handles[0] as usize, 0, &mut vmo_buf[..read_len])
+                {
                     result = do_write(fd, &vmo_buf[..read_len]);
                 }
                 let _ = syscalls::close(handles[0] as usize);
@@ -204,8 +221,12 @@ fn do_open(path: &str, _flags: u32) -> i32 {
     unsafe {
         if let Some(ref mut fs) = RAM_FS {
             // 剔除前导斜杠
-            let clean_path = if path.starts_with('/') { &path[1..] } else { path };
-            
+            let clean_path = if path.starts_with('/') {
+                &path[1..]
+            } else {
+                path
+            };
+
             // 查找名为 welcome.txt 的文件或匹配其全路径
             // 这里为了简单性我们进行精确匹配，也可以自定义查找
             let mut node_idx_opt = None;

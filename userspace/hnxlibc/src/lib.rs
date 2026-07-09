@@ -1,8 +1,8 @@
 #![no_std]
 
 pub mod syscalls;
-pub use syscalls::*;
 pub use shared::status::Status;
+pub use syscalls::*;
 
 extern "Rust" {
     fn main() -> i32;
@@ -146,8 +146,8 @@ pub extern "C" fn getchar() -> Option<u8> {
 
 #[derive(Debug, Clone, Copy)]
 struct LibcFile {
-    session_chan: usize,  // 通往 fileagent svc.vfs 的客户端专属通道句柄
-    remote_fd: u32,       // fileagent 侧维护的打开文件描述符索引
+    session_chan: usize, // 通往 fileagent svc.vfs 的客户端专属通道句柄
+    remote_fd: u32,      // fileagent 侧维护的打开文件描述符索引
 }
 
 static mut LIBC_FILES: [Option<LibcFile>; 16] = [None; 16];
@@ -187,7 +187,7 @@ pub extern "C" fn open(path: *const u8, flags: i32, _mode: i32) -> i32 {
             len += 1;
         }
     }
-    
+
     let path_bytes = unsafe { core::slice::from_raw_parts(path, len) };
 
     // 2. Lookup 建立到服务端 "svc.vfs" 的对偶通信信道
@@ -208,7 +208,10 @@ pub extern "C" fn open(path: *const u8, flags: i32, _mode: i32) -> i32 {
 
     // 4. 将 Open 请求通过专属信道推送给服务端
     let cmd_slice = unsafe {
-        core::slice::from_raw_parts(&cmd as *const FileAgentCmd as *const u8, core::mem::size_of::<FileAgentCmd>())
+        core::slice::from_raw_parts(
+            &cmd as *const FileAgentCmd as *const u8,
+            core::mem::size_of::<FileAgentCmd>(),
+        )
     };
     if let Err(_) = syscalls::channel_write(session_chan, cmd_slice, &[]) {
         let _ = syscalls::close(session_chan);
@@ -220,7 +223,8 @@ pub extern "C" fn open(path: *const u8, flags: i32, _mode: i32) -> i32 {
     let mut resp_handles = [0u32; 2];
     match syscalls::channel_read(session_chan, &mut resp_buf, &mut resp_handles) {
         Ok(read_len) if read_len >= 8 => {
-            let remote_fd = unsafe { core::ptr::read_unaligned(resp_buf.as_ptr() as *const i64) } as i32;
+            let remote_fd =
+                unsafe { core::ptr::read_unaligned(resp_buf.as_ptr() as *const i64) } as i32;
             if remote_fd < 0 {
                 let _ = syscalls::close(session_chan);
                 return -1;
@@ -283,7 +287,8 @@ pub extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
         match syscalls::channel_read(file.session_chan, &mut resp_buf, &mut resp_handles) {
             Ok(read_len) if read_len >= 16 => {
                 let result = core::ptr::read_unaligned(resp_buf.as_ptr() as *const i64) as isize;
-                let data_len = core::ptr::read_unaligned(resp_buf[8..16].as_ptr() as *const u64) as usize;
+                let data_len =
+                    core::ptr::read_unaligned(resp_buf[8..16].as_ptr() as *const u64) as usize;
 
                 if result >= 0 && resp_handles[0] != 0 && data_len > 0 {
                     // ⭐ 零拷贝读取：从接收到的 VMO 句柄直接读取数据到客户端的 buf 中！
@@ -342,7 +347,8 @@ pub extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
             core::mem::size_of::<FileAgentCmd>(),
         );
 
-        if let Err(_) = syscalls::channel_write(file.session_chan, cmd_slice, &[vmo_handle as u32]) {
+        if let Err(_) = syscalls::channel_write(file.session_chan, cmd_slice, &[vmo_handle as u32])
+        {
             let _ = syscalls::close(vmo_handle as usize);
             return -1;
         }

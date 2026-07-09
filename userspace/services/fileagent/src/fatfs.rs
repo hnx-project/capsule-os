@@ -31,8 +31,7 @@ impl FatfsVolume {
         Ok(())
     }
 
-    pub fn unmount(&mut self) {
-    }
+    pub fn unmount(&mut self) {}
 }
 
 pub struct Fatfs {
