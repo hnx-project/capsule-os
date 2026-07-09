@@ -70,8 +70,6 @@ impl Process {
 
         let header = parser.header();
 
-        let entry_point = header.entry_point;
-
         let proc = allocate_process(name)?;
         let pid = proc.id;
 
@@ -101,6 +99,8 @@ impl Process {
             crate::arch::aarch64::mmu::set_ttbr0_el1(l0_user_pa);
         }
 
+        let mut lowest_vaddr: usize = usize::MAX;
+
         for idx in 0..header.header_count {
             let entry_meta = match parser.get_entry(idx) {
                 Ok(e) => e,
@@ -114,6 +114,10 @@ impl Process {
 
             let virt_addr = entry_meta.virtual_address as usize;
             let size = entry_meta.mem_size as usize;
+
+            if virt_addr < lowest_vaddr {
+                lowest_vaddr = virt_addr;
+            }
 
             let mut flags_raw = entry_meta.flags;
             if ty == 1 {
@@ -146,6 +150,15 @@ impl Process {
             crate::arch::aarch64::mmu::sync_instruction_cache(target_va, aligned_size);
         }
 
+        // entry_point in OHLINK header now represents the absolute virtual address
+        // (lowest_vaddr + entry_offset_in_merged) where the user program should start.
+        let entry_offset = if lowest_vaddr != usize::MAX && header.entry_point as usize >= lowest_vaddr
+        {
+            (header.entry_point as usize) - lowest_vaddr
+        } else {
+            0
+        };
+
         let stack_size = 16 * 1024;
         let mut stack_vmo = Vmo::create_with_size(stack_size)?;
         stack_vmo.commit_all()?;
@@ -164,7 +177,13 @@ impl Process {
         #[cfg(target_arch = "aarch64")]
         crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
 
-        let user_entry = proc.root_vmar.base + entry_point as usize;
+        let user_entry = proc.root_vmar.base + lowest_vaddr + entry_offset;
+
+        #[cfg(target_arch = "aarch64")]
+        crate::arch::aarch64::mmu::debug_walk_va(proc.l0_user_pa, user_entry);
+        #[cfg(target_arch = "aarch64")]
+        crate::arch::aarch64::mmu::debug_walk_va(proc.l0_user_pa, user_entry & !0xFFF);
+
         let mut thread = Thread::new_user(name, user_entry, stack_top)?;
         thread.process_id = pid;
         thread.handle_table = &proc.handle_table;
@@ -175,9 +194,6 @@ impl Process {
         }
 
         crate::log_info!("LAUNCHER", "Successfully launched program '{}' at EL0 (entry={:#x}, pid={})", name, user_entry, pid);
-
-        #[cfg(target_arch = "aarch64")]
-        crate::arch::aarch64::mmu::set_ttbr0_el1(old_ttbr0);
 
         Ok(())
     }

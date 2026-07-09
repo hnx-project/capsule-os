@@ -51,9 +51,7 @@ extern "C" fn rust_main(dtb_ptr: *const u8) -> ! {
         }
     };
 
-    let file_size = header.file_size as usize;
     let entry_point = header.entry_point;
-    let data_offset = header.data_offset as usize;
 
     log_info!("BOOT", "Valid OHC Image Found!");
     log_info!(
@@ -64,14 +62,40 @@ extern "C" fn rust_main(dtb_ptr: *const u8) -> ! {
     );
     log_info!("BOOT", "=> Entry   : {:#018x}", entry_point);
     log_info!("BOOT", "=> Segments: {}", header.header_count);
+
+    if header.header_count == 0 {
+        log_error!("BOOT", "No segments in OHLINK image!");
+        arch::halt();
+    }
+
+    let entry_offset = header.header_offset as usize;
+    let entry_bytes = unsafe {
+        core::slice::from_raw_parts(ohc_base.add(entry_offset), ohlink_format::OHLK_Entry::SIZE)
+    };
+
+    let entry = match ohlink_format::OHLK_Entry::from_bytes(entry_bytes) {
+        Ok(e) => e,
+        Err(e) => {
+            log_error!("BOOT", "Failed to parse OHLINK entry: {:?}", e);
+            arch::halt();
+        }
+    };
+
+    let file_offset = entry.file_offset as usize;
+    let file_size = entry.file_size as usize;
+
     log_info!("BOOT", "=> Size    : {:#010x} bytes", file_size);
 
-    log_info!("BOOT", "Extracting payload to entry point...");
-    let payload_src = unsafe { ohc_base.add(data_offset) };
-    let payload_dst = entry_point as *mut u8;
-    let payload_size = file_size - data_offset;
+    if file_size == 0 {
+        log_error!("BOOT", "Segment file_size is zero!");
+        arch::halt();
+    }
 
-    for i in 0..payload_size {
+    log_info!("BOOT", "Extracting payload to entry point...");
+    let payload_src = unsafe { ohc_base.add(file_offset) };
+    let payload_dst = entry_point as *mut u8;
+
+    for i in 0..file_size {
         unsafe {
             let val = core::ptr::read_volatile(payload_src.add(i));
             core::ptr::write_volatile(payload_dst.add(i), val);

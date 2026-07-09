@@ -90,7 +90,7 @@ pub struct OHLK_Entry {
 }
 
 impl OHLK_Entry {
-    pub const SIZE: usize = 56;
+    pub const SIZE: usize = 60;
 
     pub const FLAG_R: u32 = 1 << 0;
     pub const FLAG_W: u32 = 1 << 1;
@@ -107,6 +107,7 @@ impl OHLK_Entry {
         bytes[40..48].copy_from_slice(&self.alignment.to_le_bytes());
         bytes[48..52].copy_from_slice(&self.link.to_le_bytes());
         bytes[52..56].copy_from_slice(&self.info.to_le_bytes());
+        bytes[56..60].copy_from_slice(&self.name_offset.to_le_bytes());
         bytes
     }
 

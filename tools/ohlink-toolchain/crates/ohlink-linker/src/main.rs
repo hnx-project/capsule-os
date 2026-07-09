@@ -58,6 +58,8 @@ fn main() -> std::io::Result<()> {
     } else {
         let mut merged_payload = Vec::new();
         let mut lowest_vaddr = u64::MAX;
+        let mut entry_offset_in_merged: u64 = 0;
+        let mut entry_offset_found = false;
 
         let e_phoff = u64::from_le_bytes([
             buffer[32], buffer[33], buffer[34], buffer[35], buffer[36], buffer[37], buffer[38],
@@ -116,6 +118,17 @@ fn main() -> std::io::Result<()> {
 
                 if p_filesz > 0 && p_offset + p_filesz <= buffer.len() {
                     let segment_payload = &buffer[p_offset..p_offset + p_filesz];
+
+                    // Calculate entry_offset within merged payload BEFORE extending
+                    if !entry_offset_found
+                        && e_entry >= p_vaddr
+                        && e_entry < p_vaddr + p_filesz as u64
+                    {
+                        entry_offset_in_merged =
+                            merged_payload.len() as u64 + (e_entry - p_vaddr);
+                        entry_offset_found = true;
+                    }
+
                     merged_payload.extend_from_slice(segment_payload);
 
                     if p_vaddr < lowest_vaddr && p_vaddr > 0 {
@@ -125,7 +138,16 @@ fn main() -> std::io::Result<()> {
             }
         }
 
-        let entry_point = if cli.entry != 0 { cli.entry } else { e_entry };
+// Calculate the correct entry_point for OHLINK header.
+// The OHLINK entry_point should be the absolute virtual address where the entry
+// point will reside after loading. Since the kernel maps segments starting at
+// root_vmar.base + lowest_vaddr, the entry point in the OHLINK header must be
+// lowest_vaddr + entry_offset_in_merged.
+        let entry_point = if lowest_vaddr != u64::MAX && entry_offset_found {
+            lowest_vaddr + entry_offset_in_merged
+        } else {
+            e_entry
+        };
 
         let mut builder = OHLK_Builder::new(1, 1, 0, entry_point);
         builder.add_segment(
