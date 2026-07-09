@@ -143,3 +143,26 @@ fn launch_qemu(plat: &Platform, gdb: bool) {
     }
     let _ = qemu.status();
 }
+
+fn get_latest_dist_image(arch: &str) -> Result<String, String> {
+    let cargo_toml = std::fs::read_to_string("Cargo.toml").map_err(|e| e.to_string())?;
+    let version = cargo_toml
+        .lines()
+        .find(|line| line.starts_with("version ="))
+        .and_then(|line| line.split('"').nth(1))
+        .unwrap_or("0.1.0");
+
+    let date_output = Command::new("date")
+        .arg("+%Y%m%d")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "20260709".to_string());
+
+    let img_name = format!("capsuleos-pangu-{}-{}-{}.img", version, arch, date_output);
+    let img_path = format!("dist/{}", img_name);
+    if std::path::Path::new(&img_path).exists() {
+        Ok(img_path)
+    } else {
+        Err(format!("Distribution image not found at {}", img_path))
+    }
+}

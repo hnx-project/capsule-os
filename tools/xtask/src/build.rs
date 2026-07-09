@@ -36,6 +36,7 @@ pub fn build(plat: &Platform) -> Result<(), String> {
     build_bootloader(plat)?;
     extract_bootloader_bin(plat)?;
     print_build_summary(plat);
+    generate_dist_image(plat)?;
 
     println!(
         "\n{}     Success{} CapsuleOS built successfully!\n",
@@ -102,7 +103,9 @@ fn build_userspace_program(plat: &Platform, crate_name: &str) -> Result<(), Stri
 }
 
 fn pack_user_programs(plat: &Platform) -> Result<(), String> {
-    std::fs::create_dir_all("kernel/files").map_err(|e| e.to_string())?;
+    let staging_bin = "dist/staging_rootfs/system/bin";
+    std::fs::create_dir_all(staging_bin).map_err(|e| e.to_string())?;
+
     for (crate_name, out_name) in USERCRATE_S {
         print!("{}  Packing{} {}...", BOLD_GREEN, RESET, out_name);
         let elf = format!(
@@ -110,7 +113,7 @@ fn pack_user_programs(plat: &Platform) -> Result<(), String> {
             plat.arch,
             crate_name.replace("hnx-", "")
         );
-        let output = format!("kernel/files/{}", out_name);
+        let output = format!("{}/{}", staging_bin, out_name);
         let entry = if *out_name == "init" { "4096" } else { "65536" };
         let result = run_silent(
             Command::new("cargo").args([
@@ -135,6 +138,14 @@ fn pack_user_programs(plat: &Platform) -> Result<(), String> {
             return Err(format!("failed to pack {}", out_name));
         }
     }
+
+    // Pack the entire staging_rootfs to a unified rootfs.img inside kernel/files
+    print!("{}  Archiving{} rootfs.img...", BOLD_GREEN, RESET);
+    std::fs::create_dir_all("kernel/files").map_err(|e| e.to_string())?;
+    crate::pack::pack_rootfs("dist/staging_rootfs", "kernel/files/rootfs.img")
+        .map_err(|e| format!("Failed to archive rootfs: {}", e))?;
+    println!("\r{}  Archiving{} rootfs.img... Done", BOLD_GREEN, RESET);
+
     Ok(())
 }
 
@@ -336,7 +347,73 @@ fn print_build_summary(plat: &Platform) {
             plat.rust_target
         ),
     );
-    for (_, out_name) in USERCRATE_S {
-        print_size(out_name, &format!("kernel/files/{}", out_name));
+    print_size("rootfs.img", "kernel/files/rootfs.img");
+}
+
+fn generate_dist_image(plat: &Platform) -> Result<(), String> {
+    // 1. Get version from Cargo.toml
+    let cargo_toml = std::fs::read_to_string("Cargo.toml").map_err(|e| e.to_string())?;
+    let version = cargo_toml
+        .lines()
+        .find(|line| line.starts_with("version ="))
+        .and_then(|line| line.split('"').nth(1))
+        .unwrap_or("0.1.0");
+
+    // 2. Get current date in YYYYMMDD format
+    let date_output = Command::new("date")
+        .arg("+%Y%m%d")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "20260709".to_string());
+
+    let img_name = format!(
+        "capsuleos-pangu-{}-{}-{}.img",
+        version, plat.arch, date_output
+    );
+    let img_path = format!("dist/{}", img_name);
+
+    println!(
+        "{}  Packaging{} Release Distribution Image: dist/{}",
+        BOLD_CYAN, RESET, img_name
+    );
+
+    // 3. Combine bootloader.bin and hnxcore into a single .img file
+    let bootloader_path = format!(
+        "build/target/{}/release/capsule-bootloader.bin",
+        plat.rust_target
+    );
+    let hnxcore_path = "dist/kernel/hnxcore";
+
+    let mut bootloader_data =
+        std::fs::read(&bootloader_path).map_err(|e| format!("Failed to read bootloader: {}", e))?;
+    let hnxcore_data =
+        std::fs::read(hnxcore_path).map_err(|e| format!("Failed to read kernel: {}", e))?;
+
+    // We pad the bootloader to exactly 64KB (65536 bytes) so that the kernel begins at a precise, aligned offset!
+    let target_bootloader_size = 65536;
+    if bootloader_data.len() > target_bootloader_size {
+        return Err(format!(
+            "Bootloader size ({} bytes) exceeds maximum padding boundary (64KB)",
+            bootloader_data.len()
+        ));
     }
+    bootloader_data.resize(target_bootloader_size, 0);
+
+    // Combine them
+    let mut final_img_data = bootloader_data;
+    final_img_data.extend_from_slice(&hnxcore_data);
+
+    // Write distribution image
+    std::fs::write(&img_path, final_img_data)
+        .map_err(|e| format!("Failed to write distribution image: {}", e))?;
+
+    if let Ok(meta) = std::fs::metadata(&img_path) {
+        let size_kb = meta.len() as f64 / 1024.0;
+        println!(
+            "  {}Generated{} dist/{} [{:.1} KB]",
+            BOLD_GREEN, RESET, img_name, size_kb
+        );
+    }
+
+    Ok(())
 }

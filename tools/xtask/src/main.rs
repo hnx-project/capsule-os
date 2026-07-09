@@ -1,6 +1,7 @@
 mod build;
 mod cli;
 mod output;
+mod pack;
 mod platform;
 mod repo;
 mod run;

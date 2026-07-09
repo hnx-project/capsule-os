@@ -12,15 +12,20 @@ pub fn sys_exit(code: i32) -> ! {
 }
 
 pub fn sys_exec(table: &HandleTable, program_name: &str) -> Result<()> {
-    let (name_static, bytes): (&'static str, &'static [u8]) = match program_name {
-        "init" => ("init", &include_bytes!("../../../files/init")[..]),
-        "devmgr" => ("devmgr", &include_bytes!("../../../files/devmgr")[..]),
-        "fileagent" => ("fileagent", &include_bytes!("../../../files/fileagent")[..]),
+    let (name_static, path_str) = match program_name {
+        "init" => ("init", "system/bin/init"),
+        "devmgr" => ("devmgr", "system/bin/devmgr"),
+        "fileagent" => ("fileagent", "system/bin/fileagent"),
         _ => {
             crate::log_error!("EXEC", "Unknown program: {}", program_name);
             return Err(Status::NotFound);
         }
     };
+
+    let bytes = crate::rootfs::get_file(path_str).ok_or_else(|| {
+        crate::log_error!("EXEC", "Program {} not found in rootfs path: {}", program_name, path_str);
+        Status::NotFound
+    })?;
 
     crate::task::process::Process::launch_user_program(name_static, bytes)?;
 
@@ -36,7 +41,7 @@ pub fn sys_exec(table: &HandleTable, program_name: &str) -> Result<()> {
     crate::log_info!(
         "EXEC",
         "{} launched at EL0",
-        name_static
+        program_name
     );
     Ok(())
 }

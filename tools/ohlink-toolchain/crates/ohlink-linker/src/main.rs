@@ -124,8 +124,7 @@ fn main() -> std::io::Result<()> {
                         && e_entry >= p_vaddr
                         && e_entry < p_vaddr + p_filesz as u64
                     {
-                        entry_offset_in_merged =
-                            merged_payload.len() as u64 + (e_entry - p_vaddr);
+                        entry_offset_in_merged = merged_payload.len() as u64 + (e_entry - p_vaddr);
                         entry_offset_found = true;
                     }
 
@@ -138,11 +137,11 @@ fn main() -> std::io::Result<()> {
             }
         }
 
-// Calculate the correct entry_point for OHLINK header.
-// The OHLINK entry_point should be the absolute virtual address where the entry
-// point will reside after loading. Since the kernel maps segments starting at
-// root_vmar.base + lowest_vaddr, the entry point in the OHLINK header must be
-// lowest_vaddr + entry_offset_in_merged.
+        // Calculate the correct entry_point for OHLINK header.
+        // The OHLINK entry_point should be the absolute virtual address where the entry
+        // point will reside after loading. Since the kernel maps segments starting at
+        // root_vmar.base + lowest_vaddr, the entry point in the OHLINK header must be
+        // lowest_vaddr + entry_offset_in_merged.
         let entry_point = if lowest_vaddr != u64::MAX && entry_offset_found {
             lowest_vaddr + entry_offset_in_merged
         } else {

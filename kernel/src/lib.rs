@@ -16,6 +16,7 @@ pub mod sync;
 pub mod kcore;
 pub mod vfs;
 pub mod loader;
+pub mod rootfs;
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
