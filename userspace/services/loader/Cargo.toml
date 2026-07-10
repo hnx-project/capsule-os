@@ -12,3 +12,6 @@ hnxlibc = { path = "../../hnxlibc" }
 
 # [build]
 # rustflags = ["-C", "link-arg=-Tloader.ld"]
+
+[features]
+capsule = []

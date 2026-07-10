@@ -17,6 +17,7 @@ members = [
     "userspace/services/loader",
     "userspace/services/init",
     "userspace/programs/shell",
+    "userspace/programs/osh",
 ]
 
 resolver = "2"

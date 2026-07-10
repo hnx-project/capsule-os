@@ -17,8 +17,7 @@ fn println(s: &str) {
 #[no_mangle]
 pub fn main() -> i32 {
     println("init: starting...");
-    println("init: about to exec");
-    println("init: exec devmgr handed off");
-    hnxlibc::exec("devmgr");
+    println("init: handing off to osh");
+    hnxlibc::exec("osh");
     0
 }

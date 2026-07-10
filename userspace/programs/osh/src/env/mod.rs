@@ -32,4 +32,3 @@ pub mod host;
 
 #[cfg(not(feature = "host"))]
 pub mod capsule;
-

@@ -6,13 +6,6 @@ pub mod env;
 pub mod parser;
 pub mod shell;
 
-// 如果没有 host 特性，则由 no_std 生态接管，必须提供 panic 处理器
-#[cfg(not(feature = "host"))]
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
-}
-
 // 1. 本地测试与调试环境入口（使用标准库）
 #[cfg(feature = "host")]
 fn main() {
@@ -27,10 +20,13 @@ fn main() {
     }
 }
 
-// 2. Capsule OS 用户态入口（不使用标准库，不带 main，直接由 _start 进入）
+// 2. Capsule OS 用户态入口：hnxlibc 在 _start 之后会调用
+//    `extern "Rust" { fn main() -> i32 }`（见 userspace/hnxlibc/src/lib.rs）。
+//    我们把 REPL 入口挂到 `pub fn main` 上，让 hnxlibc 接管栈对齐、RA 清零
+//    和退出码回传。不需要我们自己的 `#[panic_handler]`：hnxlibc 已注册一个。
 #[cfg(not(feature = "host"))]
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
+pub fn main() -> i32 {
     let env = env::capsule::CapsuleEnv;
     shell::run_shell(&env);
 }

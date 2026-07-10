@@ -13,6 +13,7 @@ const USERCRATE_S: &[(&str, &str)] = &[
     ("hnx-devmgr", "devmgr"),
     ("hnx-fileagent", "fileagent"),
     ("hnx-loader", "loader"),
+    ("hnx-osh", "osh"),
 ];
 
 pub fn build(plat: &Platform) -> Result<(), String> {
@@ -74,6 +75,12 @@ fn bootstrap_ohlink_tools() -> Result<(), String> {
 fn build_userspace_program(plat: &Platform, crate_name: &str) -> Result<(), String> {
     print!("{}  Building{} {} (EL0)...", BOLD_GREEN, RESET, crate_name);
     let userspace_target = format!("std/targets/{}-unknown-capsule.json", plat.arch);
+    // Always build the EL0 / "capsule" feature variant.  Some user
+    // programs (e.g. `osh`) default to a host stdlib build for local
+    // testing; `--no-default-features --features capsule` switches them
+    // over to the no_std / hnxlibc-only entry point used by the
+    // CapsuleOS user-space ecosystem.  Programs without a `capsule`
+    // feature simply ignore the flag.
     let result = run_silent(
         Command::new("cargo").args([
             "+nightly",
@@ -83,6 +90,9 @@ fn build_userspace_program(plat: &Platform, crate_name: &str) -> Result<(), Stri
             crate_name,
             "--target",
             &userspace_target,
+            "--no-default-features",
+            "--features",
+            "capsule",
             "-Z",
             "build-std=core,alloc,panic_abort",
             "-Z",

@@ -106,4 +106,3 @@ pub fn run_shell<E: Environment>(env: &E) -> ! {
         }
     }
 }
-

@@ -9,3 +9,6 @@ path = "src/main.rs"
 
 [dependencies]
 hnxlibc = { path = "../../hnxlibc" }
+
+[features]
+capsule = []

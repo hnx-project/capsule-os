@@ -37,7 +37,14 @@ pub fn sys_read(fd: u32, buf_ptr: usize, buf_len: usize) -> Result<usize> {
     if fd == 0 {
         let mut total = 0usize;
         while total < buf_len {
-            let byte = crate::drivers::uart::getchar().unwrap_or(0);
+            // `getchar` is a blocking RX-FIFO spin on PL011 / NS16550; if
+            // it ever returns `None` we leave the line as-is and let the
+            // caller decide (the UART driver has no real EOF concept in
+            // QEMU, so in practice this only happens on hardware fault).
+            let byte = match crate::drivers::uart::getchar() {
+                Some(b) => b,
+                None => return if total == 0 { Ok(0) } else { Ok(total) },
+            };
             slice[total] = byte;
             total += 1;
             if byte == b'\n' || byte == b'\r' {
