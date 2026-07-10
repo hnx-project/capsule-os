@@ -1,17 +1,22 @@
 [package]
-name = "mkdir"
-version = "0.1.0"
-edition = "2021"
+name = "hnx-mkdir"
+version.workspace = true
+edition.workspace = true
 
 [features]
 default = ["host"]
 host = []
 capsule = []
 
+[[bin]]
+name = "mkdir"
+path = "src/main.rs"
+
+[dependencies]
+hnxlibc = { path = "../../hnxlibc" }
+
 [profile.release]
 panic = "abort"
 
 [profile.dev]
 panic = "abort"
-
-[dependencies]

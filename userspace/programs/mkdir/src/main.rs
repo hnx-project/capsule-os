@@ -5,13 +5,6 @@ pub mod env;
 
 use crate::env::FileSystem;
 
-// 1. 无 std 下编译必须提供 panic_handler
-#[cfg(not(feature = "host"))]
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
-}
-
 // 2. 本地测试环境入口 (使用标准库)
 #[cfg(feature = "host")]
 fn main() {
@@ -74,12 +67,17 @@ fn main() {
     }
 }
 
-// 3. Capsule OS 入口 (不使用标准库，不带 main，直接由 _start 进入)
+// 3. Capsule OS 入口：hnxlibc 在 _start 之后会调用
+//    `extern "Rust" { fn main() -> i32 }`（见 userspace/hnxlibc/src/lib.rs）。
+//    我们不再自己实现 `_start` 和 `panic_handler`：这两者都由 hnxlibc
+//    统一接管。argv 不通过 syscall 传递（kernel exec 当前不传递 argv），
+//    所以这里 hardcode 一个固定路径让 mkdir 的 EL0 入口能跑通。
 #[cfg(not(feature = "host"))]
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
+pub fn main() -> i32 {
     let env = env::capsule::CapsuleEnv;
-    // 默认测试创建一个目录
-    let _ = env.mkdir("/testdir");
-    env.exit(0);
+    match env.mkdir("/testdir") {
+        Ok(_) => 0,
+        Err(_) => 1,
+    }
 }

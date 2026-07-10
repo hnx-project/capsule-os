@@ -156,6 +156,13 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8) {
                 }
             }
 
+            // fileagent is the IPC-backed VFS service (`svc.vfs`).
+            // We do not auto-launch it at boot because CapsuleOS still
+            // needs to provision per-process L0 page tables before the
+            // channel registry can map the caller's user VA safely.
+            // Until then `hnxlibc::open` etc. keep returning errors
+            // and the shell can still type / echo / chdir / exit.
+
             // Start preemptive scheduling!
             crate::log_info!("SCHED", "Starting preemptive multitasking...");
 

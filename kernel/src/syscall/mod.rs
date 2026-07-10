@@ -226,12 +226,23 @@ SYSCALL_LOAD_BINARY => {
         }
 
         SYSCALL_SEEK => {
-            let fd = arg0 as u32;
-            let offset = arg1 as i64;
-            let whence = arg2 as i32;
-            match handlers::vfs::sys_seek(fd, offset, whence) {
-                Ok(new_off) => new_off as usize,
-                Err(e) => e.to_raw(),
+            match handlers::vfs::sys_seek(arg0 as u32, arg1 as i64, arg2 as i32) {
+                Ok(off) => off as usize,
+                Err(e) => e.to_raw() as usize,
+            }
+        }
+
+        SYSCALL_GETCWD => {
+            match handlers::process::sys_getcwd(arg0, arg1) {
+                Ok(n) => n,
+                Err(e) => e.to_raw() as usize,
+            }
+        }
+
+        SYSCALL_CHDIR => {
+            match handlers::process::sys_chdir(arg0, arg1) {
+                Ok(_) => 0,
+                Err(e) => e.to_raw() as usize,
             }
         }
 

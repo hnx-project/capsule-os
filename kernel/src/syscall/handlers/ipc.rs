@@ -5,7 +5,7 @@ use shared::status::{Result, Status};
 use shared::types::HandleValue;
 
 /// Helper function to safely copy data from user virtual space to kernel buffer
-fn safe_copy_from_user(l0_pa: usize, src_user_va: usize, len: usize, dest: &mut [u8]) -> Result<()> {
+pub(crate) fn safe_copy_from_user(l0_pa: usize, src_user_va: usize, len: usize, dest: &mut [u8]) -> Result<()> {
     if l0_pa == 0 {
         return Err(Status::InvalidArgs);
     }
@@ -29,7 +29,7 @@ fn safe_copy_from_user(l0_pa: usize, src_user_va: usize, len: usize, dest: &mut 
 }
 
 /// Helper function to safely copy data from kernel buffer to user virtual space
-fn safe_copy_to_user(l0_pa: usize, src: &[u8], dest_user_va: usize, len: usize) -> Result<()> {
+pub(crate) fn safe_copy_to_user(l0_pa: usize, src: &[u8], dest_user_va: usize, len: usize) -> Result<()> {
     if l0_pa == 0 {
         return Err(Status::InvalidArgs);
     }

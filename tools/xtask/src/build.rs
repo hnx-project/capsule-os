@@ -14,6 +14,14 @@ const USERCRATE_S: &[(&str, &str)] = &[
     ("hnx-fileagent", "fileagent"),
     ("hnx-loader", "loader"),
     ("hnx-osh", "osh"),
+    ("hnx-ls", "ls"),
+    ("hnx-cat", "cat"),
+    ("hnx-mkdir", "mkdir"),
+    ("hnx-touch", "touch"),
+    ("hnx-rm", "rm"),
+    ("hnx-rmdir", "rmdir"),
+    ("hnx-ps", "ps"),
+    ("hnx-kill", "kill"),
 ];
 
 pub fn build(plat: &Platform) -> Result<(), String> {

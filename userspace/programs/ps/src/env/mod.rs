@@ -2,8 +2,8 @@
 pub struct ProcessInfo {
     pub pid: u32,
     pub ppid: u32,
-    pub state: u8,        // 0 = Unknown, 1 = Running, 2 = Sleeping, 3 = Zombie
-    pub name: [u8; 16],   // 固定 16 字节进程名缓冲 (no_std 友好)
+    pub state: u8,      // 0 = Unknown, 1 = Running, 2 = Sleeping, 3 = Zombie
+    pub name: [u8; 16], // 固定 16 字节进程名缓冲 (no_std 友好)
     pub name_len: usize,
 }
 

@@ -5,13 +5,6 @@ pub mod env;
 
 use crate::env::{FileSystem, FsError};
 
-// 1. 无 std 下编译必须提供 panic_handler
-#[cfg(not(feature = "host"))]
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
-}
-
 /// 递归删除文件或目录的核心状态机 (no_std 编译安全)
 pub fn remove_recursive<F: FileSystem>(env: &F, path: &str, force: bool) -> Result<(), FsError> {
     if env.is_dir(path) {
@@ -45,7 +38,7 @@ pub fn remove_recursive<F: FileSystem>(env: &F, path: &str, force: bool) -> Resu
 fn main() {
     let env = env::host::HostEnv;
     let args: Vec<String> = std::env::args().collect();
-    
+
     let mut force = false;
     let mut recursive = false;
     let mut targets = [""; 16];
@@ -116,12 +109,16 @@ fn main() {
     }
 }
 
-// 3. Capsule OS 入口 (不使用标准库，不带 main，直接由 _start 进入)
+// 3. Capsule OS 入口：hnxlibc 在 _start 之后会调用
+//    `extern "Rust" { fn main() -> i32 }`（见 userspace/hnxlibc/src/lib.rs）。
+//    `_start` 和 `panic_handler` 都由 hnxlibc 统一接管。argv 不通过
+//    syscall 传递，所以这里 hardcode 一个固定路径。
 #[cfg(not(feature = "host"))]
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
+pub fn main() -> i32 {
     let env = env::capsule::CapsuleEnv;
-    // 默认测试强制删除一个文件
-    let _ = remove_recursive(&env, "/testfile.txt", true);
-    env.exit(0);
+    match remove_recursive(&env, "/testfile.txt", true) {
+        Ok(_) => 0,
+        Err(_) => 1,
+    }
 }

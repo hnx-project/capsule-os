@@ -18,6 +18,14 @@ members = [
     "userspace/services/init",
     "userspace/programs/shell",
     "userspace/programs/osh",
+    "userspace/programs/ls",
+    "userspace/programs/cat",
+    "userspace/programs/mkdir",
+    "userspace/programs/touch",
+    "userspace/programs/rm",
+    "userspace/programs/rmdir",
+    "userspace/programs/ps",
+    "userspace/programs/kill",
 ]
 
 resolver = "2"

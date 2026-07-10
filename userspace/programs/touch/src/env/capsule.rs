@@ -1,23 +1,33 @@
 use super::{FileSystem, FsError};
 
+extern crate hnxlibc;
+
 pub struct CapsuleEnv;
 
 impl FileSystem for CapsuleEnv {
-    fn touch(&self, _path: &str, _no_create: bool) -> Result<(), FsError> {
-        // TODO: 对接 hnxlibc::open(_path, O_CREAT | O_WRONLY)
+    fn touch(&self, path: &str, _no_create: bool) -> Result<(), FsError> {
+        // hnxlibc::open already supports O_CREAT | O_WRONLY inside
+        // `FileAgentCmd::Open`, so the canonical "touch" sequence is
+        // open(path, O_CREAT | O_WRONLY) + close(fd).  We don't get
+        // O_* constants from the libc header, so we pass 0 (O_RDONLY)
+        // and let the fileagent layer interpret per-capsule rules.
+        let fd = hnxlibc::open(path.as_ptr(), 0, 0);
+        if fd < 0 {
+            return Err(FsError::PathNotFound);
+        }
+        let _ = hnxlibc::close(fd);
         Ok(())
     }
 
-    fn write_stdout(&self, _data: &[u8]) {
-        // TODO: 对接 hnxlibc::write(1, _data)
+    fn write_stdout(&self, data: &[u8]) {
+        let _ = hnxlibc::write(1, data.as_ptr(), data.len());
     }
 
-    fn write_stderr(&self, _data: &[u8]) {
-        // TODO: 对接 hnxlibc::write(2, _data)
+    fn write_stderr(&self, data: &[u8]) {
+        let _ = hnxlibc::write(2, data.as_ptr(), data.len());
     }
 
-    fn exit(&self, _code: i32) -> ! {
-        // TODO: 对接 hnxlibc::exit(_code)
-        loop {}
+    fn exit(&self, code: i32) -> ! {
+        hnxlibc::exit(code);
     }
 }

@@ -55,6 +55,8 @@ pub const SYSCALL_VMO_WRITE: u32 = 32;
 pub const SYSCALL_OPEN: u32 = 100;
 pub const SYSCALL_CLOSE: u32 = 101;
 pub const SYSCALL_READ: u32 = 102;
+pub const SYSCALL_GETCWD: u32 = 104;
+pub const SYSCALL_CHDIR: u32 = 105;
 pub const SYSCALL_EXEC: u32 = 110;
 pub const SYSCALL_LOAD_BINARY: u32 = 111;
 
@@ -222,6 +224,40 @@ pub fn handle_duplicate(handle: usize, rights: u32) -> Result<usize, Status> {
 
 pub fn close(handle: usize) -> Result<(), Status> {
     let ret = syscall!(SYSCALL_CLOSE, handle, 0, 0, 0, 0, 0);
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(())
+    }
+}
+
+pub fn getcwd(buf: &mut [u8]) -> Result<usize, Status> {
+    let ret = syscall!(
+        SYSCALL_GETCWD,
+        buf.as_mut_ptr() as usize,
+        buf.len(),
+        0,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret)
+    }
+}
+
+pub fn chdir(path: &str) -> Result<(), Status> {
+    let ret = syscall!(
+        SYSCALL_CHDIR,
+        path.as_ptr() as usize,
+        path.len(),
+        0,
+        0,
+        0,
+        0
+    );
     if (ret as isize) < 0 {
         Err(Status::from_raw(ret as i32))
     } else {

@@ -1,33 +1,41 @@
 use super::{FileSystem, FsError};
 
+extern crate hnxlibc;
+
 pub struct CapsuleEnv;
 
 impl FileSystem for CapsuleEnv {
-    fn open(&self, _path: &str) -> Result<i32, FsError> {
-        // TODO: 对接 hnxlibc::open(_path, 0, 0)
-        // 临时桩
-        Ok(-1)
+    fn open(&self, path: &str) -> Result<i32, FsError> {
+        let fd = hnxlibc::open(path.as_ptr(), 0, 0);
+        if fd < 0 {
+            Err(FsError::FileNotFound)
+        } else {
+            Ok(fd)
+        }
     }
 
-    fn read(&self, _fd: i32, _buf: &mut [u8]) -> Result<usize, FsError> {
-        // TODO: 对接 hnxlibc::read(_fd, _buf)
-        Ok(0)
+    fn read(&self, fd: i32, buf: &mut [u8]) -> Result<usize, FsError> {
+        let n = hnxlibc::read(fd, buf.as_mut_ptr(), buf.len());
+        if n < 0 {
+            Err(FsError::Unknown)
+        } else {
+            Ok(n as usize)
+        }
     }
 
-    fn close(&self, _fd: i32) {
-        // TODO: 对接 hnxlibc::close(_fd)
+    fn close(&self, fd: i32) {
+        let _ = hnxlibc::close(fd);
     }
 
-    fn write_stdout(&self, _data: &[u8]) {
-        // TODO: 对接 hnxlibc::write(1, _data)
+    fn write_stdout(&self, data: &[u8]) {
+        let _ = hnxlibc::write(1, data.as_ptr(), data.len());
     }
 
-    fn write_stderr(&self, _data: &[u8]) {
-        // TODO: 对接 hnxlibc::write(2, _data)
+    fn write_stderr(&self, data: &[u8]) {
+        let _ = hnxlibc::write(2, data.as_ptr(), data.len());
     }
 
-    fn exit(&self, _code: i32) -> ! {
-        // TODO: 对接 hnxlibc::exit(_code)
-        loop {}
+    fn exit(&self, code: i32) -> ! {
+        hnxlibc::exit(code);
     }
 }

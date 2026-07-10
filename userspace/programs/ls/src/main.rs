@@ -8,19 +8,12 @@ pub mod options;
 use crate::env::FileSystem;
 use crate::options::LsOptions;
 
-// 1. 无 std 下编译必须提供 panic_handler
-#[cfg(not(feature = "host"))]
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
-}
-
 // 2. 本地测试环境入口 (使用标准库)
 #[cfg(feature = "host")]
 fn main() {
     let env = env::host::HostEnv;
     let args: Vec<String> = std::env::args().collect();
-    
+
     let mut opts = LsOptions::new();
     let mut target_dir = ".";
 
@@ -65,13 +58,18 @@ fn main() {
     }
 }
 
-// 3. Capsule OS 入口 (不使用标准库，不带 main，直接由 _start 进入)
+// 3. Capsule OS 入口：hnxlibc 在 _start 之后会调用
+//    `extern "Rust" { fn main() -> i32 }`（见 userspace/hnxlibc/src/lib.rs）。
+//    `_start` 和 `panic_handler` 都由 hnxlibc 统一接管。
+//
+//    TODO: 真正的目录遍历依赖 SYSCALL_READDIR + Dirent 协议
+//    （参见 userspace/programs/ls/src/capsule-design.md §2），目前
+//    kernel / fileagent 还没落地，所以这里只 emit 一条占位提示让 ls
+//    能 boot 起来，等 readdir 协议补齐后接入 `ls::run_ls`。
 #[cfg(not(feature = "host"))]
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
+pub fn main() -> i32 {
     let env = env::capsule::CapsuleEnv;
-    // 默认以标准默认配置浏览根目录 "/"
-    let opts = LsOptions::new();
-    let _ = ls::run_ls(&env, "/", &opts);
-    env.exit(0);
+    env.write_stderr(b"ls: readdir not yet wired in this CapsuleOS build\n");
+    let _ = env.exit(1);
 }

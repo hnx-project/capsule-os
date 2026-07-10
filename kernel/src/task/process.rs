@@ -6,6 +6,17 @@ use crate::object::handle_table::HandleTable;
 static PROCESS_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 pub static VMAR_BASE_SLOT: AtomicUsize = AtomicUsize::new(0);
 
+/// Per-process current working directory buffer.  Storing a flat buffer
+/// (rather than a `&'static str`) lets `SYSCALL_CHDIR` mutate it in place
+/// without juggling arena lifetimes, and is large enough for any realistic
+/// EL0 path (`/system/bin/osh`, `/home/devmgr/projects/foo`, ...).
+pub const CWD_MAX: usize = 128;
+
+/// Initial CWD assigned to every freshly-spawned process.  We deliberately
+/// pick a real, rootfs-relative path so that `cd ..` and friends in the
+/// shell behave sensibly from the very first prompt.
+pub const INITIAL_CWD: &str = "/";
+
 #[derive(Debug)]
 pub struct Process {
     pub id: u64,
@@ -15,6 +26,8 @@ pub struct Process {
     pub handle_table: HandleTable,
     pub thread_count: usize,
     pub l0_user_pa: usize,
+    pub cwd: [u8; CWD_MAX],
+    pub cwd_len: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +50,10 @@ impl Process {
         let root_vmar = Vmar::create(vmar_base, 256 * 1024 * 1024)?;
 
         let handle_table = HandleTable::new();
+        let mut cwd = [0u8; CWD_MAX];
+        let cwd_bytes = INITIAL_CWD.as_bytes();
+        let cwd_len = core::cmp::min(cwd_bytes.len(), CWD_MAX);
+        cwd[..cwd_len].copy_from_slice(&cwd_bytes[..cwd_len]);
         Ok(Process {
             id: PROCESS_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             name,
@@ -45,6 +62,8 @@ impl Process {
             handle_table,
             thread_count: 0,
             l0_user_pa: 0,
+            cwd,
+            cwd_len,
         })
     }
 

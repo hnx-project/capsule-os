@@ -8,19 +8,12 @@ pub mod options;
 use crate::env::FileSystem;
 use crate::options::CatOptions;
 
-// 1. 无 std 下编译必须提供 panic_handler
-#[cfg(not(feature = "host"))]
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
-}
-
 // 2. 本地测试环境入口 (使用标准库)
 #[cfg(feature = "host")]
 fn main() {
     let env = env::host::HostEnv;
     let args: Vec<String> = std::env::args().collect();
-    
+
     let mut opts = CatOptions::new();
     let mut file_path = "";
     let mut file_specified = false;
@@ -70,13 +63,17 @@ fn main() {
     }
 }
 
-// 3. Capsule OS 入口 (不使用标准库，不带 main，直接由 _start 进入)
+// 3. Capsule OS 入口：hnxlibc 在 _start 之后会调用
+//    `extern "Rust" { fn main() -> i32 }`（见 userspace/hnxlibc/src/lib.rs）。
+//    `_start` 和 `panic_handler` 都由 hnxlibc 统一接管。argv 不通过
+//    syscall 传递，所以这里 hardcode 一个固定路径。
 #[cfg(not(feature = "host"))]
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
+pub fn main() -> i32 {
     let env = env::capsule::CapsuleEnv;
     let opts = CatOptions::new();
-    // 默认以标准默认配置浏览
-    let _ = cat::run_cat(&env, "/system/test.txt", &opts);
-    env.exit(0);
+    match cat::run_cat(&env, "/system/test.txt", &opts) {
+        Ok(_) => 0,
+        Err(_) => 1,
+    }
 }

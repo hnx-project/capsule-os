@@ -1,12 +1,19 @@
 [package]
-name = "ps"
-version = "0.1.0"
-edition = "2021"
+name = "hnx-ps"
+version.workspace = true
+edition.workspace = true
 
 [features]
 default = ["host"]
 host = []
 capsule = []
+
+[[bin]]
+name = "ps"
+path = "src/main.rs"
+
+[dependencies]
+hnxlibc = { path = "../../hnxlibc" }
 
 [profile.release]
 panic = "abort"

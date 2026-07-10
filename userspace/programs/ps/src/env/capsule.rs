@@ -1,23 +1,27 @@
 use super::{ProcSystem, ProcessInfo};
 
+extern crate hnxlibc;
+
 pub struct CapsuleEnv;
 
 impl ProcSystem for CapsuleEnv {
     fn get_process_list(&self, _infos: &mut [ProcessInfo]) -> Result<usize, ()> {
-        // TODO: 后面对接 hnxlibc::get_process_snapshot(_infos) 或特定监控 channel 通讯
+        // TODO: 等待 SYSCALL_PROCESS_SNAPSHOT / 监控 channel 协议
+        // （参见 userspace/programs/ps/src/capsule-design.md §1）。当前
+        // kernel / fileagent 尚未落地进程快照通道，所以这里直接返回
+        // `Ok(0)` 让 ps 在 shell 中显示空表。
         Ok(0)
     }
 
-    fn write_stdout(&self, _data: &[u8]) {
-        // TODO: 对接 hnxlibc::write(1, _data)
+    fn write_stdout(&self, data: &[u8]) {
+        let _ = hnxlibc::write(1, data.as_ptr(), data.len());
     }
 
-    fn write_stderr(&self, _data: &[u8]) {
-        // TODO: 对接 hnxlibc::write(2, _data)
+    fn write_stderr(&self, data: &[u8]) {
+        let _ = hnxlibc::write(2, data.as_ptr(), data.len());
     }
 
-    fn exit(&self, _code: i32) -> ! {
-        // TODO: 对接 hnxlibc::exit(_code)
-        loop {}
+    fn exit(&self, code: i32) -> ! {
+        hnxlibc::exit(code);
     }
 }

@@ -2,6 +2,7 @@ use crate::mm::vmar::VmarFlags;
 use crate::mm::vmo::Vmo;
 use crate::object::handle_table::{HandleTable, KernelObject};
 use crate::object::rights::Rights;
+use crate::task::process::CWD_MAX;
 use crate::task::thread::Thread;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use shared::status::{Result, Status};
@@ -244,4 +245,99 @@ pub fn sys_load_binary(
     let _ = table.add(KernelObject::Process(pid), rights);
 
     Ok(pid)
+}
+
+/// SYSCALL_GETCWD: copy the calling process's current working directory
+/// into the user buffer.  Returns the number of bytes written on success
+/// or a negative `Status::to_raw()` on error.
+///
+/// Arguments:
+/// - `buf_ptr`/`buf_len`: caller-provided destination buffer (must be
+///   non-null, must be at least `process::CWD_MAX` bytes for the full path)
+pub fn sys_getcwd(buf_ptr: usize, buf_len: usize) -> Result<usize> {
+    if buf_ptr == 0 {
+        return Err(Status::InvalidArgs);
+    }
+    let caller_pid = current_process_id()?;
+    let proc = crate::task::process::find_process_mut(caller_pid)
+        .ok_or(Status::NotFound)?;
+    let copy_len = core::cmp::min(proc.cwd_len, buf_len);
+    if copy_len == 0 {
+        return Ok(0);
+    }
+    // Translate the user-provided VA through the caller's L0 page table.
+    // Writing directly to `buf_ptr` would corrupt the kernel's direct-map
+    // alias of that address; we must route the bytes through
+    // `safe_copy_to_user` so the destination is the actual user page.
+    let l0_pa = proc.l0_user_pa;
+    if l0_pa == 0 {
+        return Err(Status::InvalidArgs);
+    }
+    crate::log_info!(
+        "GETCWD",
+        "pid={} cwd_len={} buf_len={} copy_len={}",
+        caller_pid, proc.cwd_len, buf_len, copy_len
+    );
+    crate::syscall::handlers::ipc::safe_copy_to_user(
+        l0_pa,
+        &proc.cwd[..copy_len],
+        buf_ptr,
+        copy_len,
+    )?;
+    crate::log_info!(
+        "GETCWD",
+        "pid={} copied {:?}",
+        caller_pid,
+        core::str::from_utf8(&proc.cwd[..copy_len]).unwrap_or("?")
+    );
+    Ok(copy_len)
+}
+
+/// SYSCALL_CHDIR: change the calling process's current working directory.
+/// The supplied path is treated as a rootfs-relative string (no
+/// normalisation against `.` / `..` / symlinks yet).  Returns 0 on success.
+pub fn sys_chdir(path_ptr: usize, path_len: usize) -> Result<usize> {
+    if path_ptr == 0 || path_len == 0 {
+        return Err(Status::InvalidArgs);
+    }
+    let caller_pid = current_process_id()?;
+    let proc = crate::task::process::find_process_mut(caller_pid)
+        .ok_or(Status::NotFound)?;
+    let copy_len = core::cmp::min(path_len, proc.cwd.len());
+    // Mirror the user-VA read with safe_copy_from_user so the source is
+    // the actual user page rather than the kernel's direct-map alias of
+    // it (which would silently round-trip bytes through kernel memory
+    // and corrupt them when MMU attributes differ).
+    let l0_pa = proc.l0_user_pa;
+    if l0_pa == 0 {
+        return Err(Status::InvalidArgs);
+    }
+    let mut path_buf = [0u8; CWD_MAX];
+    crate::syscall::handlers::ipc::safe_copy_from_user(
+        l0_pa,
+        path_ptr,
+        copy_len,
+        &mut path_buf[..copy_len],
+    )?;
+    proc.cwd[..copy_len].copy_from_slice(&path_buf[..copy_len]);
+    proc.cwd_len = copy_len;
+    crate::log_info!(
+        "CHDIR",
+        "process '{}' cwd -> {:?}",
+        proc.name,
+        core::str::from_utf8(&proc.cwd[..proc.cwd_len]).unwrap_or("?")
+    );
+    Ok(0)
+}
+
+fn current_process_id() -> Result<u64> {
+    // `get_current_thread_ptr` is locked by the dispatcher; reading it
+    // here from inside SYSCALL_GETCWD / SYSCALL_CHDIR handlers is safe
+    // because both run with kernel IRQs still masked.
+    unsafe {
+        let t = crate::task::scheduler::SCHEDULER
+            .get_current_thread_ptr()
+            .ok_or(Status::NotFound)?;
+        Ok((*t).process_id)
+    }
 }

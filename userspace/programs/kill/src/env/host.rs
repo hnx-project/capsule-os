@@ -10,7 +10,7 @@ impl ProcSystem for HostEnv {
         let mut command = std::process::Command::new("kill");
         // 传递 SIGTERM (15) 或指定参数
         command.arg(pid.to_string());
-        
+
         match command.status() {
             Ok(status) if status.success() => Ok(()),
             _ => Err(KillError::ProcessNotFound),

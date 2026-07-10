@@ -1,12 +1,19 @@
 [package]
-name = "rmdir"
-version = "0.1.0"
-edition = "2021"
+name = "hnx-rmdir"
+version.workspace = true
+edition.workspace = true
 
 [features]
 default = ["host"]
 host = []
 capsule = []
+
+[[bin]]
+name = "rmdir"
+path = "src/main.rs"
+
+[dependencies]
+hnxlibc = { path = "../../hnxlibc" }
 
 [profile.release]
 panic = "abort"

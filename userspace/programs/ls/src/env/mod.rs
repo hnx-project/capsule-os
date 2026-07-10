@@ -17,7 +17,7 @@ pub enum FileType {
 #[derive(Clone, Copy)]
 pub struct Dirent {
     pub ino: u64,
-    pub size: u64,       // 新增大小字段，用于支持 -l 详细列表显示
+    pub size: u64, // 新增大小字段，用于支持 -l 详细列表显示
     pub ftype: u8,
     pub name_len: u8,
     pub name: [u8; 110], // 定长 110 字节，使结构体大小正好为 128 字节 (8+8+1+1+110 = 128)

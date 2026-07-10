@@ -5,13 +5,6 @@ pub mod env;
 
 use crate::env::{ProcSystem, ProcessInfo};
 
-// 1. 无 std 下编译必须提供 panic_handler
-#[cfg(not(feature = "host"))]
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
-}
-
 /// 格式化数字到 byte 数组中而无需任何堆内存分配 (no_std 兼容)
 fn format_u32(mut val: u32, buf: &mut [u8]) -> usize {
     if val == 0 {
@@ -89,11 +82,13 @@ fn main() {
     print_process_table(&env);
 }
 
-// 4. Capsule OS 入口 (不使用标准库，不带 main，直接由 _start 进入)
+// 4. Capsule OS 入口：hnxlibc 在 _start 之后会调用
+//    `extern "Rust" { fn main() -> i32 }`（见 userspace/hnxlibc/src/lib.rs）。
+//    `_start` 和 `panic_handler` 都由 hnxlibc 统一接管。
 #[cfg(not(feature = "host"))]
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
+pub fn main() -> i32 {
     let env = env::capsule::CapsuleEnv;
     print_process_table(&env);
-    env.exit(0);
+    0
 }

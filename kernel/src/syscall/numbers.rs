@@ -47,6 +47,8 @@ pub const SYSCALL_OPEN: u32 = 100;
 pub const SYSCALL_CLOSE: u32 = 101;
 pub const SYSCALL_READ: u32 = 102;
 pub const SYSCALL_SEEK: u32 = 103;
+pub const SYSCALL_GETCWD: u32 = 104;
+pub const SYSCALL_CHDIR: u32 = 105;
 
 pub const SYSCALL_EXEC: u32 = 110;
 pub const SYSCALL_LOAD_BINARY: u32 = 111;

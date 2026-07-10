@@ -1,17 +1,22 @@
 [package]
-name = "touch"
-version = "0.1.0"
-edition = "2021"
+name = "hnx-touch"
+version.workspace = true
+edition.workspace = true
 
 [features]
 default = ["host"]
 host = []
 capsule = []
 
+[[bin]]
+name = "touch"
+path = "src/main.rs"
+
+[dependencies]
+hnxlibc = { path = "../../hnxlibc" }
+
 [profile.release]
 panic = "abort"
 
 [profile.dev]
 panic = "abort"
-
-[dependencies]

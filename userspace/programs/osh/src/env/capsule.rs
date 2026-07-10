@@ -32,14 +32,18 @@ impl Environment for CapsuleEnv {
         }
     }
 
-    fn getcwd(&self, _buf: &mut [u8]) -> Result<usize, ShellError> {
-        // TODO: 等待 SYSCALL_GETCWD 在 kernel 端落地。
-        Ok(0)
+    fn getcwd(&self, buf: &mut [u8]) -> Result<usize, ShellError> {
+        match hnxlibc::getcwd(buf) {
+            Ok(n) => Ok(n),
+            Err(_) => Err(ShellError::IoError),
+        }
     }
 
-    fn chdir(&self, _path: &str) -> Result<(), ShellError> {
-        // TODO: 等待 SYSCALL_CHDIR 在 kernel 端落地。
-        Err(ShellError::Unknown)
+    fn chdir(&self, path: &str) -> Result<(), ShellError> {
+        match hnxlibc::chdir(path) {
+            Ok(()) => Ok(()),
+            Err(_) => Err(ShellError::PathNotFound),
+        }
     }
 
     fn get_env(&self, _key: &str, _buf: &mut [u8]) -> Result<usize, ShellError> {

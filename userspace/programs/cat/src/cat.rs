@@ -27,7 +27,7 @@ fn format_u64(mut val: u64, buf: &mut [u8]) -> usize {
 fn print_line_number<F: FileSystem>(env: &F, line_num: u64) {
     let mut num_buf = [0u8; 20];
     let len = format_u64(line_num, &mut num_buf);
-    
+
     // 经典对齐：前置 6 位右对齐
     let padding = 6 - len.min(6);
     for _ in 0..padding {
@@ -54,7 +54,7 @@ pub fn run_cat<F: FileSystem>(env: &F, path: &str, opts: &CatOptions) -> Result<
             }
             Ok(bytes_read) => {
                 let data = &buffer[..bytes_read];
-                
+
                 if !opts.number {
                     // 如果不需要显示行号，直接高效整块输出
                     env.write_stdout(data);
