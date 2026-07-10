@@ -1,0 +1,15 @@
+[package]
+name = "ps"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["host"]
+host = []
+capsule = []
+
+[profile.release]
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
