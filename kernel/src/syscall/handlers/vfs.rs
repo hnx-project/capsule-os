@@ -32,18 +32,30 @@ pub fn sys_read(fd: u32, buf_ptr: usize, buf_len: usize) -> Result<usize> {
     if buf_ptr == 0 || buf_len == 0 {
         return Err(Status::InvalidArgs);
     }
+    let slice = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
+
+    if fd == 0 {
+        let mut total = 0usize;
+        while total < buf_len {
+            let byte = crate::drivers::uart::getchar().unwrap_or(0);
+            slice[total] = byte;
+            total += 1;
+            if byte == b'\n' || byte == b'\r' {
+                break;
+            }
+        }
+        return Ok(total);
+    }
+
     let _vnode_id = vfs::get_fd(fd).ok_or(Status::NotFound)?;
     let offset = vfs::read_fd_offset(fd).unwrap_or(0);
 
-    // Copy a test pattern to userspace to mock successfully reading from VFS!
-    let slice = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
     let pattern = b"VFS_READ_OK";
-    
+
     let read_len = core::cmp::min(buf_len, pattern.len().saturating_sub(offset as usize));
     if read_len > 0 {
         slice[..read_len].copy_from_slice(&pattern[offset as usize .. offset as usize + read_len]);
         vfs::write_fd_offset(fd, offset + read_len as u64);
-        crate::log_info!("VFS", "sys_read: read {} bytes from fd = {}", read_len, fd);
         Ok(read_len)
     } else {
         Ok(0)

@@ -3,6 +3,7 @@ use crate::mm::vmo::Vmo;
 use crate::object::handle_table::{HandleTable, KernelObject};
 use crate::object::rights::Rights;
 use crate::task::thread::Thread;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use shared::status::{Result, Status};
 use shared::types::HandleValue;
 
@@ -14,20 +15,58 @@ const LOAD_BINARY_SCRATCH_SIZE: usize = 128 * 1024;
 static mut LOAD_BINARY_SCRATCH: [u8; LOAD_BINARY_SCRATCH_SIZE] =
     [0u8; LOAD_BINARY_SCRATCH_SIZE];
 
+/// Static name slots for newly-launched processes.  `Process::name` is
+/// `&'static str`, so callers (such as `sys_exec`) that receive the
+/// process name from EL0 user space copy it into one of these slots and
+/// hand the resulting `&'static str` to `launch_user_program`.  8 slots
+/// is more than enough for CapsuleOS's current launch sequence (loader,
+/// init, devmgr, fileagent, plus a handful of dynamic EL0 programs).
+const NAME_SLOT_COUNT: usize = 8;
+const NAME_SLOT_CAP: usize = 128;
+static mut NAME_SLOTS: [[u8; NAME_SLOT_CAP]; NAME_SLOT_COUNT] =
+    [[0u8; NAME_SLOT_CAP]; NAME_SLOT_COUNT];
+static mut NAME_SLOT_LEN: [usize; NAME_SLOT_COUNT] = [0usize; NAME_SLOT_COUNT];
+static NAME_SLOT_CURSOR: AtomicUsize = AtomicUsize::new(0);
+
+fn intern_name(name: &str) -> Result<&'static str> {
+    if name.len() >= NAME_SLOT_CAP {
+        return Err(Status::InvalidArgs);
+    }
+    let idx = NAME_SLOT_CURSOR.fetch_add(1, Ordering::Relaxed) % NAME_SLOT_COUNT;
+    unsafe {
+        let slot = &mut NAME_SLOTS[idx];
+        slot[..name.len()].copy_from_slice(name.as_bytes());
+        NAME_SLOT_LEN[idx] = name.len();
+        let ptr = slot.as_ptr() as *const u8;
+        let len = NAME_SLOT_LEN[idx];
+        let bytes = core::slice::from_raw_parts(ptr, len);
+        Ok(core::str::from_utf8_unchecked(bytes))
+    }
+}
+
 pub fn sys_exit(code: i32) -> ! {
     crate::log_info!("SYSCALL", "Process exited with code {}", code);
     loop {}
 }
 
 pub fn sys_exec(table: &HandleTable, program_name: &str) -> Result<()> {
-    let (name_static, path_str) = match program_name {
-        "init" => ("init", "system/bin/init"),
-        "devmgr" => ("devmgr", "system/bin/devmgr"),
-        "fileagent" => ("fileagent", "system/bin/fileagent"),
-        _ => {
-            crate::log_error!("EXEC", "Unknown program: {}", program_name);
-            return Err(Status::NotFound);
-        }
+    // Resolve the rootfs path. Short names ("init", "devmgr", "fileagent")
+    // are mapped to "system/bin/<name>". Anything containing a '/' is
+    // treated as an absolute rootfs path (e.g. "system/bin/xxx") and
+    // queried verbatim. This lets the loader service dispatch any binary
+    // the user names, not just the three hardcoded boot services.
+    let mapped: heapless::String<160>;
+    let path_str: &str = if program_name.contains('/') {
+        program_name
+    } else {
+        mapped = heapless::String::try_from("system/bin/")
+            .ok()
+            .and_then(|mut s| {
+                s.push_str(program_name).ok()?;
+                Some(s)
+            })
+            .ok_or(Status::InvalidArgs)?;
+        mapped.as_str()
     };
 
     let bytes = crate::rootfs::get_file(path_str).ok_or_else(|| {
@@ -35,6 +74,7 @@ pub fn sys_exec(table: &HandleTable, program_name: &str) -> Result<()> {
         Status::NotFound
     })?;
 
+    let name_static: &'static str = intern_name(program_name)?;
     crate::task::process::Process::launch_user_program(name_static, bytes)?;
 
     // Mark the calling thread (init) as Dead so the scheduler never
@@ -48,8 +88,9 @@ pub fn sys_exec(table: &HandleTable, program_name: &str) -> Result<()> {
 
     crate::log_info!(
         "EXEC",
-        "{} launched at EL0",
-        program_name
+        "{} launched at EL0 (path={})",
+        program_name,
+        path_str
     );
     Ok(())
 }

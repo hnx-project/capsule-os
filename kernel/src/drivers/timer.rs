@@ -146,6 +146,16 @@ pub fn handle_tick_from_irq(frame: *mut crate::arch::aarch64::trap::TrapFrame) {
         // thread's ThreadContext.  This makes the next switch_to on this
         // thread resume exactly here instead of restarting from _start or
         // clobbering caller-saved registers.
+        //
+        // **Only snapshot frame.x when the IRQ came from EL0.**  On
+        // AArch64 the IRQ handler runs from a single Rust entry point,
+        // so it can fire either while user code was running (irq_el0
+        // entry, SPSR_EL1.M == 0) or nested inside an EL1 trap handler
+        // (irq_el1_spx, SPSR_EL1.M == 5).  In the nested case the saved
+        // x0..x18 belong to the EL1 trap path (e.g. an in-flight
+        // SYSCALL_READ waiting on the UART), *not* to user space, and
+        // clobbering ThreadContext.x with them corrupts the return value
+        // the user will observe when the thread is scheduled again.
         let elr: u64;
         let spsr: u64;
         core::arch::asm!(
@@ -155,11 +165,12 @@ pub fn handle_tick_from_irq(frame: *mut crate::arch::aarch64::trap::TrapFrame) {
             out(reg) spsr,
             options(nomem, nostack)
         );
+        let from_el0 = (spsr & 0xF) == 0;
         if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
             unsafe {
                 (*t).context.elr = elr;
                 (*t).context.spsr = spsr;
-                if !frame.is_null() {
+                if from_el0 && !frame.is_null() {
                     let f = &*frame;
                     (*t).context.x = f.x;
                 }

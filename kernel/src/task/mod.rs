@@ -34,15 +34,22 @@ switch_to:
     ldp x23, x24, [x1, #184]
     ldp x25, x26, [x1, #200]
     ldp x27, x28, [x1, #216]
-    ldp x29, x30, [x1, #232]
+    ldr x29,     [x1, #232]   // x29 = next frame pointer
+    // x30 = next.r[11] = user_eret_stub.  user_eret_stub then loads
+    // x0..x18, spsr, elr, and sp_el0 from the ThreadContext and erets
+    // to the user entry point.  This is the actual "resume the next
+    // thread" jump; without it the kernel would resume at the wrong
+    // PC (the schedule() return site), so the just-loaded callee-saved
+    // registers and kernel SP would be useless.
+    ldr x30, [x1, #240]
     // Load the next thread's kernel SP and user SP (sp_el0).
     ldr x2, [x1, #248]
     mov sp, x2
     ldr x4, [x1, #256]
     msr sp_el0, x4
 
-    // x0..x18 of the next thread will be restored by user_eret_stub from
-    // ThreadContext.x; for now just hand off.
+    // Jump into the resume trampoline that restores the user-visible
+    // register state from the ThreadContext and erets to EL0.
     ret
     "#
 );

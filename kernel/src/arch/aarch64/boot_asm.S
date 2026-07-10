@@ -173,55 +173,67 @@ sync_el0:
     # 1. Allocate space on the stack for TrapFrame + x30 (Total 192 bytes, 16-byte aligned)
     sub     sp, sp, #192
 
-    # 2. Save registers x0..x18
-    stp     x0,  x1,  [sp, #0]
-    stp     x2,  x3,  [sp, #16]
-    stp     x4,  x5,  [sp, #32]
-    stp     x6,  x7,  [sp, #48]
-    stp     x8,  x9,  [sp, #64]
-    stp     x10, x11, [sp, #80]
-    stp     x12, x13, [sp, #96]
-    stp     x14, x15, [sp, #112]
-    stp     x16, x17, [sp, #128]
-    str     x18,      [sp, #144]
+    # 2. Stash the entry sp in x19 (callee-saved per AAPCS64, so the
+    #    Rust handler below must preserve it) so the restore phase can
+    #    still find the TrapFrame even if a nested IRQ handler ends up
+    #    mutating sp via switch_to + eret.  Without this, an IRQ nested
+    #    into a blocking syscall (e.g. SYSCALL_READ waiting on the UART)
+    #    can leave the tail-end `ldp x0, x1, [sp, #0]` reading from
+    #    stack memory belonging to the IRQ handler's Rust frame, so the
+    #    EL0 user thread observes whatever x0 the IRQ handler happened
+    #    to leave in memory (commonly the user's stack pointer from
+    #    before the svc) instead of the syscall's true return value.
+    mov     x19, sp
 
-    # 3. Save x30 (LR) at offset 184
-    str     x30,      [sp, #184]
+    # 3. Save registers x0..x18
+    stp     x0,  x1,  [x19, #0]
+    stp     x2,  x3,  [x19, #16]
+    stp     x4,  x5,  [x19, #32]
+    stp     x6,  x7,  [x19, #48]
+    stp     x8,  x9,  [x19, #64]
+    stp     x10, x11, [x19, #80]
+    stp     x12, x13, [x19, #96]
+    stp     x14, x15, [x19, #112]
+    stp     x16, x17, [x19, #128]
+    str     x18,      [x19, #144]
 
-    # 4. Save CSRs (spsr_el1, elr_el1, esr_el1, far_el1)
+    # 4. Save x30 (LR) at offset 184
+    str     x30,      [x19, #184]
+
+    # 5. Save CSRs (spsr_el1, elr_el1, esr_el1, far_el1)
     mrs     x9,  spsr_el1
-    str     x9,       [sp, #152]
+    str     x9,       [x19, #152]
     mrs     x10, elr_el1
-    str     x10,      [sp, #160]
+    str     x10,      [x19, #160]
     mrs     x11, esr_el1
-    str     x11,      [sp, #168]
+    str     x11,      [x19, #168]
     mrs     x12, far_el1
-    str     x12,      [sp, #176]
+    str     x12,      [x19, #176]
 
-    # 5. Pass TrapFrame pointer (sp) in x0 to Rust handler
-    mov     x0, sp
+    # 6. Pass TrapFrame pointer in x0 to Rust handler
+    mov     x0, x19
     bl      aarch64_sync_el0_handler
 
-    # 6. Restore CSRs
-    ldr     x9,       [sp, #152]
+    # 7. Restore CSRs from the original TrapFrame location.
+    ldr     x9,       [x19, #152]
     msr     spsr_el1, x9
-    ldr     x10,      [sp, #160]
+    ldr     x10,      [x19, #160]
     msr     elr_el1,  x10
 
-    # 7. Restore registers x0..x18 and x30 (LR)
-    ldp     x0,  x1,  [sp, #0]
-    ldp     x2,  x3,  [sp, #16]
-    ldp     x4,  x5,  [sp, #32]
-    ldp     x6,  x7,  [sp, #48]
-    ldp     x8,  x9,  [sp, #64]
-    ldp     x10, x11, [sp, #80]
-    ldp     x12, x13, [sp, #96]
-    ldp     x14, x15, [sp, #112]
-    ldp     x16, x17, [sp, #128]
-    ldr     x18,      [sp, #144]
-    ldr     x30,      [sp, #184]
+    # 8. Restore registers x0..x18 and x30 (LR) from the TrapFrame.
+    ldp     x0,  x1,  [x19, #0]
+    ldp     x2,  x3,  [x19, #16]
+    ldp     x4,  x5,  [x19, #32]
+    ldp     x6,  x7,  [x19, #48]
+    ldp     x8,  x9,  [x19, #64]
+    ldp     x10, x11, [x19, #80]
+    ldp     x12, x13, [x19, #96]
+    ldp     x14, x15, [x19, #112]
+    ldp     x16, x17, [x19, #128]
+    ldr     x18,      [x19, #144]
+    ldr     x30,      [x19, #184]
 
-    # 8. Deallocate stack space and return via eret
+    # 9. Deallocate stack space and return via eret
     add     sp, sp, #192
     eret
 
@@ -229,66 +241,70 @@ irq_el0:
     # 1. Allocate space on the stack for TrapFrame + x30 (Total 192 bytes, 16-byte aligned)
     sub     sp, sp, #192
 
-    # 2. Save caller-saved registers x0..x18
-    stp     x0,  x1,  [sp, #0]
-    stp     x2,  x3,  [sp, #16]
-    stp     x4,  x5,  [sp, #32]
-    stp     x6,  x7,  [sp, #48]
-    stp     x8,  x9,  [sp, #64]
-    stp     x10, x11, [sp, #80]
-    stp     x12, x13, [sp, #96]
-    stp     x14, x15, [sp, #112]
-    stp     x16, x17, [sp, #128]
-    str     x18,      [sp, #144]
+    # 2. Stash entry sp in x19 (callee-saved) so we can still find the
+    #    TrapFrame after a nested IRQ + scheduler switch_to.
+    mov     x19, sp
 
-    # 3. Save x30 (LR) at offset 184
-    str     x30,      [sp, #184]
+    # 3. Save caller-saved registers x0..x18
+    stp     x0,  x1,  [x19, #0]
+    stp     x2,  x3,  [x19, #16]
+    stp     x4,  x5,  [x19, #32]
+    stp     x6,  x7,  [x19, #48]
+    stp     x8,  x9,  [x19, #64]
+    stp     x10, x11, [x19, #80]
+    stp     x12, x13, [x19, #96]
+    stp     x14, x15, [x19, #112]
+    stp     x16, x17, [x19, #128]
+    str     x18,      [x19, #144]
 
-    # 4. Save CSRs (spsr_el1, elr_el1, esr_el1, far_el1)
+    # 4. Save x30 (LR) at offset 184
+    str     x30,      [x19, #184]
+
+    # 5. Save CSRs (spsr_el1, elr_el1, esr_el1, far_el1)
     mrs     x9,  spsr_el1
-    str     x9,       [sp, #152]
+    str     x9,       [x19, #152]
     mrs     x10, elr_el1
-    str     x10,      [sp, #160]
+    str     x10,      [x19, #160]
     mrs     x11, esr_el1
-    str     x11,      [sp, #168]
+    str     x11,      [x19, #168]
     mrs     x12, far_el1
-    str     x12,      [sp, #176]
+    str     x12,      [x19, #176]
 
-    # 5. Ack the GIC: read GICC_IAR (PA 0x0801000C)
+    # 6. Ack the GIC: read GICC_IAR (PA 0x0801000C)
     movz    x0, #0x000C
     movk    x0, #0x0801, lsl #16
     ldr     w0, [x0]             // w0 = interrupt ID
-    mov     x1, sp               // x1 = trap frame pointer for Rust
+    mov     x1, x19              // x1 = trap frame pointer for Rust
 
-    # 6. Early EOI: write the IAR value to GICC_EOIR (PA 0x08010010) immediately
+    # 7. Early EOI: write the IAR value to GICC_EOIR (PA 0x08010010) immediately
     movz    x2, #0x0010
     movk    x2, #0x0801, lsl #16
     str     w0, [x2]
 
-    # 7. Call Rust dispatcher.  Pass (iar, frame_ptr) in (x0, x1).
+    # 8. Call Rust dispatcher.  Pass (iar, frame_ptr) in (x0, x1).
     bl      irq_handler
 
     # If irq_handler returns, no context switch happened: restore and eret.
-    # 8. Restore CSRs
-    ldr     x9,       [sp, #152]
+    # 9. Restore CSRs from the TrapFrame captured at entry.
+    ldr     x9,       [x19, #152]
     msr     spsr_el1, x9
-    ldr     x10,      [sp, #160]
+    ldr     x10,      [x19, #160]
     msr     elr_el1,  x10
 
-    # 9. Restore caller-saved registers x0..x18 and x30 (LR)
-    ldp     x0,  x1,  [sp, #0]
-    ldp     x2,  x3,  [sp, #16]
-    ldp     x4,  x5,  [sp, #32]
-    ldp     x6,  x7,  [sp, #48]
-    ldp     x8,  x9,  [sp, #64]
-    ldp     x10, x11, [sp, #80]
-    ldp     x12, x13, [sp, #96]
-    ldp     x14, x15, [sp, #112]
-    ldp     x16, x17, [sp, #128]
-    ldr     x18,      [sp, #144]
-    ldr     x30,      [sp, #184]
+    # 10. Restore caller-saved registers x0..x18 and x30 (LR) from TrapFrame.
+    ldp     x0,  x1,  [x19, #0]
+    ldp     x2,  x3,  [x19, #16]
+    ldp     x4,  x5,  [x19, #32]
+    ldp     x6,  x7,  [x19, #48]
+    ldp     x8,  x9,  [x19, #64]
+    ldp     x10, x11, [x19, #80]
+    ldp     x12, x13, [x19, #96]
+    ldp     x14, x15, [x19, #112]
+    ldp     x16, x17, [x19, #128]
+    ldr     x18,      [x19, #144]
+    ldr     x30,      [x19, #184]
 
-    # 10. Deallocate stack space and return via eret
+    # 11. Deallocate stack space and return via eret
     add     sp, sp, #192
     eret
 
@@ -311,66 +327,71 @@ irq_el1_spx:
     # 1. Allocate space on the stack for TrapFrame + x30 (Total 192 bytes, 16-byte aligned)
     sub     sp, sp, #192
 
-    # 2. Save caller-saved registers x0..x18
-    stp     x0,  x1,  [sp, #0]
-    stp     x2,  x3,  [sp, #16]
-    stp     x4,  x5,  [sp, #32]
-    stp     x6,  x7,  [sp, #48]
-    stp     x8,  x9,  [sp, #64]
-    stp     x10, x11, [sp, #80]
-    stp     x12, x13, [sp, #96]
-    stp     x14, x15, [sp, #112]
-    stp     x16, x17, [sp, #128]
-    str     x18,      [sp, #144]
+    # 2. Stash entry sp in x19 (callee-saved) so we can still find the
+    #    TrapFrame after a nested IRQ + scheduler switch_to.
+    mov     x19, sp
 
-    # 3. Save x30 (LR) at offset 184
-    str     x30,      [sp, #184]
+    # 3. Save caller-saved registers x0..x18
+    stp     x0,  x1,  [x19, #0]
+    stp     x2,  x3,  [x19, #16]
+    stp     x4,  x5,  [x19, #32]
+    stp     x6,  x7,  [x19, #48]
+    stp     x8,  x9,  [x19, #64]
+    stp     x10, x11, [x19, #80]
+    stp     x12, x13, [x19, #96]
+    stp     x14, x15, [x19, #112]
+    stp     x16, x17, [x19, #128]
+    str     x18,      [x19, #144]
 
-    # 4. Save CSRs (spsr_el1, elr_el1, esr_el1, far_el1)
+    # 4. Save x30 (LR) at offset 184
+    str     x30,      [x19, #184]
+
+    # 5. Save CSRs (spsr_el1, elr_el1, esr_el1, far_el1)
     mrs     x9,  spsr_el1
-    str     x9,       [sp, #152]
+    str     x9,       [x19, #152]
     mrs     x10, elr_el1
-    str     x10,      [sp, #160]
+    str     x10,      [x19, #160]
     mrs     x11, esr_el1
-    str     x11,      [sp, #168]
+    str     x11,      [x19, #168]
     mrs     x12, far_el1
-    str     x12,      [sp, #176]
+    str     x12,      [x19, #176]
 
-    # 5. Ack the GIC: read GICC_IAR (PA 0x0801000C)
+    # 6. Ack the GIC: read GICC_IAR (PA 0x0801000C)
     movz    x0, #0x000C
     movk    x0, #0x0801, lsl #16
     ldr     w0, [x0]             // w0 = interrupt ID
 
-    # 6. Early EOI: write the IAR value to GICC_EOIR (PA 0x08010010) immediately
+    # 7. Early EOI: write the IAR value to GICC_EOIR (PA 0x08010010) immediately
     # This ensures that GICv2 clears the active status of this IRQ before we potentially
     # context-switch away inside the dispatcher.
     movz    x1, #0x0010
     movk    x1, #0x0801, lsl #16
     str     w0, [x1]
 
-    # 7. Call Rust dispatcher
+    # 8. Call Rust dispatcher.  Pass (iar, frame_ptr) in (x0, x1).
+    mov     x1, x19
     bl      irq_handler
 
-    # 8. Restore CSRs
-    ldr     x9,       [sp, #152]
+    # 9. Restore CSRs from the TrapFrame captured at entry.
+    ldr     x9,       [x19, #152]
     msr     spsr_el1, x9
-    ldr     x10,      [sp, #160]
+    ldr     x10,      [x19, #160]
     msr     elr_el1,  x10
 
-    # 9. Restore caller-saved registers x0..x18 and x30 (LR)
-    ldp     x0,  x1,  [sp, #0]
-    ldp     x2,  x3,  [sp, #16]
-    ldp     x4,  x5,  [sp, #32]
-    ldp     x6,  x7,  [sp, #48]
-    ldp     x8,  x9,  [sp, #64]
-    ldp     x10, x11, [sp, #80]
-    ldp     x12, x13, [sp, #96]
-    ldp     x14, x15, [sp, #112]
-    ldp     x16, x17, [sp, #128]
-    ldr     x18,      [sp, #144]
-    ldr     x30,      [sp, #184]
+    # 10. Restore caller-saved registers x0..x18 and x30 (LR) from TrapFrame.
+    ldp     x0,  x1,  [x19, #0]
+    ldp     x2,  x3,  [x19, #16]
+    ldp     x4,  x5,  [x19, #32]
+    ldp     x6,  x7,  [x19, #48]
+    ldp     x8,  x9,  [x19, #64]
+    ldp     x10, x11, [x19, #80]
+    ldp     x12, x13, [x19, #96]
+    ldp     x14, x15, [x19, #112]
+    ldp     x16, x17, [x19, #128]
+    ldr     x18,      [x19, #144]
+    ldr     x30,      [x19, #184]
 
-    # 10. Deallocate stack space and return via eret
+    # 11. Deallocate stack space and return via eret
     add     sp, sp, #192
     eret
 
