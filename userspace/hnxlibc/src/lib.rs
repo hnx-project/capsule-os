@@ -8,6 +8,45 @@ extern "Rust" {
     fn main() -> i32;
 }
 
+/// Number of argv slots populated by the kernel entry trampoline.  Zero on
+/// the legacy `SYSCALL_EXEC` path (no argv materialised).
+#[no_mangle]
+pub static mut __HNX_ARGC: i32 = 0;
+/// Per-argument pointer (parallel to `__HNX_ARGV_LENS`).  Pre-filled with
+/// non-zero sentinel values so the linker keeps these symbols in the
+/// data segment of the OHLK image — CapsuleOS's ohlink-linker currently
+/// drops PT_LOAD segments whose `p_filesz == 0`, so a zero-init `static
+/// mut` would land in unmapped memory and corrupt the process at entry.
+#[no_mangle]
+pub static mut __HNX_ARGV_PTRS: [*const u8; 16] = [0xDEAD_BEEF as *const u8; 16];
+#[no_mangle]
+pub static mut __HNX_ARGV_LENS: [usize; 16] = [0xFFFF_FFFF_FFFF_FFFFusize; 16];
+
+pub fn hnx_argc() -> i32 {
+    unsafe { __HNX_ARGC }
+}
+
+pub fn hnx_argv() -> *const *const u8 {
+    unsafe { __HNX_ARGV_PTRS.as_ptr() }
+}
+
+/// Read the i'th argument as a UTF-8 byte slice.  Returns an empty slice
+/// if the index is out of bounds or the slot was never populated by the
+/// kernel.
+pub fn hnx_arg(i: usize) -> &'static [u8] {
+    unsafe {
+        if (i as i32) >= __HNX_ARGC || i >= __HNX_ARGV_LENS.len() {
+            return &[];
+        }
+        let p = __HNX_ARGV_PTRS[i];
+        let l = __HNX_ARGV_LENS[i];
+        if p.is_null() || l == 0 {
+            return &[];
+        }
+        core::slice::from_raw_parts(p, l)
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 core::arch::global_asm!(
     r#"
@@ -60,6 +99,63 @@ _hnx_exit_fallback:
 
 #[no_mangle]
 pub unsafe extern "C" fn _hnx_user_entry() -> ! {
+    // Capture argc / argv the kernel hands us in x0 / x1 before any
+    // call-clobbering code runs.  The kernel puts argc in x0 and a
+    // pointer to argv[0] in x1; argv entries are 8-byte little-endian
+    // pointers into strings that live just below the argv pointer array
+    // on the user stack.  We compute each string's length by scanning
+    // up to the next entry's pointer; the final entry is bounded by a
+    // 4 KiB ceiling (way larger than any realistic argv string).
+    #[cfg(target_arch = "aarch64")]
+    let (argc_raw, argv_raw): (i64, *const u8) = {
+        let a: i64;
+        let p: *const u8;
+        core::arch::asm!(
+            "mov {0}, x0",
+            "mov {1}, x1",
+            out(reg) a,
+            out(reg) p,
+            options(nomem, preserves_flags),
+        );
+        (a, p)
+    };
+    #[cfg(target_arch = "riscv64")]
+    let (argc_raw, argv_raw): (i64, *const u8) = {
+        let a: i64;
+        let p: *const u8;
+        core::arch::asm!(
+            "mv {0}, a0",
+            "mv {1}, a1",
+            out(reg) a,
+            out(reg) p,
+            options(nomem, preserves_flags),
+        );
+        (a, p)
+    };
+    let argc = argc_raw as i32;
+    if argc > 0 && !argv_raw.is_null() {
+        let argv_ptr_array = argv_raw as *const *const u8;
+        for i in 0..argc as usize {
+            if i >= __HNX_ARGV_PTRS.len() {
+                break;
+            }
+            let s_ptr = *argv_ptr_array.add(i);
+            __HNX_ARGV_PTRS[i] = s_ptr;
+            let next_ptr = if i + 1 < argc as usize {
+                *argv_ptr_array.add(i + 1)
+            } else {
+                s_ptr.add(4096)
+            };
+            let mut len = 0usize;
+            while s_ptr.add(len) < next_ptr && *s_ptr.add(len) != 0 {
+                len += 1;
+            }
+            __HNX_ARGV_LENS[i] = len;
+        }
+        __HNX_ARGC = argc;
+    } else {
+        __HNX_ARGC = 0;
+    }
     let code = main();
     exit(code);
 }
@@ -440,6 +536,18 @@ pub extern "C" fn exec(name: &str) -> i32 {
         return -1;
     }
     syscalls::exec_impl(name) as i32
+}
+
+/// Replace the current process image with `path` and pass `argv` to its
+/// entry point.  Each argv slot is forwarded to the kernel as a (ptr, len)
+/// pair in user VA; the kernel copies the strings onto the new process's
+/// user stack and sets x0=argc / x1=argv_ptr at entry.  This function
+/// never returns on success (the current process is replaced).
+pub fn execve(path: &str, argv: &[&[u8]]) -> i32 {
+    if path.is_empty() {
+        return -1;
+    }
+    syscalls::execve_impl(path, argv)
 }
 
 fn send_dir_command(cmd: &FileAgentCmd) -> i32 {

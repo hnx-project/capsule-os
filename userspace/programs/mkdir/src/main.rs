@@ -70,14 +70,63 @@ fn main() {
 // 3. Capsule OS 入口：hnxlibc 在 _start 之后会调用
 //    `extern "Rust" { fn main() -> i32 }`（见 userspace/hnxlibc/src/lib.rs）。
 //    我们不再自己实现 `_start` 和 `panic_handler`：这两者都由 hnxlibc
-//    统一接管。argv 不通过 syscall 传递（kernel exec 当前不传递 argv），
-//    所以这里 hardcode 一个固定路径让 mkdir 的 EL0 入口能跑通。
+//    统一接管。argv 由 kernel 透传过来 (见 SYSCALL_EXECVE +
+//    `kernel/src/syscall/handlers/process.rs::sys_execve`)，通过
+//    hnxlibc 暴露的 `hnx_argc` / `hnx_arg` 读取。
 #[cfg(not(feature = "host"))]
 #[no_mangle]
 pub fn main() -> i32 {
+    use hnxlibc::{hnx_arg, hnx_argc};
     let env = env::capsule::CapsuleEnv;
-    match env.mkdir("/testdir") {
+    let argc = hnx_argc();
+    let mut recursive = false;
+    let mut target: &[u8] = &[];
+    for i in 1..argc as usize {
+        let a = hnx_arg(i);
+        if a == b"-p" {
+            recursive = true;
+        } else if target.is_empty() {
+            target = a;
+        }
+    }
+    if target.is_empty() {
+        env.write_stderr(b"Usage: mkdir [-p] <directory_path>\n");
+        return 1;
+    }
+    let path_str = match core::str::from_utf8(target) {
+        Ok(s) => s,
+        Err(_) => {
+            env.write_stderr(b"Error: Invalid UTF-8 in argv\n");
+            return 1;
+        }
+    };
+    let res = if recursive {
+        // TODO: 当 fileagent 真正起来后递归创建目录；现在 kernel 端只支持单层
+        match env.mkdir(path_str) {
+            Ok(_) => Ok(()),
+            Err(env::FsError::AlreadyExists) => Ok(()),
+            Err(e) => Err(e),
+        }
+    } else {
+        env.mkdir(path_str)
+    };
+    match res {
         Ok(_) => 0,
-        Err(_) => 1,
+        Err(env::FsError::AlreadyExists) => {
+            env.write_stderr(b"Error: Directory already exists\n");
+            1
+        }
+        Err(env::FsError::PathNotFound) => {
+            env.write_stderr(b"Error: Parent path not found\n");
+            1
+        }
+        Err(env::FsError::PermissionDenied) => {
+            env.write_stderr(b"Error: Permission denied\n");
+            1
+        }
+        Err(_) => {
+            env.write_stderr(b"Error: Unknown Error creating directory\n");
+            1
+        }
     }
 }

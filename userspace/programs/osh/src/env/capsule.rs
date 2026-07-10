@@ -60,10 +60,22 @@ impl Environment for CapsuleEnv {
         // TODO: 等待环境变量子系统就绪。
     }
 
-    fn execute(&self, cmd: &str, _args: &[&str]) -> Result<i32, ShellError> {
-        // hnxlibc::exec 在内部走 SYSCALL_EXEC；CapsuleOS 暂时不向子进程
-        // 传递 argv，因此这里只转发 cmd name。
-        let code = hnxlibc::exec(cmd);
+    fn execute(&self, cmd: &str, args: &[&str]) -> Result<i32, ShellError> {
+        // Forward to SYSCALL_EXECVE with argv[0]=cmd, argv[1..]=args.
+        // The kernel materialises argv on the child process's user stack
+        // and hands argc / argv in x0/x1 at entry; see
+        // `kernel/src/syscall/handlers/process.rs::sys_execve` and the
+        // hnxlibc user entry trampoline in `userspace/hnxlibc/src/lib.rs`.
+        let mut argv_storage: [&[u8]; 16] = [&[]; 16];
+        argv_storage[0] = cmd.as_bytes();
+        for (i, a) in args.iter().enumerate() {
+            if i + 1 >= 16 {
+                break;
+            }
+            argv_storage[i + 1] = a.as_bytes();
+        }
+        let count = core::cmp::min(args.len() + 1, 16);
+        let code = hnxlibc::execve(cmd, &argv_storage[..count]);
         Ok(code)
     }
 

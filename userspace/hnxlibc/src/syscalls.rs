@@ -59,6 +59,7 @@ pub const SYSCALL_GETCWD: u32 = 104;
 pub const SYSCALL_CHDIR: u32 = 105;
 pub const SYSCALL_EXEC: u32 = 110;
 pub const SYSCALL_LOAD_BINARY: u32 = 111;
+pub const SYSCALL_EXECVE: u32 = 112;
 
 pub fn exit(code: i32) -> ! {
     syscall!(SYSCALL_EXIT, code as usize, 0, 0, 0, 0, 0);
@@ -117,6 +118,45 @@ pub fn exec_impl(name: &str) -> i32 {
     let local_name = name.as_bytes();
     let ptr = local_name.as_ptr();
     syscall!(SYSCALL_EXEC, ptr as usize, len, 0, 0, 0, 0) as i32
+}
+
+/// execve-like syscall: replace the current process image with `path` and
+/// forward `argv` to its entry point.  `argv` is a slice of byte slices
+/// (typically argv[0] = program name, argv[1..] = arguments).
+///
+/// Each user-space arg is materialised onto the new process's stack by
+/// the kernel, then `argc` is delivered in x0 and `argv` in x1 by the
+/// hnxlibc user entry trampoline.
+pub fn execve_impl(path: &str, argv: &[&[u8]]) -> i32 {
+    let path_ptr = path.as_bytes().as_ptr();
+    let path_len = path.len();
+    let argc = argv.len();
+
+    // The kernel reads (ptr,len) pairs as 16-byte records from this array.
+    // argv slots must live until the syscall returns, so we keep them on
+    // the calling stack.
+    let mut pairs: [[u8; 16]; 16] = [[0u8; 16]; 16];
+    for (i, arg) in argv.iter().enumerate() {
+        if i >= 16 {
+            break;
+        }
+        let ptr_bytes = (arg.as_ptr() as u64).to_le_bytes();
+        let len_bytes = (arg.len() as u64).to_le_bytes();
+        pairs[i][0..8].copy_from_slice(&ptr_bytes);
+        pairs[i][8..16].copy_from_slice(&len_bytes);
+    }
+
+    let argv_ptr = if argc > 0 { pairs.as_ptr() as usize } else { 0 };
+
+    syscall!(
+        SYSCALL_EXECVE,
+        path_ptr as usize,
+        path_len,
+        argv_ptr,
+        argc,
+        0,
+        0
+    ) as i32
 }
 
 pub fn load_binary(vmo_handle: usize, name: &str) -> Result<u64, Status> {

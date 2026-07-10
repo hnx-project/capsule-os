@@ -186,6 +186,13 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
             }
         }
 
+        SYSCALL_EXECVE => {
+            match handlers::process::sys_execve(table, arg0, arg1, arg2, arg3) {
+                Ok(_) => 0,
+                Err(e) => e.to_raw(),
+            }
+        }
+
 SYSCALL_LOAD_BINARY => {
             let vmo_handle = arg0 as u32;
             let name_ptr = arg1;

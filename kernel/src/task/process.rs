@@ -78,6 +78,23 @@ impl Process {
     }
 
     pub fn launch_user_program(name: &'static str, binary_bytes: &[u8]) -> Result<()> {
+        Self::launch_user_program_with_argv(name, binary_bytes, &[], &[], 0)
+    }
+
+    /// Launch a fresh EL0 program with `argc`/`argv` materialised onto its
+    /// user stack.  `arg_strs` is an array of byte buffers and `arg_lens`
+    /// records the valid byte count of each entry; both slices must have
+    /// the same length (>= `argc`).  The strings are copied in argv order
+    /// to the top of the freshly mapped 16 KiB user stack, followed by the
+    /// argv pointer array (so the stack top points at argv[0]).  The new
+    /// thread is then started with x0=argc and x1=argv_ptr.
+    pub fn launch_user_program_with_argv(
+        name: &'static str,
+        binary_bytes: &[u8],
+        arg_strs: &[[u8; 256]],
+        arg_lens: &[usize],
+        argc: usize,
+    ) -> Result<()> {
         use crate::mm::vmo::Vmo;
         use crate::mm::vmar::VmarFlags;
         use crate::task::thread::{Thread, ThreadState};
@@ -203,11 +220,78 @@ impl Process {
         thread.handle_table = &proc.handle_table;
         thread.state = ThreadState::Ready;
 
+        // Always normalise r[0]/r[1] to argc/argv_ptr semantics at
+        // process entry.  The hnxlibc `_hnx_user_entry` trampoline
+        // reads x0/x1 directly to populate its argv table, so legacy
+        // launches (argc == 0) must NOT leave r[0] = entry / r[1] =
+        // stack_top in place; the trampoline would interpret those
+        // huge values as a non-empty argv and dereference garbage.
+        thread.context.r[0] = argc as u64;
+        thread.context.r[1] = 0;
+
+        // Materialise argv on the new process's user stack.  We grow the
+        // argv area downward from `stack_top`: first the argv pointer
+        // array (8 bytes per slot, argc slots), then the argv string
+        // payloads (each padded to 16-byte alignment).  `argv_user_va`
+        // ends up pointing at argv[0].  x0=argc, x1=argv_user_va are
+        // then handed to the user entry trampoline via ThreadContext.
+        if argc > 0 {
+            let argv_array_bytes = argc * 8;
+            let mut string_total: usize = 0;
+            for i in 0..argc {
+                string_total += (arg_lens[i] + 15) & !15;
+            }
+            let argv_area = argv_array_bytes + string_total + 16;
+
+            let mut new_sp = (stack_top - argv_area) & !(15usize);
+            let mut cursor = new_sp;
+
+            // First: copy each argv string payload upward, capturing the
+            // user-VA of each one so the pointer array below points at it.
+            let mut arg_vas: [usize; 16] = [0usize; 16];
+            for i in 0..argc {
+                let s_len = arg_lens[i];
+                let padded = (s_len + 15) & !15;
+                let dst = cursor;
+                crate::syscall::handlers::ipc::safe_copy_to_user(
+                    l0_user_pa,
+                    &arg_strs[i][..s_len],
+                    dst,
+                    s_len,
+                )?;
+                arg_vas[i] = dst;
+                cursor += padded;
+            }
+
+            // Then: write the argv pointer array (little-endian u64 each)
+            // at the location the user will see as argv[0].
+            let argv_ptr_va = cursor;
+            for i in 0..argc {
+                let bytes = (arg_vas[i] as u64).to_le_bytes();
+                crate::syscall::handlers::ipc::safe_copy_to_user(
+                    l0_user_pa,
+                    &bytes,
+                    argv_ptr_va + i * 8,
+                    8,
+                )?;
+            }
+            cursor += argv_array_bytes;
+
+            // The new initial sp points just past the argv array; SP at
+            // entry is therefore the post-argv stack pointer, while argv
+            // lives directly under it.  argv[0] is at argv_ptr_va.
+            let post_argv_sp = (cursor + 15) & !15;
+
+            thread.context.user_sp = post_argv_sp as u64;
+            thread.context.r[1] = argv_ptr_va as u64;
+        }
+
         unsafe {
             crate::task::scheduler::SCHEDULER.add(thread);
         }
 
-        crate::log_info!("LAUNCHER", "Successfully launched program '{}' at EL0 (entry={:#x}, pid={})", name, user_entry, pid);
+        crate::log_info!("LAUNCHER", "Successfully launched program '{}' at EL0 (entry={:#x}, pid={}, argc={})",
+            name, user_entry, pid, argc);
 
         Ok(())
     }

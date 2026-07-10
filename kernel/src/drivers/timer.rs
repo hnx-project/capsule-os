@@ -180,10 +180,12 @@ pub fn handle_tick_from_irq(frame: *mut crate::arch::aarch64::trap::TrapFrame) {
         // Trigger the preemptive scheduler
         crate::task::scheduler::SCHEDULER.schedule();
 
-        // Lightweight print, throttled to every 100 ticks.
-        if count % 100 == 0 {
-            crate::log_info!("TIMER", "tick {}", count);
-        }
+        // Tick log disabled: it drowned out user-space I/O during
+        // osh REPL sessions and made argv / cwd debugging painful.
+        // Re-enable locally when chasing scheduler / timer races.
+        // if count % 100 == 0 {
+        //     crate::log_info!("TIMER", "tick {}", count);
+        // }
     }
 }
 
@@ -205,9 +207,9 @@ pub fn handle_tick() {
         // Trigger the preemptive scheduler (no frame persistence here).
         crate::task::scheduler::SCHEDULER.schedule();
 
-        // Lightweight print, throttled to every 100 ticks.
-        if count % 100 == 0 {
-            crate::log_info!("TIMER", "tick {}", count);
-        }
+        // Tick log disabled: see note in handle_tick() above.
+        // if count % 100 == 0 {
+        //     crate::log_info!("TIMER", "tick {}", count);
+        // }
     }
 }

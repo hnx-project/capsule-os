@@ -52,5 +52,6 @@ pub const SYSCALL_CHDIR: u32 = 105;
 
 pub const SYSCALL_EXEC: u32 = 110;
 pub const SYSCALL_LOAD_BINARY: u32 = 111;
+pub const SYSCALL_EXECVE: u32 = 112;
 
-pub const SYSCALL_NR: u32 = 112;
+pub const SYSCALL_NR: u32 = 113;
