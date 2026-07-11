@@ -47,7 +47,46 @@ fn intern_name(name: &str) -> Result<&'static str> {
 
 pub fn sys_exit(code: i32) -> ! {
     crate::log_info!("SYSCALL", "Process exited with code {}", code);
-    loop {}
+
+    // Mark the caller thread Dead and immediately reschedule.  Without
+    // this, the calling thread stays in its current EL0 trap context,
+    // the timer tick keeps selecting it via the self.threads fallback
+    // (it's still `Running` from the scheduler's point of view), and
+    // the system spins forever in SCHED-SAME.  The same pattern is
+    // already used in `sys_exec` / `sys_execve` for the "caller is
+    // replaced by the new process" case; here the caller is replaced
+    // by *nothing* and we rely on `schedule()` to switch to whatever
+    // other thread is alive (or hit the "all dead" halt path).
+    if let Some(caller) =
+        unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() }
+    {
+        unsafe {
+            (*caller).state = crate::task::thread::ThreadState::Dead;
+            // Park the dead context at a non-zero PC / EL0t so a
+            // racing tick that snapshots it before schedule() takes
+            // effect still has *some* valid value (avoid the EC=0x0
+            // ELR=0x0 abort that surfaced during bring-up).
+            (*caller).context.elr = 0x1usize as u64;
+            (*caller).context.spsr = 0x000;
+        }
+    }
+    unsafe { crate::task::scheduler::SCHEDULER.schedule(); }
+
+    // `schedule()` either switched to another thread (and will not
+    // return) or hit the all-dead halt path.  The `wfe` / `wfi`
+    // fallback is purely defensive: if a future change to schedule()
+    // ever makes it return when no thread is runnable, we want the
+    // CPU to park instead of busy-looping.
+    loop {
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            core::arch::asm!("wfe");
+        }
+        #[cfg(target_arch = "riscv64")]
+        unsafe {
+            core::arch::asm!("wfi");
+        }
+    }
 }
 
 pub fn sys_exec(table: &HandleTable, program_name: &str) -> Result<()> {
