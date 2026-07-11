@@ -127,6 +127,13 @@ impl Process {
                 let entry = core::ptr::read_volatile(kernel_l0_va.add(i));
                 core::ptr::write_volatile(user_l0_va.add(i), entry);
             }
+            // Cache maintenance on the L0 entries we just wrote --
+            // without it, a later MMU walk through TTBR0_EL1 can read
+            // a stale entry from the data cache while the new bytes
+            // are still sitting in a write buffer.
+            core::arch::asm!("dc civac, {0}", in(reg) user_l0_va, options(nomem, nostack));
+            core::arch::asm!("dc civac, {0}", in(reg) user_l0_va.add(511 * 8), options(nomem, nostack));
+            core::arch::asm!("dsb ish", options(nomem, nostack));
 
             let mut ttbr0_reg: u64;
             core::arch::asm!("mrs {0}, ttbr0_el1", out(reg) ttbr0_reg, options(nomem, nostack));

@@ -36,3 +36,8 @@ qemu_pids/
 *.ohc
 *.ohlib
 kernel/files/
+
+# Debug artifacts (EL0-FAULT captures, panic HTML dumps, etc.)
+cat-test-debug*.html
+*-debug.html
+debug-*.html

@@ -115,6 +115,20 @@ unsafe fn write_pte(table_pa: usize, idx: usize, entry: u64) {
         table_pa as *mut u64
     };
     core::ptr::write_volatile(ptr.add(idx), entry);
+    // CRITICAL: clean+invalidate the cache line covering the PTE we
+    // just wrote.  Without this, the data cache can hold a stale
+    // copy of the old entry and the MMU will walk a stale PTE on
+    // the next translation.  ARMv8 requires a DSB after the data
+    // cache maintenance before the new value is architecturally
+    // observable to translation table walks, so we pair the
+    // `dc civac` with a `dsb ish` here at the lowest possible level
+    // -- every PTE writer gets the maintenance for free, and the
+    // page-level TLB invalidation in `map_page` still works on top.
+    if crate::mm::phys::mmu_is_active() {
+        let line_va = pa_to_kernel_va(table_pa) + idx * 8;
+        core::arch::asm!("dc civac, {0}", in(reg) line_va, options(nomem, nostack));
+        core::arch::asm!("dsb ish", options(nomem, nostack));
+    }
 }
 
 /// Page-mapping flags consumed by `map_page` and `unmap_page`.
@@ -309,7 +323,34 @@ unsafe fn shatter_l1_block(l1_pa: usize, l1_idx: usize, original: u64) -> Result
     // Replace L1 block with a Table entry pointing at the new L2.
     let l1_entry = pa_to_pte_addr(new_l2_pa) | PTE_VALID | PTE_TYPE_TABLE;
     write_pte(l1_pa, l1_idx, l1_entry);
+    // The write_pte above already evicted the cache line covering the
+    // L1 entry, but the loop above wrote 512 entries into the new L2
+    // page; those cache lines still need flushing before the MMU walks
+    // the new L2 for the first time.
+    flush_table_page(new_l2_pa);
     Ok(new_l2_pa)
+}
+
+/// Walk every cache line of a freshly-installed table page (used after
+/// shattering) and clean+invalidate each one.  Without this, a Cortex-A
+/// CPU can hold the all-zeroes image of the new page in its data cache
+/// (the L2 table was just zeroed by `zero_page`) and return stale
+/// zeroes to the MMU on the first walk.
+#[inline(always)]
+unsafe fn flush_table_page(table_pa: usize) {
+    if !crate::mm::phys::mmu_is_active() { return; }
+    let base = pa_to_kernel_va(table_pa);
+    let mut ctr: u64;
+    core::arch::asm!("mrs {0}, ctr_el0", out(reg) ctr, options(nomem, nostack));
+    let dlog2 = (ctr >> 16) & 0xf;
+    let d_step = 4usize << dlog2;
+    let mut cur = base & !(d_step - 1);
+    let end = base + PAGE_SIZE;
+    while cur < end {
+        core::arch::asm!("dc civac, {0}", in(reg) cur, options(nomem, nostack));
+        cur += d_step;
+    }
+    core::arch::asm!("dsb ish", options(nomem, nostack));
 }
 
 /// Shatter an L2 Block entry: replace the 2 MiB block with a fresh L3 table
@@ -337,6 +378,11 @@ unsafe fn shatter_l2_block(l2_pa: usize, l2_idx: usize, original: u64) -> Result
 
     let l2_entry = pa_to_pte_addr(new_l3_pa) | PTE_VALID | PTE_TYPE_TABLE;
     write_pte(l2_pa, l2_idx, l2_entry);
+    // The write_pte above already evicted the cache line covering the
+    // L2 entry, but the loop above wrote 512 entries into the new L3
+    // page; those cache lines still need flushing before the MMU walks
+    // the new L3 for the first time.
+    flush_table_page(new_l3_pa);
     Ok(new_l3_pa)
 }
 
