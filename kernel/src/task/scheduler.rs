@@ -215,6 +215,37 @@ impl Scheduler {
             print_switch(prev_name, next_name);
             self.current_idx = Some(next_idx);
 
+            // **Short-circuit when there's nothing to switch to.**  When a
+            // timer IRQ nests inside kernel EL1 (e.g. during
+            // `sys_spawn`'s safe-copy loops), `schedule()` runs with
+            // `current_idx == loader` and the only Ready thread is
+            // `loader` itself, so `pop_next` returns `loader` again.
+            // Calling `switch_to(loader, loader)` would still execute
+            // its trailing `ret x30 = user_eret_stub → eret`, which
+            // **hijacks** the calling kernel stack frame: control flow
+            // jumps to EL0 as if we'd finished a context switch, the
+            // syscall handler's epilogue (`msr elr_el1; eret`) never
+            // runs, and the original `syscalls::spawn("devmgr", ...)`
+            // SVC never returns.  That cascades into the user's
+            // `tp!("T11: returned from spawn(devmgr)")` never firing
+            // because the loader's PC is stuck at the SVC+4 PC inside
+            // an unbroken timer-tick → switch_to → eret → SVC trap →
+            // timer IRQ → switch_to → eret loop.
+            //
+            // Skip the `switch_to` + `ret` entirely when we're already
+            // on the thread we'd be switching to.  The time-slice
+            // accounting (`t.reset_time_slice` above) and state
+            // transition (Ready → Running) have already been applied
+            // in this same scope, so control returning to the caller
+            // of `schedule()` is the correct semantic: we stay on the
+            // current kernel stack frame and resume the interrupted
+            // syscall / IRQ handler's epilogue.
+            if prev_idx == next_idx {
+                crate::log_info!("SCHED-SAME", "prev_idx == next_idx == {} (skip switch_to hijack)", prev_idx);
+                self.unlock();
+                return;
+            }
+
             let prev_context_ptr = &mut self.threads[prev_idx].as_mut().unwrap().context as *mut _;
             let next_context_ptr = &mut self.threads[next_idx].as_mut().unwrap().context as *mut _;
 
