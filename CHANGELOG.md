@@ -16,13 +16,46 @@ it leaves pre-1.0 development.
 
 ## [Unreleased]
 
-### Planned for 0.5.10
-- Init anchor respawn (kernel-side spawn of `system/bin/init` when
-  the boot anchor pid 1 dies; see Phase 5.5 follow-up in `TODO.md`).
-- Open-source license selection (placeholder in `LICENSE` pending
-  maintainer decision; see `README.md` "License" section).
+### Planned for 0.5.10+
 - Host-side unit tests for the no_std-safe subset of `kernel/` and
-  `hnxstd/`.
+  `hnxstd/` (currently no `#[cfg(test)]` paths can actually run
+  inside the `aarch64-unknown-none` or `riscv64imac-unknown-none-elf`
+  targets; the host-testable subset has not been carved out).
+- Init anchor respawn follow-ups:
+  - Syscall `sys_execve` argv copy path is reportedly slow on
+    respawn (init prints `init: handing off to osh` then enters a
+    `SCHED-SAME` spin); the user-space `sys_execve` handler in
+    `kernel/src/syscall/handlers/process.rs:145` needs profiling.
+  - SError fault-injection harness — the `aarch64_serror_el0_handler`
+    path is now wired up, but no test has been observed to actually
+    trigger an SError from EL0 in 30 s of normal QEMU boot.
+
+### Landed since 0.5.9 (on `develop`, pending release as 0.5.10)
+- **Init anchor respawn** (`555333b feat(init-anchor)`): new module
+  `kernel/src/task/init_respawn.rs`.  `sys_exit`,
+  `aarch64_sync_el0_handler` non-SVC branch, and
+  `aarch64_serror_el0_handler` each consult
+  `respawn_init_if_anchor(pid)` before marking the caller `Dead`.
+  When the dying caller is the boot anchor (pid 1) and the respawn
+  budget has not been spent, the kernel launches
+  `system/bin/init` once.  Verified end-to-end: after the loader
+  triggers an EL0-FAULT, the kernel prints
+  `RESPAWN boot anchor (pid=1) died; spawned system/bin/init`,
+  launches the replacement, and `init` reaches
+  `init: starting…` and `init: handing off to osh` before
+  entering the user-space `sys_execve` path.
+- **Open-source license: Apache-2.0** — `LICENSE` now contains the
+  full Apache-2.0 text (verbatim from
+  <https://www.apache.org/licenses/LICENSE-2.0.txt>).  A new
+  `NOTICE` file carries the project-level copyright and the
+  subtree-attributed third-party projects
+  (`bootloader/capsule-bootloader`, `kernel/hnx-core`,
+  `tools/ohlink-cc/`).  Apache-2.0 §4(d) requires the NOTICE file
+  to be redistributed alongside any binaries or modified sources,
+  so the file is part of the standard source distribution.
+  Trademark notice (CapsuleOS, Pangu, HNX-Project) is reserved
+  per Apache-2.0 §6 — see `NOTICE` and the "License" section of
+  `README.md`.
 
 ---
 

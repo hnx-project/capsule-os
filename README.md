@@ -200,9 +200,13 @@ These are **explicit gaps** in the current `develop` branch, not latent bugs:
 
 ## 📜 License
 
-CapsuleOS is **not yet open-source licensed**.  The current default is **All Rights Reserved** — the absence of a license file is intentionally restrictive (see [`LICENSE`](./LICENSE) for the full legal note and the maintainer's contact).  For commercial use, redistribution, dual-licensing, or any kind of permission, contact <tinchychin97@gmail.com>.
+CapsuleOS is released under the **Apache License, Version 2.0** (January 2004).  You can find the full text in [`LICENSE`](./LICENSE) and the project-level attribution in [`NOTICE`](./NOTICE).  A human-readable summary — including the patent grant and the patent-retaliation termination clause — is available at <https://www.apache.org/licenses/LICENSE-2.0>.
 
-The maintainer intends to release under **Apache-2.0** (preferred), **MIT**, or **BSD-3-Clause** once a decision is made.  The decision is tracked in the `License` milestone; contributors and downstream users are not asked to sign anything until the license text is in this directory.
+In short: commercial use, modification, redistribution, and derivative works are permitted, provided that the `LICENSE` and `NOTICE` files travel with the binary or source distribution, any modifications are marked, and the contributors' patent grants are respected (i.e. do not file patent litigation alleging the Work infringes — §3 terminates the patent grant in that case).
+
+The three vendored subtree projects (`bootloader/capsule-bootloader`, `kernel/hnx-core`, `tools/ohlink-cc`) carry their own upstream license texts in their respective subdirectories and remain under those original terms; see `NOTICE` for the consolidated attribution.
+
+Trademarks ("CapsuleOS", "Pangu", "HNX-Project") are reserved by the maintainer.  Apache-2.0 §6 does not grant permission to use these in product names or marketing without prior written consent.  Contact <tinchychin97@gmail.com> for trademark enquiries.
 
 ---
 
