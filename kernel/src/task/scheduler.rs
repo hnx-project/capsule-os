@@ -123,12 +123,63 @@ impl Scheduler {
         self.unlock();
     }
 
+    /// Pop the highest-priority ready thread, skipping any thread that
+    /// has been marked `ThreadState::Dead` since it was last enqueued.
+    ///
+    /// **Why we skip Dead here**: an EL0 fault path (`aarch64_sync_el0_handler`
+    /// and the new `aarch64_serror_el0_handler`) marks the current
+    /// user thread `Dead` *and then* calls `SCHEDULER.schedule()`.  At
+    /// that point the dying thread is still sitting in some priority
+    /// queue (it was Running a moment ago, got requeued on the
+    /// previous timer tick, and never re-popped because the fault
+    /// stole the timer).  Without the Dead filter, `pop_next` would
+    /// return the dead thread itself, `prev_idx == next_idx` would
+    /// short-circuit, and the system would loop forever in
+    /// `SCHED-SAME`.  With the filter, we re-scan up to `MAX_THREADS`
+    /// candidates; if every queued thread is Dead, fall through to
+    /// a linear scan of `self.threads` to find a still-Running/Ready
+    /// thread (e.g. devmgr, which lives outside the ready queues
+    /// while it's in EL0).  This is O(N) per call but N is tiny
+    /// (MAX_THREADS = 16) and the only alternatives — pruning dead
+    /// entries from every queue on every kill, or maintaining a
+    /// separate "alive" bitmap — are far more invasive.
     fn pop_next_from_all_queues(&mut self) -> Option<usize> {
-        for i in 0..PRIORITY_LEVELS {
-            if let Some(idx) = self.queues[i].pop_highest_priority() {
-                return Some(idx);
+        for _ in 0..MAX_THREADS {
+            let candidate = (0..PRIORITY_LEVELS)
+                .find_map(|i| self.queues[i].pop_highest_priority());
+            match candidate {
+                None => {
+                    // Ready queues are empty (or every queued thread
+                    // we examined was Dead and was therefore already
+                    // dropped).  Look for any thread that is *not*
+                    // Dead — typically one stuck in Running because
+                    // it wasn't requeued when its time slice expired
+                    // (e.g. the `loader` was killed before its next
+                    // tick, but `devmgr` is still in EL0).
+                    return self
+                        .threads
+                        .iter()
+                        .enumerate()
+                        .find_map(|(i, t)| match t {
+                            Some(thread) if thread.state != ThreadState::Dead => Some(i),
+                            _ => None,
+                        });
+                }
+                Some(idx) => {
+                    let is_dead = self.threads[idx]
+                        .as_ref()
+                        .map(|t| t.state == ThreadState::Dead)
+                        .unwrap_or(true);
+                    if !is_dead {
+                        return Some(idx);
+                    }
+                    // Drop the dead candidate and try the next one.
+                }
             }
         }
+        // Every ready-queue entry across every priority was Dead, and
+        // the linear scan of `self.threads` found nothing alive
+        // either.  Caller will hit the "all dead" branch.
         None
     }
 
@@ -217,6 +268,15 @@ impl Scheduler {
             print_switch(prev_name, next_name);
             self.current_idx = Some(next_idx);
 
+            // The SCHED-SAME short-circuit only applies when `prev`
+            // was a live Running thread that the pop_next logic
+            // happened to re-select (e.g. the only ready thread is
+            // the same one we just ran).  If the caller killed the
+            // prev thread before invoking `schedule()` (the EL0
+            // fault / SError path), `prev_state` is already `Dead`
+            // and we *must* perform the switch so the dispatcher
+            // can `eret` into a non-dead context.
+
             // **Short-circuit when there's nothing to switch to.**  When a
             // timer IRQ nests inside kernel EL1 (e.g. during
             // `sys_spawn`'s safe-copy loops), `schedule()` runs with
@@ -242,7 +302,7 @@ impl Scheduler {
             // of `schedule()` is the correct semantic: we stay on the
             // current kernel stack frame and resume the interrupted
             // syscall / IRQ handler's epilogue.
-            if prev_idx == next_idx {
+            if prev_idx == next_idx && prev_state != ThreadState::Dead {
                 crate::log_info!("SCHED-SAME", "prev_idx == next_idx == {} (skip switch_to hijack)", prev_idx);
                 self.unlock();
                 // Use a volatile write to ensure the compiler doesn't elide
