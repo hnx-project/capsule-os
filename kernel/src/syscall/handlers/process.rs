@@ -57,9 +57,17 @@ pub fn sys_exit(code: i32) -> ! {
     // replaced by the new process" case; here the caller is replaced
     // by *nothing* and we rely on `schedule()` to switch to whatever
     // other thread is alive (or hit the "all dead" halt path).
-    if let Some(caller) =
+    //
+    // If the caller is the boot anchor (pid 1) and we still have a
+    // respawn budget, the kernel spawns `system/bin/init` *before*
+    // marking the caller Dead so the scheduler's pop_next pass can
+    // pick the new init as a Ready thread.  The respawn only fires
+    // once per boot; see `task::init_respawn` for the rationale.
+    let caller_pid: u64 = if let Some(caller) =
         unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() }
     {
+        let pid = unsafe { (*caller).process_id };
+        crate::task::init_respawn::respawn_init_if_anchor(pid);
         unsafe {
             (*caller).state = crate::task::thread::ThreadState::Dead;
             // Park the dead context at a non-zero PC / EL0t so a
@@ -69,7 +77,15 @@ pub fn sys_exit(code: i32) -> ! {
             (*caller).context.elr = 0x1usize as u64;
             (*caller).context.spsr = 0x000;
         }
-    }
+        pid
+    } else {
+        0
+    };
+    // If `get_current_thread_ptr` returned None (no current
+    // thread), the caller_pid is 0 and the respawn above is a
+    // no-op.  We still want to fall through to schedule() so the
+    // kernel either picks another thread or halts.
+    let _ = caller_pid;
     unsafe { crate::task::scheduler::SCHEDULER.schedule(); }
 
     // `schedule()` either switched to another thread (and will not

@@ -182,11 +182,19 @@ pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
             let spsr = (*frame).spsr;
             if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
                 let far = unsafe { (*frame).far };
+                let pid = (*t).process_id;
                 crate::log_error!(
                     "EL0-FAULT",
                     "EC={:#x} ESR={:#x} ELR={:#x} FAR={:#x} SPSR={:#x} thread=#{} -- KILLED thread to prevent looping exception",
                     ec, esr, elr, far, spsr, (*t).id
                 );
+                // If the fault killed the boot anchor (pid 1), try
+                // to bring `system/bin/init` back BEFORE we mark
+                // the caller Dead and reschedule — otherwise the
+                // scheduler's pop_next will only see other ready
+                // threads (if any) and the system will halt even
+                // when a fresh init would have kept it running.
+                crate::task::init_respawn::respawn_init_if_anchor(pid);
                 (*t).state = crate::task::thread::ThreadState::Dead;
                 crate::task::scheduler::SCHEDULER.schedule();
             } else {
@@ -248,11 +256,19 @@ pub extern "C" fn aarch64_serror_el0_handler(frame: *mut TrapFrame) {
         if let Some(t) =
             crate::task::scheduler::SCHEDULER.get_current_thread_ptr()
         {
+            let pid = (*t).process_id;
             crate::log_error!(
                 "SError-FAULT",
                 "EC={:#x} ESR={:#x} ISS={:#x} AET={:#x} ELR={:#x} FAR={:#x} SPSR={:#x} thread=#{} -- KILLED thread to prevent looping exception",
                 ec, esr, iss, aet, elr, far, spsr, (*t).id
             );
+            // Same init-anchor respawn contract as the sync EL0
+            // fault path: if the SError killed the boot anchor, the
+            // kernel attempts one respawn of `system/bin/init`
+            // before falling through to the scheduler.  See
+            // `task::init_respawn` for the rationale on the
+            // "consume once" budget.
+            crate::task::init_respawn::respawn_init_if_anchor(pid);
             (*t).state = crate::task::thread::ThreadState::Dead;
             crate::task::scheduler::SCHEDULER.schedule();
         } else {
