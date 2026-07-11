@@ -50,7 +50,6 @@ pub struct Scheduler {
     threads: [Option<Thread>; MAX_THREADS],
     queues: [ThreadQueue; PRIORITY_LEVELS],
     current_idx: Option<usize>,
-    tick_count: usize,
     running: bool,
 }
 
@@ -66,7 +65,6 @@ impl Scheduler {
             threads: [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None],
             queues: [ThreadQueue::new(), ThreadQueue::new(), ThreadQueue::new(), ThreadQueue::new(), ThreadQueue::new()],
             current_idx: None,
-            tick_count: 0,
             running: false,
         }
     }
@@ -229,8 +227,6 @@ impl Scheduler {
             return;
         }
 
-        self.tick_count = self.tick_count.wrapping_add(1);
-
         let prev_idx = match self.current_idx {
             Some(idx) => idx,
             None => {
@@ -388,25 +384,6 @@ impl Scheduler {
 
             self.current_idx = None;
         }
-    }
-
-    pub fn tick(&mut self) {
-        self.schedule();
-    }
-
-    pub fn current_thread_name(&self) -> &'static str {
-        self.lock();
-        let name = if let Some(idx) = self.current_idx {
-            if let Some(ref t) = self.threads[idx] {
-                t.name
-            } else {
-                "none"
-            }
-        } else {
-            "none"
-        };
-        self.unlock();
-        name
     }
 
     pub fn get_current_thread_ptr(&mut self) -> Option<*mut Thread> {

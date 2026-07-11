@@ -1,5 +1,4 @@
 pub mod console;
-pub mod cpu;
 pub mod mmu;
 
 #[cfg(target_arch = "aarch64")]

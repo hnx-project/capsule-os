@@ -1,4 +1,3 @@
-pub mod handle;
 pub mod handle_table;
 pub mod rights;
 

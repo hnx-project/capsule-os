@@ -173,43 +173,6 @@ impl FileDescriptorTable {
     }
 }
 
-pub struct PathResolver {
-    pub vnode_id: u64,
-    pub components: [heapless::String<64>; 16],
-    pub component_count: usize,
-}
-
-impl PathResolver {
-    pub fn new() -> Self {
-        PathResolver {
-            vnode_id: 0,
-            components: [const { heapless::String::new() }; 16],
-            component_count: 0,
-        }
-    }
-
-    pub fn parse(&mut self, path: &str) -> Result<()> {
-        self.component_count = 0;
-
-        if path.is_empty() {
-            return Err(Status::InvalidArgs);
-        }
-
-        let mut components_iter = path.split('/').filter(|s| !s.is_empty());
-
-        for component in components_iter.by_ref() {
-            if self.component_count >= 16 {
-                return Err(Status::InvalidArgs);
-            }
-            self.components[self.component_count].clear();
-            self.components[self.component_count].push_str(component).map_err(|_| Status::InvalidArgs)?;
-            self.component_count += 1;
-        }
-
-        Ok(())
-    }
-}
-
 static mut VNODE_TABLE: VnodeTable = VnodeTable::new();
 static mut FD_TABLE: FileDescriptorTable = FileDescriptorTable::new();
 

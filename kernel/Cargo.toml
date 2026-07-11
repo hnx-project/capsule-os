@@ -9,7 +9,6 @@ crate-type = ["staticlib"]
 
 [workspace]
 members = [
-    "hal",
     "shared",
 ]
 resolver = "2"
@@ -25,7 +24,6 @@ opt-level = 0
 lto = false
 
 [dependencies]
-hal = { path = "hal" }
 shared = { path = "shared" }
 tock-registers = "0.10"
 lazy_static = { version = "1.4", features = ["spin_no_std"] }

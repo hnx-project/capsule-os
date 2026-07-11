@@ -1,7 +1,6 @@
 #![no_std]
 #![crate_type = "staticlib"]
 
-extern crate hal;
 extern crate shared;
 
 pub mod arch;
