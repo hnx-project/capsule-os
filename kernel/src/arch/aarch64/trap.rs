@@ -67,25 +67,30 @@ pub extern "C" fn irq_handler(iar: u32, frame: *mut TrapFrame) {
     // Other INTIDs are silently EOId (the stub always EOIs).
 }
 
-/// Snapshot of the interrupted register state.
-/// Kept for future use by the trap dispatcher (sync/SError handlers).
+/// Snapshot of the interrupted register state.  The asm trap stubs
+/// allocate 208 bytes on the trap stack and fill this struct in the
+/// order documented in the module-level docstring; the offsets below
+/// are linked 1:1 to the asm frame layout.
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TrapFrame {
-    pub x: [u64; 19],
-    pub spsr: u64,
-    pub elr: u64,
-    pub esr: u64,
-    pub far: u64,
-    pub lr: u64,
-    pub sp: u64,
+    pub x: [u64; 19],   // 0x000
+    pub spsr: u64,      // 0x098
+    pub elr: u64,       // 0x0A0
+    pub esr: u64,       // 0x0A8
+    pub far: u64,       // 0x0B0
+    pub lr: u64,        // 0x0B8
+    pub sp: u64,        // 0x0C0 — user-mode sp (sp_el0 snapshot)
 }
 
-/// RAII guard that restores the AArch64 `x19` register on drop.
-/// Used by the trap handlers to honour the AAPCS promise that x19
-/// (used as the TrapFrame pointer by the assembly stubs) is callee-
-/// saved, even when the Rust function body itself doesn't reference
-/// it and the compiler would otherwise leave it clobbered.
+/// RAII guard that snapshots `x19` on construction and restores it on
+/// drop.  Required because the asm trap stubs stash the TrapFrame
+/// pointer in `x19` (so it survives a nested IRQ + switch_to that
+/// mutates `sp`), but Rust's `extern "C"` ABI only preserves
+/// `x19-x28` when the function body actually uses them — and our
+/// trap handler bodies do not.  Without this guard, the asm epilogue
+/// `ldp x0, x1, [x19]` reads from a garbage address and the kernel
+/// dies on the very next eret.
 struct X19Guard {
     saved: u64,
 }

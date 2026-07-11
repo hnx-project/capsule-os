@@ -296,6 +296,19 @@ enum FileAgentCmd {
     },
 }
 
+/// Rust-friendly wrapper around `open` that takes a `&str` and copies
+/// it into a NUL-terminated 256-byte stack buffer before calling
+/// the C-ABI `open` (which scans the buffer for a NUL terminator
+/// to determine the path length).  `&str` is **not** guaranteed
+/// to be NUL-terminated in Rust, so passing `path.as_ptr()`
+/// straight to `open` is a UB / wrong-length bug.
+pub fn open_str(path: &str, flags: i32, mode: i32) -> i32 {
+    let mut buf = [0u8; 256];
+    let len = path.len().min(buf.len() - 1);
+    buf[..len].copy_from_slice(&path.as_bytes()[..len]);
+    open(buf.as_ptr(), flags, mode)
+}
+
 #[no_mangle]
 pub extern "C" fn open(path: *const u8, flags: i32, _mode: i32) -> i32 {
     if path.is_null() {
