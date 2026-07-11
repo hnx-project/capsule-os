@@ -97,6 +97,39 @@ Never invoke raw compilation or raw git pushes. Always route instructions throug
 * **Architecture Agnosticism**: When modifying any core microkernel file (`kernel/src`), you must ensure both `aarch64` and `riscv64` targets compile flawlessly.
 * **Handle Isolation**: Never pass raw physical/virtual pointers across user-space system calls. Use Zircon/seL4 capability `Handle` mappings securely managed under `HandleTable`.
 
+### 4. 🔇 Debug Output Discipline
+**Keep debug logging as terse as possible.** Every `log_*!` call
+in the kernel and the userspace service tier is a tax paid on
+every boot, on every QEMU run, on every CI log, and on the human
+operator's eyes.  Default to *silent*; only break the silence
+when a specific line unlocks a specific question.
+
+* **One line per event.**  Never log a multi-line block in a hot
+  path (alloc loops, page-table walks, per-syscall traces).  A
+  per-page `PHYS-ALLOC` trace at 4 KiB granularity floods the
+  UART and the log buffer before the kernel can say "OK".
+* **No trace-and-keep.**  If a `log_info!` was added to chase a
+  single bug, **delete it** once the bug is fixed.  The
+  repository already carries half a dozen stale
+  `MMU-L3` / `STACK-PTE` / `PTE_WALK` traces from past
+  debugging sessions that have outlived their purpose.
+* **Throttle, don't dump.**  When a per-iteration log is the
+  only way to see what's happening, gate it behind a counter
+  (`if i % 16 == 0 { log_info!(...) }`) or behind a debug
+  `#[cfg(debug_assertions)]` so a release build is quiet by
+  default.
+* **Structured, not narrative.**  `log_info!("MMU", "free pages: {}/{}", free, total)` is fine.
+  `log_info!("MMU", "we just allocated a page, the address is 0x..., the previous allocation was 0x..., the system is doing fine")` is not.
+* **EL0 prints are worse.**  `hnxlibc::write` is byte-by-byte
+  and blocks the writer.  Default to `kprintln!` in the kernel
+  and to a single `println!` per observable state in userspace.
+  Never wrap a `tp!` tracepoint around every statement of a
+  service's main loop.
+
+The same rule applies to commit messages and PR descriptions:
+state the *why* in one short paragraph, link the evidence, and
+stop.
+
 ---
 
 *Prepared by **TinchyChin** and the **HNX-Project** administrator group.*
