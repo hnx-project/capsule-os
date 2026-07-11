@@ -195,7 +195,14 @@ These are **explicit gaps** in the current `develop` branch, not latent bugs:
 * **SError handler coverage is unverified.**  The `serror_el0` path is fully implemented (save TrapFrame → dispatch → kill-thread → eret) but no test has been observed to actually trigger an SError from EL0 in 30 s of normal QEMU boot.  Production users will need a fault-injection harness.
 * **Single-CPU only.**  The scheduler, MMU bring-up, and IPC paths all assume one CPU is online.  No SMP barriers, no per-CPU data.
 * **No host test runner.**  `cargo test` cannot run inside the `aarch64-unknown-none` and `riscv64imac-unknown-none-elf` targets.  The host-testable subset has not yet been carved out.
-* **No `LICENSE` file in the repository root.**  All rights reserved until a license is chosen — see Contributing.
+
+---
+
+## 📜 License
+
+CapsuleOS is **not yet open-source licensed**.  The current default is **All Rights Reserved** — the absence of a license file is intentionally restrictive (see [`LICENSE`](./LICENSE) for the full legal note and the maintainer's contact).  For commercial use, redistribution, dual-licensing, or any kind of permission, contact <tinchychin97@gmail.com>.
+
+The maintainer intends to release under **Apache-2.0** (preferred), **MIT**, or **BSD-3-Clause** once a decision is made.  The decision is tracked in the `License` milestone; contributors and downstream users are not asked to sign anything until the license text is in this directory.
 
 ---
 

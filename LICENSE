@@ -1,0 +1,47 @@
+Placeholder License — Not Yet Selected
+=======================================
+
+CapsuleOS is in pre-1.0 development and **has not yet been released
+under an open-source license**.  Until a license file is added to
+this directory:
+
+* All rights are reserved by the maintainer (TinchyChin,
+  <tinchychin97@gmail.com>).
+* No permission is granted to copy, modify, redistribute, or use the
+  software for commercial purposes, derivative works, or any other
+  purpose, express or implied, except with the maintainer's prior
+  written consent.
+* The "absence of a license" is **not** a permissive grant — the
+  project defaults to the most restrictive interpretation under
+  applicable copyright law (e.g. the Berne Convention, US 17 U.S.C.
+  § 106A for derivative works).
+
+Planned selection
+-----------------
+The maintainer intends to release CapsuleOS under one of the
+following licenses, in priority order:
+
+1. **Apache License 2.0** — explicit patent grant from contributors,
+   patent retaliation clause, clear notice requirements.  Preferred
+   for projects that may attract corporate contributors or users
+   who care about patent safety.
+2. **MIT** — short, permissive, no patent grant.  Preferred for
+   maximum ecosystem compatibility and lowest friction.
+3. **BSD 3-Clause** — similar to MIT, adds an explicit "no
+   endorsement" clause.
+
+This file is intentionally a placeholder so that:
+
+  * downstream users and packagers do not mistake the project for
+    being MIT/Apache/BSD licensed by default, and
+  * the maintainer can swap in a real license text (e.g. the
+    canonical Apache-2.0 from
+    <https://www.apache.org/licenses/LICENSE-2.0.txt>) in a single
+    commit once a decision is made.
+
+Contact
+-------
+For licensing enquiries, dual-licensing requests, or commercial
+use authorisation, contact <tinchychin97@gmail.com>.
+
+Last updated: 2026-07-11.
