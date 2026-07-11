@@ -18,6 +18,7 @@ Thumbs.db
 
 # Logs
 *.log
+session-*.md
 
 # Rust
 *.rlib
