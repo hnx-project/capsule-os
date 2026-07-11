@@ -273,6 +273,25 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
             }
         }
 
+        SYSCALL_GET_TID => {
+            // POSIX `gettid(2)` — kernel TID of the calling thread.
+            // Wire per KERNEL_HEALTH.md P6 (Phase 6 v0.6.0-α POSIX push).
+            match handlers::process::sys_gettid() {
+                Ok(tid) => tid as usize,
+                Err(e) => e.to_raw() as usize,
+            }
+        }
+
+        SYSCALL_GET_PID => {
+            // POSIX `getpid(2)` — kernel PID of the calling thread's
+            // owning process.  fork(2) is intentionally unimplemented
+            // (K-D1 fork-less posix); this is a 1:1 lookup.
+            match handlers::process::sys_getpid() {
+                Ok(pid) => pid as usize,
+                Err(e) => e.to_raw() as usize,
+            }
+        }
+
         _ => Status::NotAllowed.to_raw(),
     }
 }

@@ -707,3 +707,25 @@ fn current_process_id() -> Result<u64> {
         Ok((*t).process_id)
     }
 }
+
+/// POSIX `gettid(2)` — returns the kernel-internal `Thread::id` (usize).
+/// On Linux this is the kernel TID (a per-thread identifier that is
+/// *not* the POSIX pthread tid); we map to whatever `Thread::id` was
+/// when the thread was registered.  No syscall-side check beyond
+/// "no current thread" → `Status::NotFound`.
+pub fn sys_gettid() -> Result<u64> {
+    unsafe {
+        let t = crate::task::scheduler::SCHEDULER
+            .get_current_thread_ptr()
+            .ok_or(Status::NotFound)?;
+        Ok((*t).id as u64)
+    }
+}
+
+/// POSIX `getpid(2)` — returns the parent process id (`Process::id`,
+/// assigned at `Process::new` time from `PROCESS_ID_COUNTER`).  We do
+/// **not** implement `fork(2)` (KERNEL_HEALTH.md K-D1), so this is a
+/// 1:1 lookup, not the parent-of-self hack Linux uses for raw `getpid`.
+pub fn sys_getpid() -> Result<u64> {
+    current_process_id()
+}
