@@ -16,6 +16,24 @@ it leaves pre-1.0 development.
 
 ## [Unreleased]
 
+### Added
+- **Kernel completeness audit** ([`AUDIT.md`](./AUDIT.md)) — full
+  static scan of `kernel/src/**`, `kernel/hal`, `kernel/shared`.
+  8 high-severity findings (RISC-V `csrw satp` regression,
+  RISC-V `translate_user_va` stub, RISC-V EL0 launch missing
+  TTBR0 init, `sys_read` returns `b"VFS_READ_OK"` literal,
+  scheduler lock + IRQ-on ordering, thread-park `0x1usize` elr
+  in guard page, multi-process entry-VA collision, VFS
+  skeleton), ~22 medium, ~30+ low.  See `TODO.md` §"Kernel
+  Completeness Audit" for the concrete deltas.
+
+### Changed
+- Deleted dead `kernel/src/kcore/alloc.rs` (contained a
+  `#[global_allocator]` whose `alloc()` returned `nullptr` — a
+  latent landmine for any future `extern crate alloc`).
+- Deleted dead `kernel/src/kcore/debug.rs` (one-line no-op
+  `panic_print` that no caller used).
+
 ### Planned for 0.5.10+
 - Host-side unit tests for the no_std-safe subset of `kernel/` and
   `hnxstd/` (currently no `#[cfg(test)]` paths can actually run

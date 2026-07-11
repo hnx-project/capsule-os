@@ -161,3 +161,48 @@
 - **Phase 8: v0.8.0 网络栈服务** (TCP/IP 协议栈用户态服务，网卡驱动进程)
 - **Phase 9: v0.9.0 所有用户态服务集成** (Shell 控制台 + init 守护系统)
 - **Phase 10: v1.0.0 完整 capsule-os.img 制作** (基于 OrbisOS GUI 的像素流 VMO 零拷贝共享显示服务器整合)
+
+---
+
+## 🔍 Kernel Completeness Audit (0.5.9-develop)
+
+> 静态扫描 `kernel/src/**` + `kernel/hal` + `kernel/shared` 之后的
+> 完整度盘点,见 [`AUDIT.md`](./AUDIT.md)。8 个 high-severity、~22 个
+> medium-severity、~30+ 个 low-severity findings,本节只列需要做
+> 决定的"先删除还是先实现"的项目,落到对应 Phase 里执行。
+
+### 优先删除 (dead-code 清理,1.0 前必做)
+
+- [ ] `kernel/hal` 整 crate: `Cpu`/`Mmu`/`PageTable`/`PageFlags`/`AddressSpace`/`InterruptController`/`Timer`/`Console`/`Serial`/`PhysicalMemory` 全部未 use。只剩 `AArch64Cpu` 在 `arch/cpu.rs` 也无 caller。
+- [ ] `kernel/src/mm/slab.rs` (114 行,`SlabAllocator` 从未被 call)
+- [ ] `kernel/src/sync/primitives.rs` (138 行,`Mutex`/`Semaphore`/`Event` 全 dead)
+- [ ] `kernel/src/object/handle.rs` (重复于 `handle_table::Slot`)
+- [ ] `kernel/src/vfs/PathResolver` (定义了无 caller)
+- [ ] `kernel/src/mm/elf.rs::ElfLoader` (假装校验 ELF,实际 `is_valid` 恒返回 `true`;实际路径用 `ohlink_format::parser`)
+- [ ] `kernel/src/kcore/alloc.rs` (已删) + `kcore/debug.rs` (已删) — 已在本审计里删
+- [ ] `kernel/src/task/smoke.rs` (165 行,smoke-test 代码,但 `kernel_main` 里那段调用被注释了)
+- [ ] `task::scheduler::{tick, current_thread_name}` + `tick_count` 字段
+
+### 优先实现 (1.0 前必做)
+
+- [ ] **H1 RISC-V SV39**: 恢复 `csrw satp` + `sfence.vma`,修 mstatus.MPP / menvcfg 继承问题
+- [ ] **H2 RISC-V `translate_user_va`**: 写真的 page-table walk,不要 `Some(va)` 占位
+- [ ] **H3 RISC-V EL0 launch**: 在 `launch_user_program_with_argv` 里给 RISC-V 加 TTBR0 swap
+- [ ] **H4 `sys_read` stub**: 改成真的 rootfs-backed read (或承认 "VFS 通过 fileagent 走 channel,不通过 sys_read",把 sys_read fd!=0 删掉)
+- [ ] **H5 scheduler lock 顺序**: `unlock()` 不应该 `enable_irqs()`,PSTATE 也没保存。要么改成 "lock = 关 IRQ + 取排他锁",要么换成真正的 IRQ-safe 自旋锁
+- [ ] **H6 thread park 0x1usize**: 改成 vmar_base + 任意有效 user VA(dead thread 反正不会 eret,只要 elr 合法即可)
+- [ ] **H7 entry-VA 多 slot collision**: 改 `user_entry_offset` 公式,按 slot 偏移重定位
+- [ ] **H8 VFS skeleton**: 删掉 `vfs::Vnode` 假实现,声明 "VFS = fileagent channel",sys_open 只创建 channel handle 即可
+
+### Syscall 表面补全 (0.7 → 1.0)
+
+- [ ] 18 个 missing handlers: `SYSCALL_CHANNEL_CALL=13`, `PORT_CREATE/WAIT/QUEUE=20/21/22`, `VMO_GET_SIZE=33`, `VMO_SET_SIZE=34`, `VMAR_UNMAP=41`, `VMAR_PROTECT=42`, `THREAD_EXIT=52`, `PROCESS_START=61`, `PROCESS_EXIT=62`, `EVENT_CREATE/SIGNAL/ACK=70/71/72`, `TIMER_CREATE/SET/CANCEL=80/81/82`, `FUTEX_WAIT/WAKE=90/91`
+- [ ] `GET_TID=2`, `GET_PID=3` 也缺 dispatch arm
+- [ ] 所有 missing handler 现在都返回 `Status::NotAllowed`,EL0 caller 看不出 "不支持" vs "参数错"。建议返回 `Status::NotSupported`(需在 `shared::Status` 加一个 variant)
+
+### 安全 / 并发硬化 (1.0 前)
+
+- [ ] `static mut NEXT_FREE_PAGE` / `END_FREE_PAGE` / `FREE_PAGES_COUNT` / `TOTAL_PAGES_COUNT` / `MMU_ACTIVE` / `FUTEX_TABLE` / `HANDLE_TABLE_LOCK` / `REGISTRY_LOCK` 全部 `static mut` 非原子。SMP 或 IRQ-嵌套场景会脏。
+- [ ] `syscall/validation.rs` 是 no-op facade,目前靠 `safe_copy_from_user`/`safe_copy_to_user` 兜底。validation 层要真做地址范围 + 权限位检查,不能只 return `Ok(())`。
+- [ ] `KernelObject::duplicate` 只支持 `Vmo`,其他 handle 不能 duplicate
+- [ ] 全局 `HANDLE_TABLE_LOCK` 跨所有进程的 HandleTable 共用,多进程会串行化
