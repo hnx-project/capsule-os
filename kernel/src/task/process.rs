@@ -220,14 +220,21 @@ impl Process {
         thread.handle_table = &proc.handle_table;
         thread.state = ThreadState::Ready;
 
-        // Always normalise r[0]/r[1] to argc/argv_ptr semantics at
+        // Always normalise x0/x1 to argc/argv_ptr semantics at
         // process entry.  The hnxlibc `_hnx_user_entry` trampoline
         // reads x0/x1 directly to populate its argv table, so legacy
-        // launches (argc == 0) must NOT leave r[0] = entry / r[1] =
+        // launches (argc == 0) must NOT leave x0 = entry / x1 =
         // stack_top in place; the trampoline would interpret those
         // huge values as a non-empty argv and dereference garbage.
-        thread.context.r[0] = argc as u64;
-        thread.context.r[1] = 0;
+        //
+        // **Field name trap**: `ThreadContext::r` is the *callee-saved*
+        // register window (x19..x30), not x0/x1.  Writing
+        // `thread.context.r[0]` here would silently write to x19 and
+        // the argv would never reach EL0 — the symptom is `argc=0` in
+        // the user program even though the kernel log shows
+        // `argc=2` at launch time.  Use `x[0]` / `x[1]`.
+        thread.context.x[0] = argc as u64;
+        thread.context.x[1] = 0;
 
         // Materialise argv on the new process's user stack.  We grow the
         // argv area downward from `stack_top`: first the argv pointer
@@ -248,6 +255,14 @@ impl Process {
 
             // First: copy each argv string payload upward, capturing the
             // user-VA of each one so the pointer array below points at it.
+            // Each string is NUL-terminated so the user entry trampoline's
+            // "scan until 0 byte" loop (in `userspace/hnxlibc/src/lib.rs`
+            // `_hnx_user_entry`) finds the end of the string instead of
+            // running through the 16-byte pad area into adjacent argv
+            // entries — without the NUL, `__HNX_ARGV_LENS[i]` would
+            // measure the padded length (>= 16) rather than the actual
+            // string length, and the user program would observe garbage
+            // bytes in `hnx_arg(i)` and a non-UTF-8 error.
             let mut arg_vas: [usize; 16] = [0usize; 16];
             for i in 0..argc {
                 let s_len = arg_lens[i];
@@ -258,6 +273,13 @@ impl Process {
                     &arg_strs[i][..s_len],
                     dst,
                     s_len,
+                )?;
+                let nul: [u8; 1] = [0u8];
+                crate::syscall::handlers::ipc::safe_copy_to_user(
+                    l0_user_pa,
+                    &nul,
+                    dst + s_len,
+                    1,
                 )?;
                 arg_vas[i] = dst;
                 cursor += padded;
@@ -283,7 +305,7 @@ impl Process {
             let post_argv_sp = (cursor + 15) & !15;
 
             thread.context.user_sp = post_argv_sp as u64;
-            thread.context.r[1] = argv_ptr_va as u64;
+            thread.context.x[1] = argv_ptr_va as u64;
         }
 
         unsafe {

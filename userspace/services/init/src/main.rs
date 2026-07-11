@@ -63,18 +63,20 @@ pub fn main() -> i32 {
     // kernel halt in `SCHED No runnable threads left` — which
     // is the *worst* possible failure mode for a boot service.
     //
-    // If exec fails, surface the status to the UART and exit
-    // with a non-zero code so the kernel at least logs a
-    // distinct `Process exited with code N` line (vs. the
-    // successful clean-exit `code 0` we use for "init ran to
-    // completion but the exec target was missing").
-    let rc = hnxlibc::exec("osh");
+    // Use the execve variant (not plain exec) so we also
+    // exercise the `sys_execve` -> kernel argv copy ->
+    // user stack -> `_hnx_user_entry` handoff end-to-end.
+    // argv[0] is conventionally the program name, argv[1] is
+    // an arbitrary marker that should appear verbatim in the
+    // osh boot log; if it does not, the argv path is broken.
+    let argv: [&[u8]; 2] = [b"osh" as &[u8], b"init-was-here" as &[u8]];
+    let rc = hnxlibc::execve("osh", &argv);
     if rc < 0 {
-        println("init: exec(\"osh\") FAILED with status");
+        println("init: execve(\"osh\") FAILED with status");
         print_hex(rc);
         println("");
         return 1;
     }
-    // Unreachable on success: a successful exec never returns.
+    // Unreachable on success: a successful execve never returns.
     0
 }

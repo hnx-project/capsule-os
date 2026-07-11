@@ -53,16 +53,30 @@ core::arch::global_asm!(
 .section .text
 .global _start
 _start:
+    // 0. **Preserve the kernel-passed argc (x0) and argv (x1) before
+    //    touching x0/x1 ourselves.**  `_hnx_user_entry` reads x0 and
+    //    x1 directly via inline asm to populate its argv table; if we
+    //    overwrite x0 here for the SP-align trick below, the user
+    //    program observes a junk argc (often a large stack address
+    //    cast to i32) and `__HNX_ARGC` ends up wrong.
+    mov     x9,  x0
+    mov     x10, x1
+
     // 1. Force SP alignment to 16 bytes by masking off low 4 bits
-    mov     x0, sp
-    and     x0, x0, #~0xf
-    mov     sp, x0
+    //    (use x8 as a scratch register so x0 is left alone for the
+    //    argc restore below).
+    mov     x8,  sp
+    and     x8,  x8, #~0xf
+    mov     sp,  x8
 
     // 2. Zero FP and LR to terminate call-stack unwinding
     mov     x29, #0
     mov     x30, #0
 
-    // 3. Jump to the common Rust-based entry runner
+    // 3. Restore the kernel-passed argc/argv into x0/x1 and jump to
+    //    the Rust-based entry runner.
+    mov     x0,  x9
+    mov     x1,  x10
     bl      _hnx_user_entry
 
 .global _hnx_exit_fallback
