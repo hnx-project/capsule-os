@@ -58,6 +58,8 @@ static SCHEDULER_LOCK: AtomicBool = AtomicBool::new(false);
 
 pub static mut SCHEDULER: Scheduler = Scheduler::new();
 
+static mut SCHED_SAME_HIT_COUNT: u32 = 0;
+
 impl Scheduler {
     pub const fn new() -> Self {
         Scheduler {
@@ -243,6 +245,15 @@ impl Scheduler {
             if prev_idx == next_idx {
                 crate::log_info!("SCHED-SAME", "prev_idx == next_idx == {} (skip switch_to hijack)", prev_idx);
                 self.unlock();
+                // Use a volatile write to ensure the compiler doesn't elide
+                // our early return: the dummy `static mut` sink prevents the
+                // LLVM optimizer from realizing that we just fall through
+                // into the switch_to block, and the `core::hint::black_box`
+                // hints that the comparison has side effects that matter.
+                unsafe {
+                    core::ptr::write_volatile(&mut SCHED_SAME_HIT_COUNT as *mut u32, 1);
+                }
+                core::hint::black_box(prev_idx);
                 return;
             }
 
