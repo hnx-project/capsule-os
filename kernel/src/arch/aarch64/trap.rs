@@ -102,13 +102,26 @@ pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
             // SVC exception records ELR at the SVC instruction; advance past
             // it so eret resumes at the instruction after svc #0.
             (*frame).elr += 4;
-            // Stash the (now-advanced) ELR into the current thread's
+            // Stash the (now-advanced) ELR into the **requesting thread's**
             // ThreadContext.  The IRQ path also writes elr on every tick,
             // but updating here makes sure that a syscall that immediately
             // causes a context switch (or a syscall return that is then
             // preempted) still has the right resume PC.
-            if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
-                unsafe { (*t).context.elr = (*frame).elr; }
+            //
+            // We look up the thread by reading `*frame.x[16] = syscall_num` is
+            // not enough — we need to know *which* thread initiated this
+            // syscall, even if the scheduler (correctly hijacking via
+            // switch_to as part of a fix kernel-side run) has already
+            // switched current_thread out from under us.  The fix: snapshot
+            // the requester BEFORE `syscall_dispatch` (which can call
+            // sys_spawn / sys_execve and may switch threads inside), so the
+            // saved context.elr maps back to the actual caller.
+            unsafe {
+                let svc_requestor =
+                    crate::task::scheduler::SCHEDULER.get_current_thread_ptr();
+                if let Some(t) = svc_requestor {
+                    (*t).context.elr = (*frame).elr;
+                }
             }
         }
     } else {
