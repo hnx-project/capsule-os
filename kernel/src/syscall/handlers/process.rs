@@ -83,9 +83,30 @@ pub fn sys_exec(table: &HandleTable, program_name: &str) -> Result<()> {
     // and the just-exec'd process would share the same global TTBR0
     // page table; init's linker PC-relative adr/adrp would then point
     // into the new process's segments and trigger spurious faults.
+    //
+    // We then immediately reschedule so the freshly-spawned process
+    // runs RIGHT NOW instead of returning through the caller's trap
+    // handler (where eret would briefly resume the Dead thread in EL0
+    // against a now-stale per-process translation, producing an EC=0x0
+    // ELR=0x0 fault).
     if let Some(caller) = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() } {
-        unsafe { (*caller).state = crate::task::thread::ThreadState::Dead; }
+        unsafe {
+            (*caller).state = crate::task::thread::ThreadState::Dead;
+            // Park the dead thread at a non-zero halt address inside the
+            // user region so a future context-restore (which won't pick
+            // Dead threads) still has *some* valid PC / spsr stored —
+            // garbage here would later surface as EC=0x0 ELR=0x0 if a
+            // tick ever races between sys_exec and the actual switch.
+            (*caller).context.elr = 0x1usize as u64; // any non-zero PC
+            (*caller).context.spsr = 0x000;           // EL0t, all-masked
+        }
     }
+
+    // Trigger the scheduler to immediately swap in the just-launched
+    // process.  schedule() never returns when it makes a switch; if it
+    // does return it means every other thread is also Dead and the
+    // CPU should idle.
+    unsafe { crate::task::scheduler::SCHEDULER.schedule(); }
 
     crate::log_info!(
         "EXEC",
@@ -226,8 +247,14 @@ pub fn sys_execve(
     )?;
 
     if let Some(caller) = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() } {
-        unsafe { (*caller).state = crate::task::thread::ThreadState::Dead; }
+        unsafe {
+            (*caller).state = crate::task::thread::ThreadState::Dead;
+            (*caller).context.elr = 0x1usize as u64;
+            (*caller).context.spsr = 0x000;
+        }
     }
+
+    unsafe { crate::task::scheduler::SCHEDULER.schedule(); }
 
     crate::log_info!(
         "EXEC",

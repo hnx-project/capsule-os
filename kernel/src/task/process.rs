@@ -290,6 +290,31 @@ impl Process {
             crate::task::scheduler::SCHEDULER.add(thread);
         }
 
+        // **Restore the caller-side TTBR0_EL1** before returning to the
+        // kernel context, but ONLY when there is a sensible previous
+        // page table to return to.  `set_ttbr0_el1(l0_user_pa)` above
+        // swapped the MMU's user page table to the freshly-allocated
+        // per-process l0, and `safe_copy_to_user` calls inside this
+        // function relied on that swap to translate user VAs to PA.
+        // Leaving the new process's l0 live on ttbr0 makes the next user
+        // thread we switch into translate its VAs through the wrong
+        // table — yielding an EC=0x0 ELR=0x0 trap the moment eret tries
+        // to execute at a PC that doesn't belong to *that* process.
+        //
+        // During the very first call from `kernel_main` (loader
+        // bootstrap) `old_ttbr0` is the boot value (typically 0); we
+        // can't point ttbr0 at a zero pa, so in that case we instead
+        // **keep** the new process's l0 live — the loader is the very
+        // next thread we'll eret into, so this is what we want anyway.
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            if old_ttbr0 != 0 {
+                use crate::mm::mmu::ArchMmu;
+                crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
+                crate::arch::aarch64::mmu::set_ttbr0_el1(old_ttbr0);
+            }
+        }
+
         crate::log_info!("LAUNCHER", "Successfully launched program '{}' at EL0 (entry={:#x}, pid={}, argc={})",
             name, user_entry, pid, argc);
 

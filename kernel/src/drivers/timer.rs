@@ -168,11 +168,21 @@ pub fn handle_tick_from_irq(frame: *mut crate::arch::aarch64::trap::TrapFrame) {
         let from_el0 = (spsr & 0xF) == 0;
         if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
             unsafe {
-                (*t).context.elr = elr;
-                (*t).context.spsr = spsr;
-                if from_el0 && !frame.is_null() {
-                    let f = &*frame;
-                    (*t).context.x = f.x;
+                // **Only snapshot elr/spsr/x into the thread context when the
+                // IRQ came from EL0.**  In the nested-EL1-trap case (timer IRQ
+                // fires while an EL1 sync handler, e.g. a blocking syscall,
+                // is partway through dispatch) the saved `elr` is the sync
+                // handler's PC and the saved `spsr` is EL1h; clobbering the
+                // user thread context with those values erases the true user
+                // resume state and turns the next eret into an EC=0x0
+                // ELR=0x0 (or worse: jumps to a kernel VA).
+                if from_el0 {
+                    (*t).context.elr = elr;
+                    (*t).context.spsr = spsr;
+                    if !frame.is_null() {
+                        let f = &*frame;
+                        (*t).context.x = f.x;
+                    }
                 }
             }
         }
