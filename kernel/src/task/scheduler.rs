@@ -320,16 +320,50 @@ impl Scheduler {
             let prev_context_ptr = &mut self.threads[prev_idx].as_mut().unwrap().context as *mut _;
             let next_context_ptr = &mut self.threads[next_idx].as_mut().unwrap().context as *mut _;
 
+            // CRITICAL: switch TTBR0_EL1 to the *next* thread's process
+            // page table before we context-switch.  Without this, the
+            // current TTBR0 still points at whichever process most
+            // recently called `Process::launch_user_program` — and
+            // every other process's user VA range would walk into the
+            // wrong L0 page, faulting on a perfectly valid address.
+            //
+            // We also have to swap back to the *previous* thread's L0
+            // on the way back, because the new process's L0 only
+            // covers that new process's user VA; the kernel still
+            // needs to find the old user stack during `eret`/signal
+            // teardown.  Doing both in one place (this function) keeps
+            // the policy in one spot.
+            let next_pid = self.threads[next_idx].as_ref().unwrap().process_id;
+            let prev_pid = self.threads[prev_idx].as_ref().unwrap().process_id;
+            let next_l0 = crate::task::process::find_process_l0_user_pa(next_pid);
+            let prev_l0 = crate::task::process::find_process_l0_user_pa(prev_pid);
             #[cfg(target_arch = "aarch64")]
             {
                 use crate::mm::mmu::ArchMmu;
                 crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
+                if let Some(pa) = next_l0 {
+                    crate::arch::aarch64::mmu::set_ttbr0_el1(pa);
+                }
             }
 
             self.unlock();
 
             unsafe {
                 switch_to(&mut *prev_context_ptr, &*next_context_ptr);
+            }
+
+            // Control returns here when this thread is scheduled back in
+            // (i.e. the *next* thread from the call above is now the
+            // previous one).  Restore TTBR0 to the original (now current)
+            // process's L0 so the kernel can keep poking at the user
+            // address space it was working on before the switch.
+            #[cfg(target_arch = "aarch64")]
+            {
+                use crate::mm::mmu::ArchMmu;
+                crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
+                if let Some(pa) = prev_l0 {
+                    crate::arch::aarch64::mmu::set_ttbr0_el1(pa);
+                }
             }
         } else {
             let all_dead = self.threads.iter().all(|t| match t {

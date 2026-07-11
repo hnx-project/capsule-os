@@ -96,32 +96,22 @@ pub fn main() -> i32 {
         print_hex(n);
         println("");
     }
-    println("init: handing off to osh");
-    // `exec` is a *replacing* syscall: on success the kernel
-    // marks the current thread Dead and `eret`s into the new
-    // process, so this call never returns.  On failure it
-    // returns a negative `Status` (a `shared::status::Status`
-    // value cast to `i32`); the old behaviour silently dropped
-    // the error code, exited the init process, and let the
-    // kernel halt in `SCHED No runnable threads left` — which
-    // is the *worst* possible failure mode for a boot service.
-    //
-    // Use the execve variant (not plain exec) so we also
-    // exercise the `sys_execve` -> kernel argv copy ->
-    // user stack -> `_hnx_user_entry` handoff end-to-end.
-    // argv[0] is conventionally the program name, argv[1] is
-    // an arbitrary marker that should appear verbatim in the
-    // osh boot log; if it does not, the argv path is broken.
-    let argv: [&[u8]; 2] = [b"osh" as &[u8], b"init-was-here" as &[u8]];
-    let rc = hnxlibc::execve("osh", &argv);
-    if rc < 0 {
-        println("init: execve(\"osh\") FAILED with status");
-        print_hex(rc);
-        println("");
-        return 1;
+    println("init: cat test done; entering yield loop (osh exec removed for kernel audit)");
+    // We intentionally do NOT execve("osh") here yet.  The boot chain
+    // currently halts at the loader (EL0-FAULT EC=0x24 during
+    // `syscalls::spawn("devmgr")`) so fileagent is never brought up,
+    // which means the `cat welcome.txt` smoke test above always fails
+    // with `init: cat FAILED, status=`.  Before re-enabling the osh
+    // hand-off we want to:
+    //   1. Fix the loader's spawn-time data abort (FAR=0x92003d68) so
+    //      fileagent actually launches and `svc.vfs` gets registered.
+    //   2. Audit the kernel for stubs / dead code / missing paths.
+    //   3. Tighten the EL0 -> kernel contract on the way through.
+    // Until then, yield forever so the kernel stays alive and we can
+    // observe scheduler / IPC / fault behaviour from the log.
+    loop {
+        hnxlibc::yield_cpu();
     }
-    // Unreachable on success: a successful execve never returns.
-    0
 }
 
 /// Minimal decimal printer (mirrors `print_hex` but for u32 in

@@ -186,14 +186,26 @@ impl Process {
             crate::arch::aarch64::mmu::sync_instruction_cache(target_va, aligned_size);
         }
 
-        // entry_point in OHLINK header now represents the absolute virtual address
-        // (lowest_vaddr + entry_offset_in_merged) where the user program should start.
-        let entry_offset = if lowest_vaddr != usize::MAX && header.entry_point as usize >= lowest_vaddr
-        {
-            (header.entry_point as usize) - lowest_vaddr
-        } else {
-            0
-        };
+        // Compute the user-mode entry VA.  The OHLINK header carries the
+        // ELF `e_entry` verbatim — an absolute virtual address in the
+        // slot the binary was originally linked for (0x90xxxxxx for
+        // the loader, 0xA0xxxxxx for devmgr, 0xB0xxxxxx for the
+        // respawned init, etc.).  Each process is now loaded into its
+        // own vmar slot starting at `proc.root_vmar.base`, so the
+        // entry has to be *relocated* by stripping the original slot
+        // bits and adding the new base.
+        //
+        // The historical formula was
+        //   user_entry = vmar_base + lowest_vaddr + (e_entry - lowest_vaddr)
+        // which only works when `lowest_vaddr == 0` AND `e_entry` is
+        // already slot-relative.  Neither is true for our ELFs, so
+        // the kernel was computing `0x120212788` for the loader's
+        // `e_entry = 0x90212788` and the resulting user thread jumped
+        // to unmapped memory on its first SVC, killing the boot
+        // anchor with EC=0x24 (data abort) at ELR = vmar_base + 0x2128
+        // and FAR = vmar_base + 0x2000000 + 0x3d68 (the user stack).
+        let user_entry_offset = header.entry_point as usize & 0x0FFF_FFFF;
+        let user_entry = proc.root_vmar.base + user_entry_offset;
 
         let stack_size = 16 * 1024;
         let mut stack_vmo = Vmo::create_with_size(stack_size)?;
@@ -213,7 +225,7 @@ impl Process {
         #[cfg(target_arch = "aarch64")]
         crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
 
-        let user_entry = proc.root_vmar.base + lowest_vaddr + entry_offset;
+        let user_entry = proc.root_vmar.base + user_entry_offset;
 
         let mut thread = Thread::new_user(name, user_entry, stack_top)?;
         thread.process_id = pid;
@@ -366,6 +378,27 @@ pub fn find_process_mut(id: u64) -> Option<&'static mut Process> {
             if let Some(p) = slot {
                 if p.id == id {
                     return Some(p);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Read-only variant of `find_process_mut` that just returns the
+/// process's user L0 page PA (or `None` if the process slot is
+/// empty / the L0 hasn't been allocated yet).
+///
+/// Used by the scheduler to swap TTBR0_EL1 when it context-switches
+/// between threads in different processes.  Returning a value rather
+/// than a `&mut` keeps the call site lock-free — the L0 PA is
+/// immutable for the lifetime of the process.
+pub fn find_process_l0_user_pa(id: u64) -> Option<usize> {
+    unsafe {
+        for slot in PROCESSES.iter() {
+            if let Some(p) = slot {
+                if p.id == id && p.l0_user_pa != 0 {
+                    return Some(p.l0_user_pa);
                 }
             }
         }

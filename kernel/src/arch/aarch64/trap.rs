@@ -190,8 +190,8 @@ pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
                 let pid = (*t).process_id;
                 crate::log_error!(
                     "EL0-FAULT",
-                    "EC={:#x} ESR={:#x} ELR={:#x} FAR={:#x} SPSR={:#x} thread=#{} -- KILLED thread to prevent looping exception",
-                    ec, esr, elr, far, spsr, (*t).id
+                    "EC={:#x} ESR={:#x} ELR={:#x} FAR={:#x} SPSR={:#x} thread=#{} pid={} -- KILLED thread to prevent looping exception",
+                    ec, esr, elr, far, spsr, (*t).id, pid
                 );
                 // If the fault killed the boot anchor (pid 1), try
                 // to bring `system/bin/init` back BEFORE we mark

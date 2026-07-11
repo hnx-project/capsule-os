@@ -80,10 +80,23 @@ unsafe fn write_l1_block(table_pa: usize, idx: usize, pa: usize, attr: MemAttr) 
     core::ptr::write_volatile(ptr, entry);
 }
 
+/// Write a table-descriptor entry into an L0 page-table page.
+///
+/// **Critical**: when the MMU is active, indexing `l0_pa` as a `*mut u64`
+/// would treat the **physical** address as a virtual address and the
+/// resulting `dsb/stlr` would land in random DRAM (or page-fault) rather
+/// than installing the L0 entry.  Mirror the branch that `read_pte` /
+/// `write_pte` already use: when MMU is on, dereference the kernel's
+/// direct-map VA (`pa_to_kernel_va(l0_pa)`) instead.  Boot-time identity
+/// mapping (MMU off) keeps the raw PA path.
 unsafe fn write_l0_table(l0_pa: usize, idx: usize, l1_pa: usize) {
     let entry = pa_to_pte_addr(l1_pa) | PTE_VALID | PTE_TYPE_TABLE;
-    let ptr = (l0_pa as *mut u64).add(idx);
-    core::ptr::write_volatile(ptr, entry);
+    let ptr = if crate::mm::phys::mmu_is_active() {
+        crate::mm::mmu::pa_to_kernel_va(l0_pa) as *mut u64
+    } else {
+        l0_pa as *mut u64
+    };
+    core::ptr::write_volatile(ptr.add(idx), entry);
 }
 
 unsafe fn read_pte(table_pa: usize, idx: usize) -> u64 {
@@ -400,6 +413,18 @@ pub fn map_page(va: usize, pa: usize, flags: MapFlags) -> Result<()> {
                   | PTE_TYPE_PAGE
                   | pte_attr_bits(flags);
         write_pte(l3_pa, l3_idx, entry);
+        // Clean+invalidate the cache line we just wrote so the MMU
+        // hardware walk (which can re-read the PTE on the next access)
+        // sees the new value rather than a stale cache line.  Without
+        // this, the write-back cache can hold the new entry while the
+        // MMU continues to use an older cached translation until eviction.
+        if crate::mm::phys::mmu_is_active() {
+            let line_va = pa_to_kernel_va(l3_pa) + l3_idx * 8;
+            unsafe {
+                core::arch::asm!("dc civac, {0}", in(reg) line_va, options(nomem, nostack));
+                core::arch::asm!("dsb ish", options(nomem, nostack));
+            }
+        }
 
         // TLB invalidate single entry.
         asm!(
