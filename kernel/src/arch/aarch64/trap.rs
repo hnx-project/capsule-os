@@ -41,6 +41,20 @@
 /// fired: PPI #30 (INTID 30) is the generic timer.
 #[no_mangle]
 pub extern "C" fn irq_handler(iar: u32, frame: *mut TrapFrame) {
+    // **AAPCS workaround**: see `X19Guard` and `aarch64_sync_el0_handler`.
+    // The trap asm uses x19 as the TrapFrame pointer; without explicit
+    // save/restore the Rust body of this function (which doesn't read
+    // x19) leaves x19 clobbered and the IRQ-EL0 / IRQ-EL1-spx epilogue
+    // `ldp x0, x1, [x19]` reads from a garbage address.
+    let saved_x19: u64;
+    unsafe {
+        core::arch::asm!(
+            "mov {0}, x19",
+            out(reg) saved_x19,
+            options(nomem, preserves_flags)
+        );
+    }
+    let _x19_guard = X19Guard { saved: saved_x19 };
     // PPI #30 (INTID 30) = generic timer.
     if iar == 30 {
         crate::drivers::timer::handle_tick_from_irq(frame);
@@ -59,11 +73,48 @@ pub struct TrapFrame {
     pub esr: u64,
     pub far: u64,
     pub lr: u64,
+    pub sp: u64,
+}
+
+/// RAII guard that restores the AArch64 `x19` register on drop.
+/// Used by the trap handlers to honour the AAPCS promise that x19
+/// (used as the TrapFrame pointer by the assembly stubs) is callee-
+/// saved, even when the Rust function body itself doesn't reference
+/// it and the compiler would otherwise leave it clobbered.
+struct X19Guard {
+    saved: u64,
+}
+
+impl Drop for X19Guard {
+    fn drop(&mut self) {
+        unsafe {
+            core::arch::asm!(
+                "mov x19, {0}",
+                in(reg) self.saved,
+                options(nomem, preserves_flags)
+            );
+        }
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
-    let esr = unsafe { (*frame).esr };  
+    // **AAPCS workaround**: the trap asm uses x19 as the TrapFrame pointer
+    // because x19 is the only callee-saved register that survives a nested
+    // IRQ + switch_to (which mutates sp).  Rust's C-ABI does NOT save
+    // x19-x28 unless the function body actually uses them, so save x19
+    // manually here and restore it on every return path via the
+    // `X19Guard` RAII helper.
+    let saved_x19: u64;
+    unsafe {
+        core::arch::asm!(
+            "mov {0}, x19",
+            out(reg) saved_x19,
+            options(nomem, preserves_flags)
+        );
+    }
+    let _x19_guard = X19Guard { saved: saved_x19 };
+    let esr = unsafe { (*frame).esr };
     let elr = unsafe { (*frame).elr };
     let spsr = unsafe { (*frame).spsr };
     crate::log_debug!("TRAP", " EL0 Trap Intercepted! ESR={:#x}, ELR={:#x}, SPSR={:#x}", esr, elr, spsr);
@@ -73,6 +124,11 @@ pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
         // SVC exceptions in AArch64/AArch32 state
         // EC=0x11: SVC in AArch64
         // EC=0x15: SVC in AArch32 (or trapped MSR/MRS)
+        crate::log_debug!(
+            "SVC-PRE",
+            "n=#{} ec={:#x} elr={:#x}",
+            unsafe { (*frame).x[16] }, ec, elr
+        );
         unsafe {
             let syscall_num = (*frame).x[16];
 
@@ -99,34 +155,15 @@ pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
             );
 
             (*frame).x[0] = ret as u64; // Return value in x0
-            // **Do NOT advance frame.elr here.**  QEMU (cortex-a72) reports
-            // our AArch64 `svc #0` trap with ESR.EC=0x15 (the "SVC
-            // executed in AArch32 state" class), and for that class the
-            // CPU has *already* stored ELR_EL1 = SVC_PC + 4.  Advancing
-            // again would point eret at SVC_PC + 8, which is two
-            // instructions past the SVC — that's why every "Txx fired"
-            // tracepoint downstream of `syscalls::spawn("devmgr", &[])`
-            // was being skipped: `loader.ctx.elr` was set to
-            // `0x90213118` (spawn(fileagent)'s SVC + 4) immediately after
-            // spawn(devmgr)'s return, not to `0x90212ff8` (T11).
-            //
-            // On real AArch64 hardware (ESR.EC=0x11) ELR_EL1 = SVC_PC,
-            // in which case this comment's "skip += 4" would land eret
-            // exactly on the post-SVC binder (svc; ldur x0, ...; ldr ...).
-            // That binder then runs synchronously inside the
-            // caller-provided `r0` Rust local, with no syscall in
-            // between, so there is nothing for the user to "miss"; the
-            // next SVC fires *after* the binder from the *next* user
-            // statement, which is exactly the Txx trace we want.
-            //
-            // See this commit's message for the full bisect.
-            // (No `frame.elr += 4` here on purpose.)
-            // Stash ELR_EL1 into the **requesting thread's** ThreadContext.
-            // The current_thread may have shifted by the time we get here
-            // (sys_spawn doesn't schedule(), but defensive bookkeeping is
-            // harmless).  `*frame.elr` already points at the post-SVC
-            // instruction (see comment above about ESR.EC=0x15 semantics),
-            // so no advancement is needed here.
+            (*frame).elr += 4;
+            // After SVC dispatch, advance ELR by 4 to skip the SVC itself
+            // (it is a 4-byte instruction).  Even though QEMU (cortex-a72)
+            // reports our AArch64 `svc #0` with ESR.EC=0x15 (a classification
+            // quirk on this model — real hardware reports EC=0x11 for
+            // AArch64 SVC), the ELR_EL1 value it stores on trap entry is
+            // the SVC PC.  Without `+= 4` the eret jumps straight back
+            // into the same `svc #0`, the loader's T11+ tracepoints stop
+            // firing, and the user-mode program appears to hang.
             if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
                 unsafe { (*t).context.elr = (*frame).elr; }
             }

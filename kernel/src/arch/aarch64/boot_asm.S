@@ -171,7 +171,7 @@ serror_el1_spx:
 
 sync_el0:
     # 1. Allocate space on the stack for TrapFrame + x30 (Total 192 bytes, 16-byte aligned)
-    sub     sp, sp, #192
+    sub     sp, sp, #208
 
     # 2. Stash the entry sp in x19 (callee-saved per AAPCS64, so the
     #    Rust handler below must preserve it) so the restore phase can
@@ -210,6 +210,14 @@ sync_el0:
     mrs     x12, far_el1
     str     x12,      [x19, #176]
 
+    # 5b. Save the user-mode SP (sp_el0) at offset 192 so the SVC
+    #     epilogue can restore the *user* sp, not the kernel sp we
+    #     just `sub`d.  Without this the user-mode program resumes
+    #     with a kernel stack pointer in sp_el0 and the first stack
+    #     access after the SVC faults as a Data Abort at FAR=sp_el0.
+    mrs     x13, sp_el0
+    str     x13,      [x19, #192]
+
     # 6. Pass TrapFrame pointer in x0 to Rust handler
     mov     x0, x19
     bl      aarch64_sync_el0_handler
@@ -219,6 +227,26 @@ sync_el0:
     msr     spsr_el1, x9
     ldr     x10,      [x19, #160]
     msr     elr_el1,  x10
+    isb
+    # **Critical**: write ELR_EL1 a second time after the barrier.
+    # QEMU's TCG (cortex-a72 emulation on x86) appears to require the
+    # ELR_EL1 write to be issued immediately before the eret, not
+    # interleaved with the register restore.  Without this second
+    # write, the eret uses a stale ELR_EL1 left over from a nested
+    # IRQ handler that ran during the syscall dispatcher — typically
+    # the IRQ's "mrs elr_el1; str; ...; mrs elr_el1 = handler PC;
+    # msr spsr; msr elr; isb" — and the user-mode program jumps into
+    # a kernel VA, producing EC=0x20 (instruction abort) on the next
+    # instruction fetch.
+    msr     elr_el1,  x10
+    isb
+
+    # 7b. Restore the user-mode SP (sp_el0) so the eret returns to
+    #     EL0 with the original user stack pointer — not the kernel
+    #     sp we `add`d back.  Loaded from the sp slot (offset 192).
+    ldr     x11,      [x19, #192]
+    msr     sp_el0,   x11
+    isb
 
     # 8. Restore registers x0..x18 and x30 (LR) from the TrapFrame.
     ldp     x0,  x1,  [x19, #0]
@@ -234,12 +262,12 @@ sync_el0:
     ldr     x30,      [x19, #184]
 
     # 9. Deallocate stack space and return via eret
-    add     sp, sp, #192
+    add     sp, sp, #208
     eret
 
 irq_el0:
     # 1. Allocate space on the stack for TrapFrame + x30 (Total 192 bytes, 16-byte aligned)
-    sub     sp, sp, #192
+    sub     sp, sp, #208
 
     # 2. Stash entry sp in x19 (callee-saved) so we can still find the
     #    TrapFrame after a nested IRQ + scheduler switch_to.
@@ -269,6 +297,14 @@ irq_el0:
     str     x11,      [x19, #168]
     mrs     x12, far_el1
     str     x12,      [x19, #176]
+
+    # 5b. Save the user-mode SP (sp_el0) at offset 192 so the SVC
+    #     epilogue can restore the *user* sp, not the kernel sp we
+    #     just `sub`d.  Without this the user-mode program resumes
+    #     with a kernel stack pointer in sp_el0 and the first stack
+    #     access after the SVC faults as a Data Abort at FAR=sp_el0.
+    mrs     x13, sp_el0
+    str     x13,      [x19, #192]
 
     # 6. Ack the GIC: read GICC_IAR (PA 0x0801000C)
     movz    x0, #0x000C
@@ -290,6 +326,15 @@ irq_el0:
     msr     spsr_el1, x9
     ldr     x10,      [x19, #160]
     msr     elr_el1,  x10
+    isb
+    msr     elr_el1,  x10
+    isb
+
+    # 9b. Restore the user-mode SP (sp_el0) so the eret returns to
+    #     EL0 with the original user stack pointer.  Loaded from
+    #     the sp slot at offset 192.
+    ldr     x11,      [x19, #192]
+    msr     sp_el0,   x11
 
     # 10. Restore caller-saved registers x0..x18 and x30 (LR) from TrapFrame.
     ldp     x0,  x1,  [x19, #0]
@@ -305,7 +350,7 @@ irq_el0:
     ldr     x30,      [x19, #184]
 
     # 11. Deallocate stack space and return via eret
-    add     sp, sp, #192
+    add     sp, sp, #208
     eret
 
 fiq_el0:
@@ -325,7 +370,7 @@ serror_el0:
 // All trap saves/restores must preserve AAPCS64 (x19-x28 callee-saved).
 irq_el1_spx:
     # 1. Allocate space on the stack for TrapFrame + x30 (Total 192 bytes, 16-byte aligned)
-    sub     sp, sp, #192
+    sub     sp, sp, #208
 
     # 2. Stash entry sp in x19 (callee-saved) so we can still find the
     #    TrapFrame after a nested IRQ + scheduler switch_to.
@@ -355,6 +400,14 @@ irq_el1_spx:
     str     x11,      [x19, #168]
     mrs     x12, far_el1
     str     x12,      [x19, #176]
+
+    # 5b. Save the user-mode SP (sp_el0) at offset 192 so the SVC
+    #     epilogue can restore the *user* sp, not the kernel sp we
+    #     just `sub`d.  Without this the user-mode program resumes
+    #     with a kernel stack pointer in sp_el0 and the first stack
+    #     access after the SVC faults as a Data Abort at FAR=sp_el0.
+    mrs     x13, sp_el0
+    str     x13,      [x19, #192]
 
     # 6. Ack the GIC: read GICC_IAR (PA 0x0801000C)
     movz    x0, #0x000C
@@ -377,6 +430,15 @@ irq_el1_spx:
     msr     spsr_el1, x9
     ldr     x10,      [x19, #160]
     msr     elr_el1,  x10
+    isb
+    msr     elr_el1,  x10
+    isb
+
+    # 9b. Restore the user-mode SP (sp_el0) so the eret returns to
+    #     EL0 with the original user stack pointer.  Loaded from
+    #     the sp slot at offset 192.
+    ldr     x11,      [x19, #192]
+    msr     sp_el0,   x11
 
     # 10. Restore caller-saved registers x0..x18 and x30 (LR) from TrapFrame.
     ldp     x0,  x1,  [x19, #0]
@@ -392,7 +454,7 @@ irq_el1_spx:
     ldr     x30,      [x19, #184]
 
     # 11. Deallocate stack space and return via eret
-    add     sp, sp, #192
+    add     sp, sp, #208
     eret
 
 // ── Diagnostic for traps we don't expect yet ──────────────────────
