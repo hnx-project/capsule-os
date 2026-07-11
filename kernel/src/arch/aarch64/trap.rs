@@ -1,40 +1,45 @@
 //! AArch64 EL1 exception (trap) handling.
 //!
-//! ## Layout
+//! ## Vector table
 //!
-//! `boot_asm.S` installs `vector_table` at `vbar_el1`.  Each of the
-//! 16 vector slots is a branch into one of the per-class Rust
-//! entry stubs.  Only the **IRQ-EL1-SP_ELx** slot is fully wired
-//! up; the rest currently halt after a diagnostic print on the
-//! UART, so a wrong-class trap stays visible in QEMU output
-//! instead of disappearing into a spin loop.
+//! `boot_asm.S` installs `vector_table` at `vbar_el1`.  Each of the 16
+//! vector slots is a branch into one of the per-class Rust entry stubs.
+//! The three fully-wired paths are `sync_el0` (SVC dispatch from EL0),
+//! `irq_el0` (timer IRQ while in user mode), and `irq_el1_spx` (timer
+//! IRQ while in kernel mode).  The other branches halt after a
+//! diagnostic print so an unexpected trap class stays visible in QEMU
+//! output instead of disappearing into a spin loop.
 //!
-//! ## Frame layout
+//! ## Trap frame layout (208 bytes on the stack)
 //!
-//! The IRQ stub builds a `TrapFrame` on the trap stack:
+//! The asm stubs build a `TrapFrame` on the trap stack and pass it to
+//! the Rust dispatcher:
 //!
 //! ```text
 //!   offset  size  field
-//!   0x000   0x98  x[0..=18]                 (152 bytes, 19 u64s)
+//!   0x000   0x98  x[0..=18]            (152 bytes, 19 u64s)
 //!   0x098   0x08  spsr_el1
 //!   0x0A0   0x08  elr_el1
 //!   0x0A8   0x08  esr_el1
 //!   0x0B0   0x08  far_el1
+//!   0x0B8   0x08  lr (x30)
+//!   0x0C0   0x08  sp_el0               (user-mode sp)
+//!   0x0C8   0x08  padding (16-byte align)
 //! ```
 //!
-//! 19 registers because x0..x18 are caller-saved in the AAPCS
-//! and the trap stub has to preserve them across the dispatcher
-//! call.  x19..x28 are callee-saved (so the kernel never crosses
-//! a trap boundary with live values in them) and x29/x30 belong
-//! to the dispatcher itself.
+//! x0..x18 are caller-saved in AAPCS, so the stub preserves them
+//! across the dispatcher call.  x19..x28 are callee-saved and the
+//! dispatcher must preserve them; in particular x19 is reused as
+//! the TrapFrame pointer (see `X19Guard` below) and **must not** be
+//! clobbered by Rust.
 //!
 //! ## Locking
 //!
-//! Trap handlers run with kernel IRQs still masked (the stub
-//! leaves `PSTATE.I` set during frame save/restore).  A future
-//! scheduler tick may re-enable IRQs at the bottom of the call;
-//! for now we service and `eret` with IRQs still masked, which
-//! is fine on a single-CPU bring-up.
+//! Trap handlers run with kernel IRQs still masked (the stub leaves
+//! `PSTATE.I` set during frame save/restore).  The timer tick path
+//! (`handle_tick_from_irq`) re-enables preemption via `SCHEDULER.schedule()`
+//! but the trap stubs themselves complete the `eret` with IRQs still
+//! masked, which is fine on a single-CPU bring-up.
 
 /// Called from the IRQ-EL1-SP_ELx assembly stub after the GIC has
 /// been acknowledged.  The IAR value identifies which interrupt

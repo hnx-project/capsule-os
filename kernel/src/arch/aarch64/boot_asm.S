@@ -170,7 +170,7 @@ serror_el1_spx:
     b halt
 
 sync_el0:
-    # 1. Allocate space on the stack for TrapFrame + x30 (Total 192 bytes, 16-byte aligned)
+    # 1. Allocate space on the stack for TrapFrame + x30 (Total 208 bytes: 19 x regs (152) + spsr/elr/esr/far/lr/sp_el0 (48) + 8 padding for 16-byte alignment, see kernel TrapFrame struct)
     sub     sp, sp, #208
 
     # 2. Stash the entry sp in x19 (callee-saved per AAPCS64, so the
@@ -266,7 +266,7 @@ sync_el0:
     eret
 
 irq_el0:
-    # 1. Allocate space on the stack for TrapFrame + x30 (Total 192 bytes, 16-byte aligned)
+    # 1. Allocate space on the stack for TrapFrame + x30 (Total 208 bytes: 19 x regs (152) + spsr/elr/esr/far/lr/sp_el0 (48) + 8 padding for 16-byte alignment, see kernel TrapFrame struct)
     sub     sp, sp, #208
 
     # 2. Stash entry sp in x19 (callee-saved) so we can still find the
@@ -369,7 +369,7 @@ serror_el0:
 // Full handler: ack GIC, call Rust dispatcher, EOI, return.
 // All trap saves/restores must preserve AAPCS64 (x19-x28 callee-saved).
 irq_el1_spx:
-    # 1. Allocate space on the stack for TrapFrame + x30 (Total 192 bytes, 16-byte aligned)
+    # 1. Allocate space on the stack for TrapFrame + x30 (Total 208 bytes: 19 x regs (152) + spsr/elr/esr/far/lr/sp_el0 (48) + 8 padding for 16-byte alignment, see kernel TrapFrame struct)
     sub     sp, sp, #208
 
     # 2. Stash entry sp in x19 (callee-saved) so we can still find the
