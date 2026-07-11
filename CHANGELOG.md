@@ -22,13 +22,17 @@ it leaves pre-1.0 development.
   inside the `aarch64-unknown-none` or `riscv64imac-unknown-none-elf`
   targets; the host-testable subset has not been carved out).
 - Init anchor respawn follow-ups:
-  - Syscall `sys_execve` argv copy path is reportedly slow on
-    respawn (init prints `init: handing off to osh` then enters a
-    `SCHED-SAME` spin); the user-space `sys_execve` handler in
-    `kernel/src/syscall/handlers/process.rs:145` needs profiling.
   - SError fault-injection harness — the `aarch64_serror_el0_handler`
     path is now wired up, but no test has been observed to actually
     trigger an SError from EL0 in 30 s of normal QEMU boot.
+  - `sys_execve` argv copy path is correct but currently
+    unexercised by the default boot chain (init uses
+    `hnxlibc::exec` (SYSCALL_EXEC, no argv), not
+    `hnxlibc::execve` (SYSCALL_EXECVE, with argv)).  Exercising
+    it requires changing `init/src/main.rs` to call
+    `hnxlibc::execve("osh", &["osh"])` (or similar) and
+    confirming `argc=1, argv[0]="osh"` reaches the new process
+    via the `user entry trampoline` in `userspace/hnxlibc/src/entry/`.
 
 ### Landed since 0.5.9 (on `develop`, pending release as 0.5.10)
 - **Init anchor respawn** (`555333b feat(init-anchor)`): new module
