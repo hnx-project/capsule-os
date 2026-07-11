@@ -2,6 +2,7 @@ pub mod process;
 pub mod memory;
 pub mod ipc;
 pub mod vfs;
+pub mod posix;
 
 use shared::status::Status;
 

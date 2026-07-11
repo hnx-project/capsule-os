@@ -38,10 +38,6 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
             handlers::process::sys_exit(arg0 as i32);
         }
 
-        SYSCALL_WRITE => {
-            handlers::sys_write(arg0, arg1, arg2)
-        }
-
         SYSCALL_PROCESS_CREATE => {
             match handlers::process::sys_process_create(table, arg0, arg1) {
                 Ok(hv) => hv.get() as usize,
@@ -228,7 +224,9 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
             let path_ptr = arg0;
             let path_len = arg1;
             let flags = arg2 as u32;
-            match handlers::vfs::sys_open(path_ptr, path_len, flags) {
+            // Phase 6 v0.6.0-α P1: route through the fileagent
+            // forwarder instead of the dead-stub vfs::sys_open.
+            match handlers::posix::sys_open_posix(table, path_ptr, path_len, flags) {
                 Ok(fd) => fd as usize,
                 Err(e) => e.to_raw(),
             }
@@ -236,7 +234,7 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
 
         SYSCALL_CLOSE => {
             let fd = arg0 as u32;
-            match handlers::vfs::sys_close(fd) {
+            match handlers::posix::sys_close_posix(table, fd) {
                 Ok(_) => 0,
                 Err(e) => e.to_raw(),
             }
@@ -246,14 +244,49 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
             let fd = arg0 as u32;
             let buf_ptr = arg1;
             let buf_len = arg2;
-            match handlers::vfs::sys_read(fd, buf_ptr, buf_len) {
-                Ok(n) => n,
-                Err(e) => e.to_raw(),
+            // fd == 0 is the UART stdin path (KERNEL_HEALTH K-D2).
+            // fd == 1/2 are UART stdout/stderr — sys_write handles
+            // them.  fd >= 3 is the fileagent forwarder.
+            if fd == 0 {
+                match handlers::vfs::sys_read(0, buf_ptr, buf_len) {
+                    Ok(n) => n,
+                    Err(e) => e.to_raw(),
+                }
+            } else {
+                match handlers::posix::sys_read_posix(table, fd, buf_ptr, buf_len) {
+                    Ok(n) => n,
+                    Err(e) => e.to_raw(),
+                }
+            }
+        }
+
+        SYSCALL_WRITE => {
+            let fd = arg0;
+            let buf_ptr = arg1;
+            let buf_len = arg2;
+            if fd == 1 || fd == 2 {
+                // fd 1/2 stay on the in-kernel UART path (K-D2).
+                handlers::sys_write(fd, buf_ptr, buf_len)
+            } else {
+                // Phase 6 v0.6.0-α P3 forwarder.  The caller must
+                // have staged the buffer in a VMO whose handle is
+                // already in *their* per-process HandleTable; we
+                // pass it through as the cmd-side data transfer
+                // slot (see handlers::posix::sys_write_posix).
+                match handlers::posix::sys_write_posix(table, fd as u32, buf_ptr, buf_len, 0) {
+                    Ok(n) => n,
+                    Err(e) => e.to_raw(),
+                }
             }
         }
 
         SYSCALL_SEEK => {
-            match handlers::vfs::sys_seek(arg0 as u32, arg1 as i64, arg2 as i32) {
+            let fd = arg0 as u32;
+            let offset = arg1 as i64;
+            // libc `whence` matches fileagent's u32 layout
+            // (SEEK_SET=0 / SEEK_CUR=1 / SEEK_END=2).
+            let whence = arg2 as u32;
+            match handlers::posix::sys_lseek_posix(table, fd, offset, whence) {
                 Ok(off) => off as usize,
                 Err(e) => e.to_raw() as usize,
             }
