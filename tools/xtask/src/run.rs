@@ -13,7 +13,9 @@ pub fn run(plat: &Platform, gdb: bool) -> Result<(), String> {
         "{}    Booting{} Launching CapsuleOS in QEMU Emulator...",
         BOLD_BLUE, RESET
     );
-    let _ = Command::new("killall").arg(format!("qemu-system-{}", plat.qemu_arch)).status();
+    let _ = Command::new("killall")
+        .arg(format!("qemu-system-{}", plat.qemu_arch))
+        .status();
     generate_qemu_dtb(plat)?;
     launch_qemu(plat, gdb);
     Ok(())
