@@ -194,6 +194,27 @@
 - [ ] **H7 entry-VA 多 slot collision**: 改 `user_entry_offset` 公式,按 slot 偏移重定位
 - [ ] **H8 VFS skeleton**: 删掉 `vfs::Vnode` 假实现,声明 "VFS = fileagent channel",sys_open 只创建 channel handle 即可
 
+### 🚧 已知更深层阻塞（0.5.9-develop）
+
+- [ ] **RISC-V 引导在 MMU 之前就挂了（不是 H1）** — `qemu-system-riscv64` 跑到
+      `Bootloader | Jumping to HNX Kernel...` 之后**完全沉默**：连 `HNX` 第一行 log
+      都没打，更看不到 panic。`csrw satp` 此时是注释掉的（走 identity mapping），
+      所以跟 AUDIT H1 完全无关。挖了一下 disasm：
+      - `boot_asm.S` 里的 `la sp, __boot_stack_top` 被 rust-lld 错编：
+        目标 `0x801c9910`，实际 sp 落到 `0x80229910`（**+0x60000 / +384 KiB**）
+      - `call kernel_main` 同样被错编：目标 `0x80091b36`，实际跳到
+        `0x8009fb36`（**+0xE000 / +56 KiB**，落到 kernel_main 之后的某个函数里）
+      - 两条都是 `auipc + addi/jalr` 的 hi 拆分错了（hi 比正确值小，lo 偏负）
+      怀疑 `rust-lld` 在 RISC-V `R_RISCV_PCREL_HI20/LO12_I` 拆分上有 bug，
+      或 `.text.boot` 里某条 `addi t0, t0, 0x8` 被错误启用压缩重排。
+      排查路径：手写最小 `.S + .ld` + `llvm-ld` 复现 hi 拆分错；或换
+      `lld`/`riscv64-unknown-elf-ld` 试；或 `kernel_main` 头一行用 Rust 重设 sp
+      并把 `call kernel_main` 改 `jal kernel_main`（21-bit 直接偏移绕开拆分）。
+      优先级：低。当前 RISC-V 路径**已知是半成品**（AUDIT Headline 已经说了），
+      修这个不挡 AArch64 主线 release，留到 RISC-V 恢复专题再开。
+      commit ref: `ff4b3a5` 之后我们尝试过 `fence` + `csrw satp`，
+      验证时发现引导早就挂了 → 撤回到 `256a8af` 之前状态，**未 commit 任何 B 改动**。
+
 ### Syscall 表面补全 (0.7 → 1.0)
 
 - [ ] 18 个 missing handlers: `SYSCALL_CHANNEL_CALL=13`, `PORT_CREATE/WAIT/QUEUE=20/21/22`, `VMO_GET_SIZE=33`, `VMO_SET_SIZE=34`, `VMAR_UNMAP=41`, `VMAR_PROTECT=42`, `THREAD_EXIT=52`, `PROCESS_START=61`, `PROCESS_EXIT=62`, `EVENT_CREATE/SIGNAL/ACK=70/71/72`, `TIMER_CREATE/SET/CANCEL=80/81/82`, `FUTEX_WAIT/WAKE=90/91`
