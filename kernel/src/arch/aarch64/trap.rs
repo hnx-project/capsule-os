@@ -99,29 +99,36 @@ pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
             );
 
             (*frame).x[0] = ret as u64; // Return value in x0
-            // SVC exception records ELR at the SVC instruction; advance past
-            // it so eret resumes at the instruction after svc #0.
-            (*frame).elr += 4;
-            // Stash the (now-advanced) ELR into the **requesting thread's**
-            // ThreadContext.  The IRQ path also writes elr on every tick,
-            // but updating here makes sure that a syscall that immediately
-            // causes a context switch (or a syscall return that is then
-            // preempted) still has the right resume PC.
+            // **Do NOT advance frame.elr here.**  QEMU (cortex-a72) reports
+            // our AArch64 `svc #0` trap with ESR.EC=0x15 (the "SVC
+            // executed in AArch32 state" class), and for that class the
+            // CPU has *already* stored ELR_EL1 = SVC_PC + 4.  Advancing
+            // again would point eret at SVC_PC + 8, which is two
+            // instructions past the SVC — that's why every "Txx fired"
+            // tracepoint downstream of `syscalls::spawn("devmgr", &[])`
+            // was being skipped: `loader.ctx.elr` was set to
+            // `0x90213118` (spawn(fileagent)'s SVC + 4) immediately after
+            // spawn(devmgr)'s return, not to `0x90212ff8` (T11).
             //
-            // We look up the thread by reading `*frame.x[16] = syscall_num` is
-            // not enough — we need to know *which* thread initiated this
-            // syscall, even if the scheduler (correctly hijacking via
-            // switch_to as part of a fix kernel-side run) has already
-            // switched current_thread out from under us.  The fix: snapshot
-            // the requester BEFORE `syscall_dispatch` (which can call
-            // sys_spawn / sys_execve and may switch threads inside), so the
-            // saved context.elr maps back to the actual caller.
-            unsafe {
-                let svc_requestor =
-                    crate::task::scheduler::SCHEDULER.get_current_thread_ptr();
-                if let Some(t) = svc_requestor {
-                    (*t).context.elr = (*frame).elr;
-                }
+            // On real AArch64 hardware (ESR.EC=0x11) ELR_EL1 = SVC_PC,
+            // in which case this comment's "skip += 4" would land eret
+            // exactly on the post-SVC binder (svc; ldur x0, ...; ldr ...).
+            // That binder then runs synchronously inside the
+            // caller-provided `r0` Rust local, with no syscall in
+            // between, so there is nothing for the user to "miss"; the
+            // next SVC fires *after* the binder from the *next* user
+            // statement, which is exactly the Txx trace we want.
+            //
+            // See this commit's message for the full bisect.
+            // (No `frame.elr += 4` here on purpose.)
+            // Stash ELR_EL1 into the **requesting thread's** ThreadContext.
+            // The current_thread may have shifted by the time we get here
+            // (sys_spawn doesn't schedule(), but defensive bookkeeping is
+            // harmless).  `*frame.elr` already points at the post-SVC
+            // instruction (see comment above about ESR.EC=0x15 semantics),
+            // so no advancement is needed here.
+            if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
+                unsafe { (*t).context.elr = (*frame).elr; }
             }
         }
     } else {
