@@ -60,6 +60,8 @@ pub const SYSCALL_CHDIR: u32 = 105;
 pub const SYSCALL_EXEC: u32 = 110;
 pub const SYSCALL_LOAD_BINARY: u32 = 111;
 pub const SYSCALL_EXECVE: u32 = 112;
+pub const SYSCALL_SPAWN: u32 = 113;
+pub const SYSCALL_YIELD: u32 = 114;
 
 pub fn exit(code: i32) -> ! {
     syscall!(SYSCALL_EXIT, code as usize, 0, 0, 0, 0, 0);
@@ -174,6 +176,56 @@ pub fn load_binary(vmo_handle: usize, name: &str) -> Result<u64, Status> {
     } else {
         Ok(ret as u64)
     }
+}
+
+/// Spawn an EL0 process from the embedded rootfs by `path` (short name
+/// like `"devmgr"` or rootfs-relative `"system/bin/devmgr"`), without
+/// replacing the caller.  Returns the new pid as a `u64` on success.
+///
+/// This is the primitive that EL0 boot services (`loader`, `init`)
+/// chain together to bring the rest of userspace up before
+/// `exec`-ing the next stage.  Unlike `execve` it does not consume the
+/// caller's image — control returns to the caller with the new process
+/// sitting in the scheduler queue alongside it.
+pub fn spawn(path: &str, argv: &[&[u8]]) -> Result<u64, Status> {
+    let path_ptr = path.as_bytes().as_ptr();
+    let path_len = path.len();
+    let argc = argv.len();
+
+    let mut pairs: [[u8; 16]; 16] = [[0u8; 16]; 16];
+    for (i, arg) in argv.iter().enumerate() {
+        if i >= 16 {
+            break;
+        }
+        let ptr_bytes = (arg.as_ptr() as u64).to_le_bytes();
+        let len_bytes = (arg.len() as u64).to_le_bytes();
+        pairs[i][0..8].copy_from_slice(&ptr_bytes);
+        pairs[i][8..16].copy_from_slice(&len_bytes);
+    }
+    let argv_ptr = if argc > 0 { pairs.as_ptr() as usize } else { 0 };
+
+    let ret = syscall!(
+        SYSCALL_SPAWN,
+        path_ptr as usize,
+        path_len,
+        argv_ptr,
+        argc,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret as u64)
+    }
+}
+
+/// Voluntarily give up the CPU until the scheduler picks another ready
+/// thread (typically the just-spawned service finishing its IPC
+/// registration).  Returns 0 unconditionally; if nothing else is
+/// runnable the scheduler simply puts us back.
+pub fn yield_cpu() -> isize {
+    syscall!(SYSCALL_YIELD, 0, 0, 0, 0, 0, 0) as isize
 }
 
 pub fn channel_register(name: &str, handle: usize) -> Result<(), Status> {

@@ -193,7 +193,7 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
             }
         }
 
-SYSCALL_LOAD_BINARY => {
+        SYSCALL_LOAD_BINARY => {
             let vmo_handle = arg0 as u32;
             let name_ptr = arg1;
             let name_len = arg2;
@@ -202,6 +202,26 @@ SYSCALL_LOAD_BINARY => {
                 Ok(pid) => pid as usize,
                 Err(e) => e.to_raw(),
             }
+        }
+
+        SYSCALL_SPAWN => {
+            let path_ptr = arg0;
+            let path_len = arg1;
+            let argv_ptr = arg2;
+            let argv_count = arg3;
+            match handlers::process::sys_spawn(table, path_ptr, path_len, argv_ptr, argv_count) {
+                Ok(pid) => pid as usize,
+                Err(e) => e.to_raw(),
+            }
+        }
+
+        SYSCALL_YIELD => {
+            // Voluntarily yield the CPU.  schedule() does the actual
+            // switch; we always return 0 here.  If no other thread is
+            // Ready we just keep the same thread running — caller will
+            // spin until something else becomes runnable.
+            unsafe { crate::task::scheduler::SCHEDULER.schedule(); }
+            0
         }
 
         SYSCALL_OPEN => {

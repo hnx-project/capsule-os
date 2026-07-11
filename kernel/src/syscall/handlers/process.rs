@@ -266,6 +266,147 @@ pub fn sys_execve(
     Ok(())
 }
 
+/// SYSCALL_SPAWN: like `sys_exec` but **does not replace the caller**.
+///
+/// Reads `path_ptr`/`path_len` from the caller's user VA, resolves a
+/// short name (e.g. `"devmgr"` → `"system/bin/devmgr"`) against the
+/// embedded rootfs, materialises the OHLINK binary into a new EL0
+/// process, and returns its pid via `x0`.  The caller's thread keeps
+/// running with its original `state`, so this is the primitive boot
+/// services (loader / init) use to chain — spawn companion services,
+/// continue running, sync up via channel_registry lookups, *then*
+/// `exec` the next bootstrap stage.
+///
+/// Because the new process is added with `Ready` state but the caller
+/// is *not* demoted to `Dead`, the caller and the new process coexist
+/// in the scheduler queue until the next timer tick switches between
+/// them.  Returns the new pid as a `u64`; the syscall ABI marshals
+/// that back into `x0` for the caller.
+pub fn sys_spawn(
+    table: &HandleTable,
+    path_ptr: usize,
+    path_len: usize,
+    argv_ptr: usize,
+    argv_count: usize,
+) -> Result<u64> {
+    if path_ptr == 0 || path_len == 0 {
+        return Err(Status::InvalidArgs);
+    }
+    if argv_count > EXECVE_MAX_ARGS {
+        return Err(Status::InvalidArgs);
+    }
+
+    // Translate the caller's user VA for path + (optional) argv.
+    let caller_pid = current_process_id()?;
+    let caller_proc = crate::task::process::find_process_mut(caller_pid)
+        .ok_or(Status::NotFound)?;
+    let caller_l0_pa = caller_proc.l0_user_pa;
+    if caller_l0_pa == 0 {
+        return Err(Status::InvalidArgs);
+    }
+
+    let mut path_buf = [0u8; 256];
+    let copy_path_len = core::cmp::min(path_len, path_buf.len());
+    crate::syscall::handlers::ipc::safe_copy_from_user(
+        caller_l0_pa,
+        path_ptr,
+        copy_path_len,
+        &mut path_buf[..copy_path_len],
+    )?;
+    let program_name = core::str::from_utf8(&path_buf[..copy_path_len])
+        .map_err(|_| Status::InvalidArgs)?;
+
+    let mut arg_bufs: [[u8; 256]; EXECVE_MAX_ARGS] = [[0u8; 256]; EXECVE_MAX_ARGS];
+    let mut arg_lens: [usize; EXECVE_MAX_ARGS] = [0usize; EXECVE_MAX_ARGS];
+    let mut total_bytes: usize = 0;
+
+    if argv_count > 0 && argv_ptr == 0 {
+        return Err(Status::InvalidArgs);
+    }
+    for i in 0..argv_count {
+        let mut pair = [0u8; 16];
+        let pair_off = argv_ptr + i * 16;
+        crate::syscall::handlers::ipc::safe_copy_from_user(
+            caller_l0_pa,
+            pair_off,
+            16,
+            &mut pair,
+        )?;
+        let s_ptr = u64::from_le_bytes([
+            pair[0], pair[1], pair[2], pair[3],
+            pair[4], pair[5], pair[6], pair[7],
+        ]) as usize;
+        let s_len = u64::from_le_bytes([
+            pair[8], pair[9], pair[10], pair[11],
+            pair[12], pair[13], pair[14], pair[15],
+        ]) as usize;
+        if s_len > arg_bufs[i].len() {
+            return Err(Status::InvalidArgs);
+        }
+        if s_len > 0 {
+            crate::syscall::handlers::ipc::safe_copy_from_user(
+                caller_l0_pa,
+                s_ptr,
+                s_len,
+                &mut arg_bufs[i][..s_len],
+            )?;
+        }
+        arg_lens[i] = s_len;
+        total_bytes = total_bytes.saturating_add(s_len);
+    }
+    if total_bytes + argv_count * 8 > EXECVE_ARG_TOTAL {
+        return Err(Status::InvalidArgs);
+    }
+
+    let mapped: heapless::String<160>;
+    let path_str: &str = if program_name.contains('/') {
+        program_name
+    } else {
+        mapped = heapless::String::try_from("system/bin/")
+            .ok()
+            .and_then(|mut s| {
+                s.push_str(program_name).ok()?;
+                Some(s)
+            })
+            .ok_or(Status::InvalidArgs)?;
+        mapped.as_str()
+    };
+
+    let bytes = crate::rootfs::get_file(path_str).ok_or_else(|| {
+        crate::log_error!("SPAWN", "Program {} not found in rootfs path: {}", program_name, path_str);
+        Status::NotFound
+    })?;
+
+    let name_static: &'static str = intern_name(program_name)?;
+    crate::task::process::Process::launch_user_program_with_argv(
+        name_static,
+        bytes,
+        &arg_bufs[..argv_count],
+        &arg_lens[..argv_count],
+        argv_count,
+    )?;
+
+    // Recover the pid that was just assigned inside launch_user_program
+    // so the caller can hold it if it wants to (and so we can return it).
+    let pid = unsafe {
+        crate::task::process::PROCESSES
+            .iter()
+            .rev()
+            .find_map(|slot| slot.as_ref().map(|p| p.id))
+            .unwrap_or(0)
+    };
+
+    crate::log_info!(
+        "SPAWN",
+        "{} spawned at EL0 with argv[{}] (pid={}, path={})",
+        program_name,
+        argv_count,
+        pid,
+        path_str
+    );
+    Ok(pid)
+}
+
 pub fn sys_process_create(
     table: &HandleTable,
     name_ptr: usize,

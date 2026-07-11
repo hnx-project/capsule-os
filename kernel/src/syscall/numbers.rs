@@ -53,5 +53,16 @@ pub const SYSCALL_CHDIR: u32 = 105;
 pub const SYSCALL_EXEC: u32 = 110;
 pub const SYSCALL_LOAD_BINARY: u32 = 111;
 pub const SYSCALL_EXECVE: u32 = 112;
+/// Spawn an EL0 process from the embedded rootfs by path (short name or
+/// absolute `"system/bin/..."` path).  Unlike `SYSCALL_EXEC`, this does
+/// **not** replace the caller — the new process is added alongside, and
+/// control returns to the caller immediately.  Returns the new pid
+/// (> 0) on success or a negative `Status::to_raw()` on failure.
+pub const SYSCALL_SPAWN: u32 = 113;
+/// Voluntarily relinquish the CPU until the next timer tick or higher
+/// priority event.  Used by EL0 services (loader / init) that need to
+/// give the scheduler a chance to run a freshly-spawned process (fileagent
+/// registering `svc.vfs`, etc.) without blocking on the IPC bus.
+pub const SYSCALL_YIELD: u32 = 114;
 
-pub const SYSCALL_NR: u32 = 113;
+pub const SYSCALL_NR: u32 = 115;
