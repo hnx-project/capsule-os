@@ -49,11 +49,26 @@ macro_rules! kprintln {
     };
 }
 
+/// Padded level+tag+message columns.  Two-space padding after the
+/// 4-char INFO/WARN word plus the post-color reset keeps the leading
+/// `|` lined up at column 7 for all four levels despite INFO/WARN
+/// being one character shorter than ERROR/DEBUG.  The 14-char tag
+/// column is wide enough to fit the longest tag seen in the tree
+/// today — `SYSCALL_WRITE` at 13 chars + 1 padding space.
+pub const LEVEL_PAD_INFO:  &str = "INFO \x1b[0m | ";
+pub const LEVEL_PAD_WARN:  &str = "WARN \x1b[0m | ";
+pub const LEVEL_PAD_ERROR: &str = "ERROR\x1b[0m | ";
+pub const LEVEL_PAD_DEBUG: &str = "DEBUG\x1b[0m | ";
+
 #[macro_export]
 macro_rules! log_info {
     ($target:expr, $($arg:tt)*) => {
         if $crate::kcore::logging::get_log_level() >= 2 {
-            $crate::kprint!("\x1b[1;32m[  INFO ]\x1b[0m [\x1b[1;36m{:<6}\x1b[0m] ", $target);
+            $crate::kprint!(
+                "\x1b[1;32m{}\x1b[36m{:<14}\x1b[0m | ",
+                $crate::kcore::logging::LEVEL_PAD_INFO,
+                $target
+            );
             $crate::kprintln!($($arg)*);
         }
     };
@@ -63,7 +78,11 @@ macro_rules! log_info {
 macro_rules! log_warn {
     ($target:expr, $($arg:tt)*) => {
         if $crate::kcore::logging::get_log_level() >= 1 {
-            $crate::kprint!("\x1b[1;33m[  WARN ]\x1b[0m [\x1b[1;36m{:<6}\x1b[0m] ", $target);
+            $crate::kprint!(
+                "\x1b[1;33m{}\x1b[36m{:<14}\x1b[0m | ",
+                $crate::kcore::logging::LEVEL_PAD_WARN,
+                $target
+            );
             $crate::kprintln!($($arg)*);
         }
     };
@@ -73,7 +92,11 @@ macro_rules! log_warn {
 macro_rules! log_error {
     ($target:expr, $($arg:tt)*) => {
         if $crate::kcore::logging::get_log_level() >= 0 {
-            $crate::kprint!("\x1b[1;31m[ ERROR ]\x1b[0m [\x1b[1;36m{:<6}\x1b[0m] ", $target);
+            $crate::kprint!(
+                "\x1b[1;31m{}\x1b[36m{:<14}\x1b[0m | ",
+                $crate::kcore::logging::LEVEL_PAD_ERROR,
+                $target
+            );
             $crate::kprintln!($($arg)*);
         }
     };
@@ -83,7 +106,11 @@ macro_rules! log_error {
 macro_rules! log_debug {
     ($target:expr, $($arg:tt)*) => {
         if $crate::kcore::logging::get_log_level() >= 3 {
-            $crate::kprint!("\x1b[90m[ DEBUG ]\x1b[0m [\x1b[1;36m{:<6}\x1b[0m] ", $target);
+            $crate::kprint!(
+                "\x1b[90m{}\x1b[36m{:<14}\x1b[0m | ",
+                $crate::kcore::logging::LEVEL_PAD_DEBUG,
+                $target
+            );
             $crate::kprintln!($($arg)*);
         }
     };

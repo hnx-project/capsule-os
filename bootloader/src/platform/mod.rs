@@ -41,7 +41,10 @@ macro_rules! println {
 #[macro_export]
 macro_rules! log_info {
     ($target:expr, $($arg:tt)*) => {
-        $crate::print!("\x1b[1;32m[  INFO ]\x1b[0m [\x1b[1;36m{:<6}\x1b[0m] ", $target);
+        $crate::print!(
+            "\x1b[1;32mINFO\x1b[0m  | \x1b[1;36m{:<14}\x1b[0m | ",
+            $target
+        );
         $crate::println!($($arg)*);
     };
 }
@@ -49,7 +52,10 @@ macro_rules! log_info {
 #[macro_export]
 macro_rules! log_warn {
     ($target:expr, $($arg:tt)*) => {
-        $crate::print!("\x1b[1;33m[  WARN ]\x1b[0m [\x1b[1;36m{:<6}\x1b[0m] ", $target);
+        $crate::print!(
+            "\x1b[1;33mWARN\x1b[0m  | \x1b[1;36m{:<14}\x1b[0m | ",
+            $target
+        );
         $crate::println!($($arg)*);
     };
 }
@@ -57,7 +63,10 @@ macro_rules! log_warn {
 #[macro_export]
 macro_rules! log_error {
     ($target:expr, $($arg:tt)*) => {
-        $crate::print!("\x1b[1;31m[ ERROR ]\x1b[0m [\x1b[1;36m{:<6}\x1b[0m] ", $target);
+        $crate::print!(
+            "\x1b[1;31mERROR\x1b[0m | \x1b[1;36m{:<14}\x1b[0m | ",
+            $target
+        );
         $crate::println!($($arg)*);
     };
 }
