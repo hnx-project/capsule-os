@@ -359,9 +359,84 @@ fiq_el0:
     b halt
 
 serror_el0:
-    mov x0, #0xc00           // 'e' (EL0 SError)
-    bl diag_trap_class
-    b halt
+    # 1. Allocate space on the stack for TrapFrame + x30 (Total 208 bytes: 19 x regs (152) + spsr/elr/esr/far/lr/sp_el0 (48) + 8 padding for 16-byte alignment, see kernel TrapFrame struct)
+    sub     sp, sp, #208
+
+    # 2. Stash the entry sp in x19 (callee-saved per AAPCS64) so the
+    #    restore phase can still find the TrapFrame even if the Rust
+    #    dispatcher triggers a nested IRQ + scheduler switch_to.
+    mov     x19, sp
+
+    # 3. Save registers x0..x18
+    stp     x0,  x1,  [x19, #0]
+    stp     x2,  x3,  [x19, #16]
+    stp     x4,  x5,  [x19, #32]
+    stp     x6,  x7,  [x19, #48]
+    stp     x8,  x9,  [x19, #64]
+    stp     x10, x11, [x19, #80]
+    stp     x12, x13, [x19, #96]
+    stp     x14, x15, [x19, #112]
+    stp     x16, x17, [x19, #128]
+    str     x18,      [x19, #144]
+
+    # 4. Save x30 (LR) at offset 184
+    str     x30,      [x19, #184]
+
+    # 5. Save CSRs (spsr_el1, elr_el1, esr_el1, far_el1)
+    #    **For SError we keep ELR_EL1 as captured** — the exception is
+    #    asynchronous, so ELR does not point at the faulting instruction
+    #    and `elr += 4` (which the SVC path does) would be wrong.
+    mrs     x9,  spsr_el1
+    str     x9,       [x19, #152]
+    mrs     x10, elr_el1
+    str     x10,      [x19, #160]
+    mrs     x11, esr_el1
+    str     x11,      [x19, #168]
+    mrs     x12, far_el1
+    str     x12,      [x19, #176]
+
+    # 5b. Save the user-mode SP (sp_el0) at offset 192 so the epilogue
+    #     restores the *user* sp, not the kernel sp we just `sub`d.
+    mrs     x13, sp_el0
+    str     x13,      [x19, #192]
+
+    # 6. Pass TrapFrame pointer in x0 to the Rust dispatcher.
+    mov     x0, x19
+    bl      aarch64_serror_el0_handler
+
+    # 7. Restore CSRs from the TrapFrame.
+    ldr     x9,       [x19, #152]
+    msr     spsr_el1, x9
+    ldr     x10,      [x19, #160]
+    msr     elr_el1,  x10
+    isb
+    # **Critical**: write ELR_EL1 a second time after the barrier
+    # (same QEMU-TCG workaround as `sync_el0`).
+    msr     elr_el1,  x10
+    isb
+
+    # 7b. Restore the user-mode SP (sp_el0) so the eret returns to EL0
+    #     with the original user stack pointer.
+    ldr     x11,      [x19, #192]
+    msr     sp_el0,   x11
+    isb
+
+    # 8. Restore registers x0..x18 and x30 (LR) from the TrapFrame.
+    ldp     x0,  x1,  [x19, #0]
+    ldp     x2,  x3,  [x19, #16]
+    ldp     x4,  x5,  [x19, #32]
+    ldp     x6,  x7,  [x19, #48]
+    ldp     x8,  x9,  [x19, #64]
+    ldp     x10, x11, [x19, #80]
+    ldp     x12, x13, [x19, #96]
+    ldp     x14, x15, [x19, #112]
+    ldp     x16, x17, [x19, #128]
+    ldr     x18,      [x19, #144]
+    ldr     x30,      [x19, #184]
+
+    # 9. Deallocate stack space and return via eret
+    add     sp, sp, #208
+    eret
 
 // ── The main IRQ-EL1 handler ──────────────────────────────────────
 // On entry here we are in EL1 with SP_ELx == the kernel's idle stack.

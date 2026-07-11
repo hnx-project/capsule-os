@@ -201,6 +201,70 @@ pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
     }
 }
 
+/// AArch64 SError interrupt handler for EL0 (vector slot 0x580 / 0x780).
+///
+/// SError is an **asynchronous** external abort — its ESR_EL1.EC value
+/// is 0x2F, and the captured ELR_EL1 does not point at the faulting
+/// instruction (the fault is not associated with a specific load /
+/// store).  Common sources on this platform are bus parity errors,
+/// asynchronous external aborts from devices, or MMU walks that
+/// faulted in the background.
+///
+/// Behavioural contract (mirrors the non-SVC branch of
+/// `aarch64_sync_el0_handler`):
+///   1. Log ESR / ELR / FAR / SPSR with an `SError-FAULT` tag so the
+///      caller can attribute the fault to the SError class.
+///   2. Mark the current user thread `Dead` so the scheduler will
+///      not `eret` back into it.
+///   3. Call `SCHEDULER.schedule()` so the system swaps to the next
+///      runnable thread.  When no other thread is alive the scheduler
+///      will halt the CPU via its "all dead" branch.
+#[no_mangle]
+pub extern "C" fn aarch64_serror_el0_handler(frame: *mut TrapFrame) {
+    // Same x19 callee-saved dance as the sync handler — see X19Guard.
+    let saved_x19: u64;
+    unsafe {
+        core::arch::asm!(
+            "mov {0}, x19",
+            out(reg) saved_x19,
+            options(nomem, preserves_flags)
+        );
+    }
+    let _x19_guard = X19Guard { saved: saved_x19 };
+
+    unsafe {
+        let esr = (*frame).esr;
+        let elr = (*frame).elr;
+        let far = (*frame).far;
+        let spsr = (*frame).spsr;
+        let ec = (esr >> 26) & 0x3F;
+        let iss = esr & 0x1FF_FFFF;
+        // AET lives in ESR_EL1.ISS[12:10] for SError.  Decode it so the
+        // log distinguishes "uncategorised" (0b000) from
+        // "uncontainable" (0b001) — the latter typically signals a
+        // poisoned data read that the kernel cannot recover from.
+        let aet = (iss >> 10) & 0x7;
+
+        if let Some(t) =
+            crate::task::scheduler::SCHEDULER.get_current_thread_ptr()
+        {
+            crate::log_error!(
+                "SError-FAULT",
+                "EC={:#x} ESR={:#x} ISS={:#x} AET={:#x} ELR={:#x} FAR={:#x} SPSR={:#x} thread=#{} -- KILLED thread to prevent looping exception",
+                ec, esr, iss, aet, elr, far, spsr, (*t).id
+            );
+            (*t).state = crate::task::thread::ThreadState::Dead;
+            crate::task::scheduler::SCHEDULER.schedule();
+        } else {
+            crate::log_error!(
+                "SError-FAULT",
+                "EC={:#x} ESR={:#x} ISS={:#x} AET={:#x} ELR={:#x} FAR={:#x} SPSR={:#x} (no current thread)",
+                ec, esr, iss, aet, elr, far, spsr
+            );
+        }
+    }
+}
+
 /// Last-resort handler for traps we don't yet service.  Logs
 /// ESR / ELR / FAR and spins.
 #[cold]
