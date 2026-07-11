@@ -51,6 +51,11 @@ pub struct Scheduler {
     queues: [ThreadQueue; PRIORITY_LEVELS],
     current_idx: Option<usize>,
     running: bool,
+    /// H5: DAIF mask saved by `lock()`, restored by `unlock()`.
+    /// Stored as a bare `usize` (only the low 4 bits matter — A
+    /// bit 0, F bit 1, I bit 2, D bit 3) so we don't have to drag
+    /// the `tock_registers` DAIF newtype into `Scheduler`.
+    daif_save: usize,
 }
 
 static SCHEDULER_LOCK: AtomicBool = AtomicBool::new(false);
@@ -62,16 +67,32 @@ static mut SCHED_SAME_HIT_COUNT: u32 = 0;
 impl Scheduler {
     pub const fn new() -> Self {
         Scheduler {
-            threads: [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None],
-            queues: [ThreadQueue::new(), ThreadQueue::new(), ThreadQueue::new(), ThreadQueue::new(), ThreadQueue::new()],
+            threads: [const { None }; MAX_THREADS],
+            queues: [const { ThreadQueue::new() }; PRIORITY_LEVELS],
             current_idx: None,
             running: false,
+            daif_save: 0,
         }
     }
 
     fn lock(&self) {
+        // H5 (KERNEL_HEALTH): save the current DAIF mask and only
+        // re-enable IRQs on unlock if they were enabled at the
+        // matching `lock()`.  The previous implementation
+        // unconditionally called `enable_irqs()` on unlock, which
+        // races IRQ nesting and SSP-on contention.  AArch64 has no
+        // dedicated IRQ-on-PUSH, so the saved-and-restored pair is
+        // the PSTATE-safe equivalent of Linux's
+        // `local_irq_save` / `local_irq_restore`.
         unsafe {
-            disable_irqs();
+            core::arch::asm!(
+                "mrs {tmp}, daif",
+                "msr daifset, #0xf",
+                "str {tmp}, [{slot}]",
+                tmp = out(reg) _,
+                slot = in(reg) &self.daif_save,
+                options(preserves_flags),
+            );
         }
         while SCHEDULER_LOCK.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
             core::hint::spin_loop();
@@ -81,7 +102,13 @@ impl Scheduler {
     fn unlock(&self) {
         SCHEDULER_LOCK.store(false, Ordering::Release);
         unsafe {
-            enable_irqs();
+            core::arch::asm!(
+                "ldr {tmp}, [{slot}]",
+                "msr daif, {tmp}",
+                tmp = out(reg) _,
+                slot = in(reg) &self.daif_save,
+                options(preserves_flags),
+            );
         }
     }
 

@@ -1,18 +1,18 @@
 use shared::status::{Result, Status};
 use crate::mm::mmu::pa_to_kernel_va;
 use crate::mm::phys;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 extern "C" {
     fn _kernel_start();
     fn _kernel_end();
 }
 
-pub(crate) static mut NEXT_FREE_PAGE: usize = 0;
-pub(crate) static mut END_FREE_PAGE: usize = 0;
-static mut FREE_PAGES_COUNT: usize = 0;
-static mut TOTAL_PAGES_COUNT: usize = 0;
-static mut MMU_ACTIVE: bool = false;
+pub(crate) static NEXT_FREE_PAGE: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static END_FREE_PAGE: AtomicUsize = AtomicUsize::new(0);
+static FREE_PAGES_COUNT: AtomicUsize = AtomicUsize::new(0);
+static TOTAL_PAGES_COUNT: AtomicUsize = AtomicUsize::new(0);
+static MMU_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 pub const PAGE_CACHE_SIZE: usize = 64;
 
@@ -139,16 +139,16 @@ impl PageCache {
 static mut PAGE_CACHE: PageCache = PageCache::new();
 
 #[inline(always)]
-unsafe fn page_ptr(pa: usize) -> *mut u8 {
-    if MMU_ACTIVE { pa_to_kernel_va(pa) as *mut u8 } else { pa as *mut u8 }
+ unsafe fn page_ptr(pa: usize) -> *mut u8 {
+    if MMU_ACTIVE.load(Ordering::Acquire) { pa_to_kernel_va(pa) as *mut u8 } else { pa as *mut u8 }
 }
 
 pub fn mark_mmu_active() {
-    unsafe { MMU_ACTIVE = true; }
+    MMU_ACTIVE.store(true, Ordering::Release);
 }
 
 pub fn mmu_is_active() -> bool {
-    unsafe { MMU_ACTIVE }
+    MMU_ACTIVE.load(Ordering::Acquire)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -198,9 +198,7 @@ pub fn init(ram_base: usize, ram_size: usize) {
 
         if !is_page_reserved(current_page, kernel_end_page, dtb_start_page, dtb_end_page) {
             if !next_set {
-                unsafe {
-                    NEXT_FREE_PAGE = current_page;
-                }
+                NEXT_FREE_PAGE.store(current_page, Ordering::Release);
                 next_set = true;
             }
             free_count += 1;
@@ -209,11 +207,9 @@ pub fn init(ram_base: usize, ram_size: usize) {
         current_page += 4096;
     }
 
-    unsafe {
-        END_FREE_PAGE = current_page;
-        FREE_PAGES_COUNT = free_count;
-        TOTAL_PAGES_COUNT = total_count;
-    }
+    END_FREE_PAGE.store(current_page, Ordering::Release);
+    FREE_PAGES_COUNT.store(free_count, Ordering::Release);
+    TOTAL_PAGES_COUNT.store(total_count, Ordering::Release);
 }
 
 fn is_page_reserved(page_addr: usize, kernel_end_page: usize, dtb_start_page: usize, dtb_end_page: usize) -> bool {
@@ -227,20 +223,37 @@ fn is_page_reserved(page_addr: usize, kernel_end_page: usize, dtb_start_page: us
 }
 
 pub fn alloc_page() -> Result<PhysAddr> {
-    unsafe {
-        let pa = NEXT_FREE_PAGE;
-        if pa == 0 || pa >= END_FREE_PAGE {
+    // K3 (KERNEL_HEALTH): race-free under SMP / IRQ-嵌套.  The
+    // loop is bounded by `END_FREE_PAGE` (set during `init` and
+    // read-only after that point); each iteration atomically
+    // bumps NEXT_FREE_PAGE and decrements the free-page counter.
+    // If two callers race, one of them will observe an out-of-
+    // range page and bail with `Err(Status::NoMemory)` — the
+    // caller is expected to retry or surface the error.
+    loop {
+        let pa = NEXT_FREE_PAGE.load(Ordering::Acquire);
+        let end = END_FREE_PAGE.load(Ordering::Acquire);
+        if pa == 0 || pa >= end {
             return Err(Status::NoMemory);
         }
-        NEXT_FREE_PAGE = pa + 4096;
-        FREE_PAGES_COUNT = FREE_PAGES_COUNT.wrapping_sub(1);
+        let next = pa + 4096;
+        if NEXT_FREE_PAGE
+            .compare_exchange(pa, next, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            FREE_PAGES_COUNT.fetch_sub(1, Ordering::AcqRel);
 
-        let ptr = page_ptr(pa);
-        for i in 0..(4096 / 8) {
-            core::ptr::write_volatile(ptr.add(i * 8) as *mut u64, 0);
+            let ptr = unsafe { page_ptr(pa) };
+            for i in 0..(4096 / 8) {
+                unsafe {
+                    core::ptr::write_volatile(ptr.add(i * 8) as *mut u64, 0);
+                }
+            }
+
+            return Ok(PhysAddr::new(pa));
         }
-
-        Ok(PhysAddr::new(pa))
+        // CAS failed — another CPU advanced the cursor; retry.
+        core::hint::spin_loop();
     }
 }
 
@@ -252,11 +265,11 @@ pub fn free_page(addr: PhysAddr) -> Status {
 }
 
 pub fn get_free_pages_count() -> usize {
-    unsafe { FREE_PAGES_COUNT }
+    FREE_PAGES_COUNT.load(Ordering::Acquire)
 }
 
 pub fn get_total_pages_count() -> usize {
-    unsafe { TOTAL_PAGES_COUNT }
+    TOTAL_PAGES_COUNT.load(Ordering::Acquire)
 }
 
 pub fn reclaim_page() -> Option<PhysAddr> {
