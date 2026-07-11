@@ -13,12 +13,19 @@ pub(crate) fn safe_copy_from_user(l0_pa: usize, src_user_va: usize, len: usize, 
     while copied < len {
         let va = src_user_va + copied;
         let pa = crate::arch::translate_user_va(l0_pa, va).ok_or(Status::InvalidArgs)?;
+        // `pa_to_kernel_va(pa)` already returns the kernel direct-map VA
+        // for the **byte at physical address `pa`** — adding `page_offset`
+        // (the user-side intra-page offset) on top would skip past `pa`
+        // by that many bytes and read from the wrong page (or from
+        // outside the page entirely if the destination is the last
+        // page).  The `page_offset` is already accounted for inside
+        // `pa` because `translate_user_va` walked the user page table
+        // down to the l3 entry that owns the byte at `va`.
         let kernel_va = crate::mm::mmu::pa_to_kernel_va(pa);
-        let page_offset = va & 0xfff;
-        let chunk_len = core::cmp::min(len - copied, 4096 - page_offset);
+        let chunk_len = core::cmp::min(len - copied, 4096 - (va & 0xfff));
         unsafe {
             core::ptr::copy_nonoverlapping(
-                (kernel_va + page_offset) as *const u8,
+                kernel_va as *const u8,
                 dest.as_mut_ptr().add(copied),
                 chunk_len
             );
@@ -37,13 +44,16 @@ pub(crate) fn safe_copy_to_user(l0_pa: usize, src: &[u8], dest_user_va: usize, l
     while copied < len {
         let va = dest_user_va + copied;
         let pa = crate::arch::translate_user_va(l0_pa, va).ok_or(Status::InvalidArgs)?;
+        // See note in `safe_copy_from_user` — do NOT add the user-side
+        // intra-page offset to `pa_to_kernel_va(pa)`.  `pa` already
+        // accounts for it, and adding again would land us in the wrong
+        // physical page.
         let kernel_va = crate::mm::mmu::pa_to_kernel_va(pa);
-        let page_offset = va & 0xfff;
-        let chunk_len = core::cmp::min(len - copied, 4096 - page_offset);
+        let chunk_len = core::cmp::min(len - copied, 4096 - (va & 0xfff));
         unsafe {
             core::ptr::copy_nonoverlapping(
                 src.as_ptr().add(copied),
-                (kernel_va + page_offset) as *mut u8,
+                kernel_va as *mut u8,
                 chunk_len
             );
         }
