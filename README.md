@@ -3,7 +3,7 @@
 <div align="center">
   <img src="https://img.shields.io/badge/OS-CapsuleOS-6f42c1?style=for-the-badge&logo=rust" alt="CapsuleOS" />
   <img src="https://img.shields.io/badge/Architecture-AArch64%20%7C%20RISCV64-success?style=for-the-badge" alt="Architecture" />
-  <img src="https://img.shields.io/badge/Kernel-HNX%20v0.3.1-blue?style=for-the-badge" alt="HNX Kernel" />
+  <img src="https://img.shields.io/badge/Kernel-HNX%20v0.5.9-blue?style=for-the-badge" alt="HNX Kernel" />
   <img src="https://img.shields.io/badge/Format-OHLINK-orange?style=for-the-badge" alt="OHLINK Format" />
 </div>
 
@@ -109,35 +109,93 @@ xtask repo release v0.5.6
 ---
 
 ## 🖥️ Booting Output Demonstration
-When launched using `xtask code run --arch aarch64`, the bootloader aligns, validates, and hands control over to the HNX Microkernel, which securely initiates the sandboxed EL0 environment:
+When launched using `xtask code run --arch aarch64`, the bootloader aligns, validates, and hands control over to the HNX Microkernel, which securely initiates the sandboxed EL0 environment.  The following is a real capture from `dist/capsuleos-pangu-0.5.9-develop-aarch64-20260711.img`:
 
 ```text
-[  INFO ] [BOOT  ] Booting v0.5.6-develop...
-[  INFO ] [BOOT  ] DTB found at fallback addr 0x42000000.
-[  INFO ] [BOOT  ] Valid OHC Image Found!
-[  INFO ] [BOOT  ] => Version : 0x0002
-[  INFO ] [BOOT  ] => Entry   : 0x0000000040080000
-[  INFO ] [BOOT  ] => Segments: 1
-[  INFO ] [BOOT  ] => Size    : 0x0002ec58 bytes
-[  INFO ] [BOOT  ] Extracting payload to entry point...
-[  INFO ] [BOOT  ] Jumping to HNX Kernel...
-
-[  INFO ] [KERNEL] HNX v0.3.1
-[  INFO ] [FDT   ] Discovered hardware:
-[  INFO ] [FDT   ] => UART base : 0x9000000
-[  INFO ] [FDT   ] => RAM base  : 0x40000000
-[  INFO ] [FDT   ] => RAM size  : 0x20000000 (512 MB)
-[  INFO ] [MM    ] Physical page allocator initialized.
-[  INFO ] [MMU   ] 4-level page tables ACTIVE
-[  INFO ] [IRQ   ] GIC + generic timer enabled
-[  INFO ] [BOOT  ] OK
-[  INFO ] [SMOKE ] VMO/VMAR smoke test: MATCH (via MMU translation)
-[  INFO ] [TASK  ] init & worker threads created with process handle tables
-[  INFO ] [LOADER] Loader service launched successfully at EL0!
-[  INFO ] [BOOT  ] Loader process ready to schedule
-[  INFO ] [HANDLE] smoke test PASS
-[  INFO ] [SCHED ] Starting preemptive multitasking...
+INFO  | BOOT           | Booting v0.5.9-develop...
+INFO  | BOOT           | DTB found at fallback addr 0x42000000.
+INFO  | BOOT           | Valid OHC Image Found!
+INFO  | BOOT           | => Version : 1.1
+INFO  | BOOT           | => Entry   : 0x0000000040080000
+INFO  | BOOT           | => Segments: 1
+INFO  | BOOT           | => Size    : 0x003d296c bytes
+INFO  | BOOT           | Extracting payload to entry point...
+INFO  | BOOT           | Jumping to HNX Kernel...
+INFO  | MM             | Physical page allocator initialized.
+INFO  | FDT            | Discovered hardware: UART=0x9000000, RAM=512 MiB @ 0x40000000
+INFO  | MMU            | 4-level page tables ACTIVE
+INFO  | IRQ            | GIC + generic timer enabled
+INFO  | BOOT           | OK
+INFO  | SMOKE          | VMO/VMAR smoke test: MATCH (via MMU translation)
+INFO  | ROOTFS         | Found entry: 'system/bin/loader' (262 KB) -> slice 0x40233988
+INFO  | LAUNCHER       | Successfully launched program 'loader' at EL0 (pid=1)
+INFO  | LOADER         | Loader service launched successfully at EL0!
+INFO  | SCHED          | Starting preemptive multitasking...
+INFO  | SPAWN          | devmgr spawned at EL0 (pid=2)
+ERROR | EL0-FAULT      | EC=0x24 thread=#1 -- KILLED thread to prevent looping exception
+INFO  | SYSCALL        | Process exited with code 0
+ERROR | SCHED          | No runnable threads left! Halting CPU safely...
 ```
+
+---
+
+## 📊 Project Status & Roadmap
+
+CapsuleOS is under **active pre-1.0 development** (currently `v0.5.9-develop` on the `develop` branch).  The kernel builds and boots cleanly on both target architectures and the basic sandbox model is end-to-end functional, but several areas are explicitly **not** production-ready.  See `TODO.md` for the full list.
+
+**Working today (verified end-to-end via `xtask code run`):**
+* AArch64 (`aarch64-unknown-none`) and RISC-V 64 (`riscv64imac-unknown-none-elf`) kernels both build zero-warning.
+* 4-level MMU page tables, physical page allocator, GIC + generic-timer interrupt wiring.
+* `loader` → `devmgr` EL0 spawn chain (see the boot log above).
+* Capability-based `Handle` table, VMOs/VMARs, SVC dispatch, IPC channels.
+* OHLINK binary loader with CRC32-IEEE checksum validation and the six AArch64 relocation types.
+
+**Planned for the 0.5.x → 0.6.0 line:**
+* RISC-V 64 HAL ownership (currently an explicit roster gap — see "Known Limitations").
+* EL0 fault resilience hardening (recent: scheduler Dead-thread handling, `sys_exit` reschedule, full `serror_el0` handler).
+* Init anchor respawn (kernel-side spawn of `system/bin/init` when the boot anchor pid 1 dies).
+* Host-side unit test infrastructure for the no_std-safe subset of `kernel/` and `hnxstd/`.
+* CI matrix running both architectures through `cargo xtask code build` on every push.
+
+**Not a goal before 1.0:**
+* SMP / multi-core bring-up (single-CPU only by design).
+* Filesystem beyond the embedded read-only rootfs.
+* Networking stack.
+
+---
+
+## 🧰 Development Workflow
+
+Every developer-facing rule — branching, commit style, dual-architecture compile guard, pre-commit safety grid, the `xtask` double-star toolchain — lives in a **single source of truth**: [`AGENTS.md`](./AGENTS.md).  Read that first.  Any change that contradicts it is a process bug, not a code bug.
+
+The repository also carries a **4-rein AI dev team** under `.harness/` (orchestrator + `microkernel-architect`, `aarch64-expert`, `rust-kernel-dev`, `asm-debugger`).  When delegating work to an AI assistant, point it at `.harness/agent.md` so the routing decisions are made by the same single source of truth.
+
+To bring up a working QEMU session from a fresh clone:
+
+```bash
+./install_xtask
+xtask code build --arch aarch64
+xtask code run    --arch aarch64
+```
+
+For the RISC-V target (kernel-only, no userspace QA yet — see Known Limitations):
+
+```bash
+xtask code build --arch riscv64
+```
+
+---
+
+## ⚠️ Known Limitations
+
+These are **explicit gaps** in the current `develop` branch, not latent bugs:
+
+* **RISC-V 64 HAL has no dedicated owner.**  The four AI reins document this in their `Don't own` sections; AArch64 contract changes require leaving a `riscv64 impact` comment.  S-Mode CSR layout, `stvec`, `satp`, PMP and SBI bring-up are not actively maintained.
+* **No init anchor respawn.**  When the EL0 process holding pid 1 (the `loader` service) faults and is killed, the kernel does not currently respawn `system/bin/init` automatically.  The system gracefully halts via `SCHED No runnable threads left` instead.  Fix is queued for 0.6.0.
+* **SError handler coverage is unverified.**  The `serror_el0` path is fully implemented (save TrapFrame → dispatch → kill-thread → eret) but no test has been observed to actually trigger an SError from EL0 in 30 s of normal QEMU boot.  Production users will need a fault-injection harness.
+* **Single-CPU only.**  The scheduler, MMU bring-up, and IPC paths all assume one CPU is online.  No SMP barriers, no per-CPU data.
+* **No host test runner.**  `cargo test` cannot run inside the `aarch64-unknown-none` and `riscv64imac-unknown-none-elf` targets.  The host-testable subset has not yet been carved out.
+* **No `LICENSE` file in the repository root.**  All rights reserved until a license is chosen — see Contributing.
 
 ---
 

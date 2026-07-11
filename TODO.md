@@ -133,8 +133,30 @@
 
 ---
 
+## 🟡 Phase 5.5: v0.5.5 → v0.5.9 EL0 trap resilience hardening (进行中) 🚧
+
+> 目标: 关闭 EL0 trap 路径在用户态程序崩溃 / 异常退出时把整个 kernel 拖进死循环的回归。具体四个 commit,均已落地 `develop` 链路：
+
+### 5.5.1 Sync EL0 路径已就绪 (`b81aa66` + `e961130`)
+- [x] `b81aa66` fix(kernel): trap: save/restore sp_el0 + double msr elr_el1 to fix post-spawn EL0-FAULT — 修复 user 进程 spawn 后第一次 stack 访问因 sp_el0 仍为内核栈指针而 Data Abort 的回归
+- [x] `e961130` chore(kernel): sync trap frame comments: 192 → 208 bytes (lr + sp_el0 + padding) to match `b81aa66`
+
+### 5.5.2 Scheduler Dead-thread 处理 (`2992bd1`)
+- [x] `fix(scheduler): skip Dead threads in pop_next + scan self.threads fallback; gate SCHED-SAME short-circuit on non-Dead prev` — `pop_next` 跳过 Dead + ready queue 空时 fallback 扫 `self.threads` 找 non-Dead,打破"杀 thread 后死循环"
+
+### 5.5.3 sys_exit 路径 (`4aace5e`)
+- [x] `fix(syscall): process_exit: mark caller Dead + reschedule to break devmgr-exit SCHED-SAME spin` — 之前 `sys_exit` 是 `loop {}`,任何 user 程序退出后 kernel 都会卡在 `SCHED-SAME` 死循环
+
+### 5.5.4 SError EL0 完整 handler (`bf10109`)
+- [x] `feat(arch-aarch64): serror_el0: full handler (save 208-byte TrapFrame + dispatch to aarch64_serror_el0_handler + eret) replacing diagnostic halt` — 替换 4 行 `mov x0, #0xc00; bl diag; b halt` 占位,补全 208-byte TrapFrame save + dispatcher + eret
+- [ ] **未验证**: 30s QEMU 跑没复现过 SError。需要 fault-injection harness 验证 `SError-FAULT` log + kill-thread + schedule 路径真的工作(否则只是"代码 ready,行为未确认")
+
+---
+
 ## 🟡 Phase 6 至 Phase 10 (后续路线图)
 - **Phase 6: v0.6.0 POSIX 兼容层** (标准 Syscall 映射、信号、Socket、管道，以及 hnxstd 用户态标准库与 ohlink-linker 的深度符号绑定)
+  - 子项: **Init anchor respawn** (kernel 侧: pid=1 死时自动 spawn `system/bin/init`,跟 Linux `init=` 行为对齐,解决当前 loader 死后系统空转的 WIP 项)
+  - 子项: **RISC-V 64 HAL ownership** (当前 reins 4 个都没标 own,需要补 `riscv64-expert` 第五个 rein 或在 aarch64-expert 里拉 S-Mode CSR / `stvec` / `satp` / PMP / SBI 经验沉淀)
 - **Phase 7: v0.7.0 文件系统服务** (VFS 双向 Channel 服务，实现 ramfs、FAT16/32 文件系统常驻服务)
 - **Phase 8: v0.8.0 网络栈服务** (TCP/IP 协议栈用户态服务，网卡驱动进程)
 - **Phase 9: v0.9.0 所有用户态服务集成** (Shell 控制台 + init 守护系统)
