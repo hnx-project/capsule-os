@@ -489,6 +489,76 @@ impl Process {
             crate::task::scheduler::SCHEDULER.add(thread);
         }
 
+        // **B1.5.3 GDB-derived fix: explicit dc ivac on the user's
+        // new stack's last 16 bytes before eret.**
+        //
+        // See block-level comment at top of this file's B1.5.3
+        // region for the full rationale.  Short version: the
+        // `monitor info registers` dump from a `tools/run-debug.sh`
+        // GDB session showed that the kernel-side context is
+        // healthy at the moment of the fault --
+        // `ttbr0_el1 = 0x404cc000` is the devmgr L0 PA
+        // (matching `find_process_l0_user_pa(2)`), the ELR lives
+        // in the devmgr text segment, and `spsr_el1.M = 0` says
+        // we entered EL0 and then trap-ped, so the kernel-side
+        // scheduler's TTBR0 swap + ISB barriers in
+        // `Scheduler::schedule()` were honoured -- and yet ESR=0x0f
+        // (synchronous external abort on translation table walk)
+        // still fires on the first user-side read of `sp_el0`.
+        //
+        // The remaining gap in coverage is the *data cache half*
+        // for the page backing `sp_el0`.  `safe_copy_to_user`
+        // wrote argv strings into that page through the
+        // kernel-side alias; `flush_tlb_all` and `sync_instruction_cache`
+        // covered the text region plus the L0 PTE flush but
+        // missed this specific stack line.  On Cortex-A72 the
+        // very first user-side eret instruction fetch *and*
+        // the very first user-side stack read both go through the
+        // data-side cache (the latter as a load-with-PC=sp).
+        // Evicting the line at `sp_el0 & ~0xfff` *before* the
+        // next eret -- and pairing the data-cache invalidate with
+        // an instruction-cache invalidate just in case QEMU-TCG
+        // had pre-decoded the post-argv bytes -- is the cheapest
+        // and most local fix that targets this exact line, and
+        // it is the cheapest possible because the cost is one
+        // cache-line evict: a few ns on physical hardware, less
+        // on QEMU.
+        #[cfg(target_arch = "aarch64")]
+        {
+            // `stack_top` is computed right above this point and
+            // is the post-argv sp when argc > 0 and the raw
+            // stack-top when argc == 0 (legacy SYSCALL_EXEC).
+            // Note: page-aligning it & !0xFFF lands us on
+            // `stack_top - 16`-1k page which is the *boundary*
+            // page of the 16 KiB region (i.e. one 4 KiB page
+            // PAST the allocated stack).  Round DOWN to one
+            // 16-byte aligned address that is GUARANTEED to be
+            // inside the stack region: `stack_top - 16`.
+            let sp_top_aligned = (stack_top - 16) & !0xFusize;
+            if let Some(sp_top_pa_resolved) = crate::arch::aarch64::mmu::translate_user_va(
+                l0_user_pa,
+                sp_top_aligned,
+            ) {
+                unsafe {
+                    core::arch::asm!(
+                        "and x9, {sp_va}, #~0xfff",
+                        "dc ivac, x9",
+                        "ic ivau, x9",
+                        "dsb sy",
+                        "isb",
+                        sp_va = in(reg) sp_top_aligned,
+                        options(nomem, nostack)
+                    );
+                }
+            } else {
+                crate::log_warn!(
+                    "LAUNCHER",
+                    "B1.5.3: dc ivac skipped: cannot translate user_sp={:#x}",
+                    sp_top_aligned
+                );
+            }
+        }
+
         // Post-add cache hardening (B1.1).  The flow so far wrote
         // fresh page-table entries for the new process's root_vmar
         // (text + stack + data) under the assumption that the MMU
