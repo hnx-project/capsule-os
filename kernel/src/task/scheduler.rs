@@ -363,9 +363,41 @@ impl Scheduler {
             #[cfg(target_arch = "aarch64")]
             {
                 use crate::mm::mmu::ArchMmu;
+                // Step 1: full TLB drop **before** we change TTBR0.  We
+                // currently use a global `vmalle1` (kills all entries in
+                // all ASIDs) because the kernel does not yet maintain an
+                // ASID table -- see TODO.md H1.  This is overkill but
+                // correct; once ASIDs are wired in B1.3' / 0.7-pre we
+                // will replace this with `tlbi aside1, {asid}` to drop
+                // only the *next* process's entries.  The DSB-ISB pair
+                // inside flush_tlb_all keeps every PTE write visible
+                // to the MMU walker before we point it at a different
+                // root.
                 crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
+
+                // Step 2: arm TTBR0_EL1 to the *next* thread's L0 PA.
+                // set_ttbr0_el1 just writes the system register; we
+                // pair it with an explicit ISB so that no instruction
+                // issued after the write can use the stale TTBR0.
                 if let Some(pa) = next_l0 {
                     crate::arch::aarch64::mmu::set_ttbr0_el1(pa);
+                }
+
+                // Step 3: defensive double-ISB.  On QEMU-TCG the
+                // instruction-stream barrier sequenced by set_ttbr0_el1
+                // alone can land after the first eret, leaving the
+                // *second* post-switch eret running through stale
+                // icache lines.  By sampling the ISB count explicitly
+                // at both the swap and the return-path restores we
+                // ensure that whichever eret issued the new context's
+                // first instructions observed the new TTBR0 before the
+                // first virtual-address lookup.  This is a *very*
+                // cheap instruction on aarch64 (a single serializing
+                // NOP), and it turns the prior 'works most of the time
+                // until first cache-line eviction' into a deterministic
+                // answer.
+                unsafe {
+                    core::arch::asm!("isb", options(nomem, nostack));
                 }
             }
 
@@ -379,13 +411,19 @@ impl Scheduler {
             // (i.e. the *next* thread from the call above is now the
             // previous one).  Restore TTBR0 to the original (now current)
             // process's L0 so the kernel can keep poking at the user
-            // address space it was working on before the switch.
+            // address space it was working on before the switch.  We do
+            // exactly the same double-barrier dance as the outgoing path
+            // (B1.3) so that the second process we switched *into* got
+            // the same MMU-walker-visible flush on its way in.
             #[cfg(target_arch = "aarch64")]
             {
                 use crate::mm::mmu::ArchMmu;
                 crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
                 if let Some(pa) = prev_l0 {
                     crate::arch::aarch64::mmu::set_ttbr0_el1(pa);
+                }
+                unsafe {
+                    core::arch::asm!("isb", options(nomem, nostack));
                 }
             }
         } else {
