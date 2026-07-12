@@ -79,6 +79,77 @@ impl Environment for CapsuleEnv {
         Ok(code)
     }
 
+    fn spawn(&self, cmd: &str, args: &[&str]) -> Result<u64, ShellError> {
+        // SYSCALL_SPAWN: launches cmd without replacing the
+        // caller.  The new process's stdout inherits osh's
+        // pipe fd (if any); see B7 shell.rs for how the
+        // pipeline sets the dup2 first.
+        let mut argv_storage: [&[u8]; 16] = [&[]; 16];
+        argv_storage[0] = cmd.as_bytes();
+        for (i, a) in args.iter().enumerate() {
+            if i + 1 >= 16 {
+                break;
+            }
+            argv_storage[i + 1] = a.as_bytes();
+        }
+        let count = core::cmp::min(args.len() + 1, 16);
+        match hnxlibc::spawn(cmd, &argv_storage[..count]) {
+            Ok(pid) => Ok(pid),
+            Err(_) => Err(ShellError::IoError),
+        }
+    }
+
+    fn pipe(&self, fds: &mut [i32; 2]) -> Result<(), ShellError> {
+        // SYSCALL_PIPE writes its two fds into the caller's
+        // user memory at `fds.as_mut_ptr()`; we use a
+        // stack-array since the kernel reads 8 bytes (two
+        // i32s).
+        let mut raw = [0i32; 2];
+        match hnxlibc::pipe_pair(&mut raw) {
+            Ok(()) => {
+                fds[0] = raw[0];
+                fds[1] = raw[1];
+                Ok(())
+            }
+            Err(_) => Err(ShellError::IoError),
+        }
+    }
+
+    fn dup2(&self, old_fd: i32, new_fd: i32) -> Result<(), ShellError> {
+        match hnxlibc::dup2(old_fd, new_fd) {
+            Ok(_) => Ok(()),
+            Err(_) => Err(ShellError::IoError),
+        }
+    }
+
+    fn wait(&self, pid: u64) -> Result<i32, ShellError> {
+        let mut status: i32 = 0;
+        match hnxlibc::wait4(pid as i64, &mut status, 0) {
+            Ok((_, _)) => Ok(status),
+            Err(_) => Err(ShellError::IoError),
+        }
+    }
+
+    fn yield_cpu(&self) {
+        hnxlibc::yield_cpu();
+    }
+
+    fn open(&self, path: &str, flags: i32) -> Result<i32, ShellError> {
+        match hnxlibc::open_str(path, flags, 0) {
+            fd if fd >= 0 => Ok(fd),
+            _ => Err(ShellError::PathNotFound),
+        }
+    }
+
+    fn read(&self, fd: i32, buf: &mut [u8]) -> Result<usize, ShellError> {
+        let n = hnxlibc::read(fd, buf.as_mut_ptr(), buf.len());
+        if n >= 0 {
+            Ok(n as usize)
+        } else {
+            Err(ShellError::IoError)
+        }
+    }
+
     fn read_file(&self, _path: &str, _buf: &mut [u8]) -> Result<usize, ShellError> {
         // TODO: 等待 fileagent (svc.vfs) 被 init 拉起并注册到 IPC 总线后，
         //       再串 open(path, O_RDONLY, 0) + read(fd, buf, buf.len()) + close(fd)。

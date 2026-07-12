@@ -40,7 +40,8 @@ pub fn main() -> i32 {
     // being dropped or corrupted somewhere on the way through.
     print_argv_summary();
     let env = env::capsule::CapsuleEnv;
-    shell::run_shell(&env)
+    shell::run_shell(&env);
+    0
 }
 
 /// Print `argc` and each `argv[i]` to stdout, one per line, so the

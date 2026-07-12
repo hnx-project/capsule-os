@@ -488,6 +488,13 @@ pub fn pipe(ufds_ptr: *mut i32) -> Result<(), Status> {
     Ok(())
 }
 
+/// Convenience wrapper for callers that hold the pair by ref:
+/// forwards to `pipe(ufds.as_mut_ptr())`.  Used by shell
+/// pipelines (B7 osh) where the target is a stack array.
+pub fn pipe_pair(ufds: &mut [i32; 2]) -> Result<(), Status> {
+    pipe(ufds.as_mut_ptr())
+}
+
 /// POSIX `dup2(oldfd, newfd)` - duplicate `oldfd` into
 /// `newfd`.  Returns the new fd on success.
 pub fn dup2(oldfd: i32, newfd: i32) -> Result<i32, Status> {
