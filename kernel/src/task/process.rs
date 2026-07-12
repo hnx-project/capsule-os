@@ -714,6 +714,68 @@ impl Process {
                 use crate::mm::mmu::ArchMmu;
                 crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
                 crate::arch::aarch64::mmu::set_ttbr0_el1(old_ttbr0);
+
+                // **A2 diagnostic #4**: read back the launcher's
+                // full page-table chain (L0 → L1 → L2 → L3) right
+                // here, just before we return to the syscall
+                // handler.  This serves as ground truth for the
+                // GDB-side observation that `x/16gx 0x404cc000`
+                // later reports all zeros: if this kprintln sees
+                // the actual PTEs and the gdbstub later sees
+                // zeros, the writes are regressing between
+                // LAUNCHER returning and the scheduler swap -- if
+                // both see zeros, the writes never made it to
+                // physical memory in the first place (QEMU-TCG
+                // bug).
+                let stack_va_for_walk = proc.root_vmar.base + 0x2000000 + 0x3ff0usize;
+                crate::kprintln!("A2-DIAG pid={} ttbr0={:#x} L0={:#x} walk_for_va={:#x}", pid, old_ttbr0, l0_user_pa, stack_va_for_walk);
+                let l0_kva = crate::mm::mmu::pa_to_kernel_va(l0_user_pa) as *const u64;
+                unsafe {
+                    for i in 0..4usize {
+                        let e0 = core::ptr::read_volatile(l0_kva.add(i * 4));
+                        let e1 = core::ptr::read_volatile(l0_kva.add(i * 4 + 1));
+                        let e2 = core::ptr::read_volatile(l0_kva.add(i * 4 + 2));
+                        let e3 = core::ptr::read_volatile(l0_kva.add(i * 4 + 3));
+                        crate::kprintln!(
+                            "  L0[{}..{}]={:#018x} {:#018x} {:#018x} {:#018x}",
+                            i * 4, i * 4 + 3, e0, e1, e2, e3
+                        );
+                    }
+                    let l0e = core::ptr::read_volatile(l0_kva.add(0));
+                    if l0e & 1 != 0 && l0e & 0b10 != 0 {
+                        let l1_pa = (l0e & 0x0000_FFFF_FFFF_F000) as usize;
+                        crate::kprintln!("  L1 @ {:#x}", l1_pa);
+                        let l1_kva = crate::mm::mmu::pa_to_kernel_va(l1_pa) as *const u64;
+                        for i in 0..4usize {
+                            let e0 = core::ptr::read_volatile(l1_kva.add(i * 4));
+                            let e1 = core::ptr::read_volatile(l1_kva.add(i * 4 + 1));
+                            let e2 = core::ptr::read_volatile(l1_kva.add(i * 4 + 2));
+                            let e3 = core::ptr::read_volatile(l1_kva.add(i * 4 + 3));
+                            crate::kprintln!(
+                                "    L1[{}..{}]={:#018x} {:#018x} {:#018x} {:#018x}",
+                                i * 4, i * 4 + 3, e0, e1, e2, e3
+                            );
+                        }
+                        let l1e = core::ptr::read_volatile(l1_kva.add(2));
+                        if l1e & 1 != 0 && l1e & 0b10 != 0 {
+                            let l2_pa = (l1e & 0x0000_FFFF_FFFF_F000) as usize;
+                            crate::kprintln!("    L2 @ {:#x}", l2_pa);
+                            let l2_kva = crate::mm::mmu::pa_to_kernel_va(l2_pa) as *const u64;
+                            for i in (140..144) {
+                                let e = core::ptr::read_volatile(l2_kva.add(i));
+                                crate::kprintln!("      L2[{}]={:#018x}", i, e);
+                            }
+                            let l2e = core::ptr::read_volatile(l2_kva.add(144));
+                            if l2e & 1 != 0 && l2e & 0b10 != 0 {
+                                let l3_pa = (l2e & 0x0000_FFFF_FFFF_F000) as usize;
+                                crate::kprintln!("      L3 @ {:#x}", l3_pa);
+                                let l3_kva = crate::mm::mmu::pa_to_kernel_va(l3_pa) as *const u64;
+                                let l3e = core::ptr::read_volatile(l3_kva.add(3));
+                                crate::kprintln!("        L3[3]={:#018x}", l3e);
+                            }
+                        }
+                    }
+                }
             }
         }
 
