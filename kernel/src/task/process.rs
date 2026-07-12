@@ -318,6 +318,74 @@ impl Process {
 
         let stack_top = (stack_va + stack_size) & !(15usize);
 
+        // **B1.5.2 explicit stack-page backing touch.**
+        //
+        // QEMU-TCG's hypothesis continued: when the user stack
+        // is allocated and committed via the Vmo path, the
+        // 4 KiB physical page backing PA `stack_top` lives in
+        // the kernel's direct-map alias via
+        // `pa_to_kernel_va(stack_pa)`, but QEMU keeps the
+        // model-side backing RAM in a "not yet touched" state
+        // until the page is actually read or written by a
+        // MMU walker / store.  A pure `flush_tlb_all()` does
+        // not commit the backing RAM; the walk that follows
+        // a `tlbi vaae1is` *will* commit it because QEMU
+        // services the page-table walk with a model-side
+        // `cpu_physical_memory_read` that the CPU backend
+        // sees as a "real" access.
+        //
+        // Until recently the launch path relied on a
+        // happenstance: the next MMU walk after spawn would be
+        // the one that walks the user-side stack and that
+        // walk would commit the page.  But QEMU's TLB and
+        // page-cache implementation can keep the page in a
+        // half-initialised state when the entry VA is the
+        // *entry* of the user stack and the page-touch
+        // happens at the very first page after eret.  This
+        // results in the EL0-FAULT EC=0x24 ESR=0x9200004f
+        // we've been chasing.
+        //
+        // The conservative workaround: have the kernel *
+        // explicitly* touch the last 16 bytes of the freshly
+        // committed stack page through its direct-map alias.
+        // This performs a real `cpu_physical_memory_write`
+        // (when we are zero-filling -- which we are, the
+        // page is zero-initialised and we want it to stay
+        // that way -- a load of any byte suffices to cause
+        // QEMU to materialise the page-backing).
+        //
+        // The store uses `core::ptr::write_volatile` so the
+        // optimizer cannot elide it.  It performs a real
+        // 8-byte store at `stack_top - 16`.  The page is
+        // already mapped via `proc.root_vmar.map` above, so
+        // we do not need to re-walk the page table; we go
+        // through the kernel-side alias directly.
+        #[cfg(target_arch = "aarch64")]
+        {
+            // Take a known-safe stack page address (top - 16,
+            // which is well inside the 16 KiB region).
+            let touch_va = stack_top - 16;
+            let touch_l0_pa = l0_user_pa;
+            if let Some(touch_pa) = crate::arch::aarch64::mmu::translate_user_va(
+                touch_l0_pa,
+                touch_va,
+            ) {
+                let touch_kernel_va = crate::mm::mmu::pa_to_kernel_va(touch_pa) as *mut u64;
+                unsafe {
+                    // 8-byte volatile store so QEMU-TCG
+                    // materialises the backing RAM.  The
+                    // value is 0 (same as the page's existing
+                    // content) so this is a coherent write
+                    // that does not perturb the stack.
+                    core::ptr::write_volatile(touch_kernel_va, 0u64);
+                    // dsb ish makes the write observable to
+                    // the page-table walker before the next
+                    // TLB-fill.
+                    core::arch::asm!("dsb ish", options(nomem, nostack));
+                }
+            }
+        }
+
         use crate::mm::mmu::ArchMmu;
         #[cfg(target_arch = "aarch64")]
         crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
@@ -489,6 +557,67 @@ impl Process {
             // icache hash until the next exception boundary, and
             // the swap-restore below can race the actual eret.
             core::arch::asm!("isb", options(nomem, nostack));
+
+            // **B1.5.1 strict-ordering barrier (KERNEL_HEALTH.md A2).**
+            //
+            // The QEMU-TCG smoke continues to hit
+            //     `EL0-FAULT EC=0x24 ESR=0x9200004f
+            //      FAR=0x92003ff0 thread=#1 pid=1`
+            // even after B1.1-B1.5 closed the AP-bits layer.
+            // B1.4 hex dump confirmed the L3 PTE for that FAR is
+            // a valid, user-RW entry (`AP[2:1]=11`, AF=1) and
+            // the backing page `PA=0x404e4000` is freshly
+            // allocated, zeroed, and cache-flushed.  The fault is
+            // therefore *not* an unbacked page; it is a
+            // page-table-walk-side fault at level 0/1/2/3 with
+            // FSC=0x0f ("Synchronous External Abort"), which on
+            // AArch64 happens when the L3 PTE's PA points at a
+            // physical address the system bus has not yet
+            // committed to a coherent state, or when the data
+            // cache + TLB sit in a state where the MMU walker
+            // fetches a *different* PA than the kernel wrote.
+            //
+            // The hypothesis we are pursuing is the second one:
+            // the launch path has a window where the *next*
+            // schedule tick (loader -> idle/other threads) can
+            // re-route the page-table walk through a stale TLB
+            // entry left over by the new L0's contents.  Even
+            // though `flush_tlb_all` runs at every `set_ttbr0_el1`
+            // call below, the TLB can be re-filled under us
+            // across a *different* ASID that the loader /
+            // devmgr / init chain does not yet own.  The
+            // conservative fix: invalidate **every** TLB entry
+            // regardless of ASID with `tlbi vaae1is, xzr`, then
+            // barrier the whole system with `dsb sy` so that
+            // every store before is observable to the table
+            // walker's first access.
+            //
+            // `vaae1is` with `xzr` (the zero register) is the
+            // ARMv8 spelling for "invalidate by VA in all ASIDs,
+            // EL1" -- it discards *all* TLB entries that match
+            // the address pattern across every ASID.  On QEMU-
+            // TCG (which does not yet model ASIDs, see TODO.md
+            // H1 ASID-table) this collapses to the same as
+            // `tlbi vmalle1`, but the IS variant requires an ISB
+            // before the first TLB-fill event after the
+            // invalidation -- which is exactly what we want for
+            // eret-into-the-new-thread correctness.
+            //
+            // `dsb sy` is the strongest data-write barrier on
+            // aarch64: every store the issuing core made before
+            // this instruction must reach the memory system
+            // before the next instruction completes.  Without it
+            // the data cache can hold the page-table writes in
+            // a write buffer, the `tlbi vaae1is` finishes before
+            // the write buffer drains, and the subsequent
+            // eret-driven page-table walk reads a stale cache
+            // line and faults on SError 0x0f.
+            core::arch::asm!(
+                "tlbi vaae1is, xzr",
+                "dsb sy",
+                "isb",
+                options(nomem, nostack)
+            );
             ()
         };
 
@@ -521,7 +650,7 @@ impl Process {
         crate::log_info!("LAUNCHER", "Successfully launched program '{}' at EL0 (entry={:#x}, pid={}, argc={})",
             name, user_entry, pid, argc);
 
-        // **B1.5 PTE-walk dump (always-on).**  Build on B1.4: dump
+        // **B1.5 PTE-walk dump (debug-only).**  Build on B1.4: dump
         // not just the bytes at the entry VA and the stack VA, but
         // also the *page-table entries* on the L0 -> L1 -> L2 -> L3
         // walk the MMU will issue when EL0 first fetches.
@@ -551,7 +680,7 @@ impl Process {
         // We demote back to cfg(debug_assertions) in a single
         // follow-up commit once A2 is closed.
 
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(all(target_arch = "aarch64", debug_assertions))]
         {
             use core::fmt::Write;
 
@@ -699,7 +828,7 @@ impl Process {
             }
         }
 
-        // **B1.4 diagnostic dump (always-on).**  FAR=0x92003d68 from
+        // **B1.4 diagnostic dump (debug-only).**  FAR=0x92003d68 from
         // KERNEL_HEALTH A2 points into the new process's user stack
         // region (vmar_base + 0x2000000 + 0x3d68), so the fault is on
         // the very first stack access rather than at the ELF entry.
@@ -731,7 +860,7 @@ impl Process {
         // single follow-up commit, in line with the convention that
         // diagnostic-on-the-wire prints are deleted as soon as the
         // bug they were tracing is fixed.
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(all(target_arch = "aarch64", debug_assertions))]
         {
             use core::fmt::Write;
             if let Some(entry_pa) =
