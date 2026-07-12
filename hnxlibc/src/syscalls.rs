@@ -465,3 +465,44 @@ pub fn pause() -> Result<(), Status> {
     }
     Ok(())
 }
+
+/// POSIX `pipe(ufds)` - allocate a fresh kernel pipe and write
+/// its two fd numbers into the caller's `ufds` array.  The
+/// caller passes a pointer to two consecutive i32 slots; the
+/// kernel fills them with `[read_fd, write_fd]`.  Returns Ok(())
+/// on success.
+pub fn pipe(ufds_ptr: *mut i32) -> Result<(), Status> {
+    let ret = syscall!(
+        SYSCALL_PIPE,
+        ufds_ptr as usize,
+        0,
+        0,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        let s = Status::from_raw(ret as i32);
+        return Err(s);
+    }
+    Ok(())
+}
+
+/// POSIX `dup2(oldfd, newfd)` - duplicate `oldfd` into
+/// `newfd`.  Returns the new fd on success.
+pub fn dup2(oldfd: i32, newfd: i32) -> Result<i32, Status> {
+    let ret = syscall!(
+        SYSCALL_DUP2,
+        oldfd as usize,
+        newfd as usize,
+        0,
+        0,
+        0,
+        0
+    );
+    if (ret as i64) < 0 {
+        let s = Status::from_raw(ret as i32);
+        return Err(s);
+    }
+    Ok(ret as i32)
+}

@@ -2,6 +2,7 @@ use shared::status::{Result, Status};
 use shared::types::HandleValue;
 use crate::object::{HandleTable, KernelObject, Rights};
 
+pub mod pipe;
 pub mod posix_fd_table;
 
 pub const MAX_VNODES: usize = 256;

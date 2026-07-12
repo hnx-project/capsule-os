@@ -2,6 +2,22 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use shared::status::{Result, Status};
 use crate::mm::vmar::Vmar;
 use crate::object::handle_table::HandleTable;
+use crate::vfs::pipe::{PipeId, PipeRole};
+
+/// One slot in `Process::fd_table`.  For 1.0 we only carry
+/// pipe-end entries; once fileagent starts serving fds directly
+/// to a process (rather than through the channel forwarder) we
+/// will add a `VfsHandle(HandleValue)` variant here.
+#[derive(Debug, Clone, Copy)]
+pub enum FdEntry {
+    Pipe { pipe: PipeId, role: PipeRole },
+}
+
+/// Lowest user-space fd; matches Linux's `STDERR_FILENO+1`.
+pub const USER_FD_BASE: u32 = 3;
+/// Size of `Process::fd_table`.  Index `0..USER_FD_BASE` are
+/// reserved for the kernel-builtin UART path (K-D2).
+pub const FD_TABLE_SIZE: usize = 16;
 
 static PROCESS_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 pub static VMAR_BASE_SLOT: AtomicUsize = AtomicUsize::new(0);
@@ -28,6 +44,19 @@ pub struct Process {
     pub l0_user_pa: usize,
     pub cwd: [u8; CWD_MAX],
     pub cwd_len: usize,
+    /// Per-process file descriptor table; index 0/1/2 stay reserved
+    /// for the in-kernel UART path (K-D2), so user-space fds live
+    /// at indices `3..16`.  Each entry is either a `PipeRole` reader
+    /// or writer (B6) or empty (`None`).  We keep this small enough
+    /// to fit on the kernel side without a separate alloc frame; a
+    /// 16-slot process is enough for the 1.0 demo (the limit matches
+    /// POSIX_MIN_FD + 13 user fds).
+    pub fd_table: [Option<FdEntry>; 16],
+    /// First available user fd; bumped on every `alloc_fd` so
+    /// hand-rolls of `sys_open` / `sys_pipe` can hand out stable
+    /// numbers without scanning the table each time.  Reset to
+    /// `3` (`STDERR_USER_BASE`) when the process is freshly spawned.
+    pub next_fd: u32,
     /// Exit code recorded by `SYSCALL_EXIT` so the parent can harvest
     /// it via `SYSCALL_WAIT`.  `None` while the process is still
     /// running or zombie with no exit recorded yet.  When set, the
@@ -91,6 +120,8 @@ impl Process {
             parent_pid: 0,
             sig_handlers: [0u8; 32],
             pending_signals: 0u32,
+            fd_table: [const { None }; FD_TABLE_SIZE],
+            next_fd: USER_FD_BASE,
         })
     }
 

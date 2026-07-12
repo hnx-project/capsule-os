@@ -252,6 +252,21 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
                     Err(e) => e.to_raw(),
                 }
             } else {
+                // B6: consult per-process fd_table for a pipe end
+                // first; if found, dispatch_pipe_io handles the
+                // transfer and returns Some(bytes).  Returning
+                // Ok(Some(n)) here is the early-exit path; if it
+                // returns Ok(None) we fall through to the
+                // existing fileagent forwarder.
+                if fd != 0 {
+                    match crate::syscall::handlers::process::dispatch_pipe_io(
+                        table, fd, buf_ptr, buf_len, /* is_write= */ false,
+                    ) {
+                        Ok(Some(n)) => return n,
+                        Ok(None) => {}
+                        Err(e) => return e.to_raw(),
+                    }
+                }
                 match handlers::posix::sys_read_posix(table, fd, buf_ptr, buf_len) {
                     Ok(n) => n,
                     Err(e) => e.to_raw(),
@@ -267,6 +282,21 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
                 // fd 1/2 stay on the in-kernel UART path (K-D2).
                 handlers::sys_write(fd, buf_ptr, buf_len)
             } else {
+                // B6 pipe-write fast path: consult fd_table for a
+                // pipe-writer end.  We do NOT marshal into a VMO
+                // for the pipe case; syscall!() in hnxlibc passes
+                // the buffer pointer directly when fd is a pipe
+                // fd (set by sys_pipe), and the kernel reads it
+                // via safe_copy_from_user inside dispatch_pipe_io.
+                let pipe_n = crate::syscall::handlers::process::dispatch_pipe_io(
+                    table, fd as u32, buf_ptr, buf_len, /* is_write= */ true,
+                );
+                match pipe_n {
+                    Ok(Some(n)) => return n,
+                    Ok(None) => {}
+                    Err(e) => return e.to_raw(),
+                }
+
                 // Phase 6 v0.6.0-α P3 forwarder.  The caller must
                 // have staged the buffer in a VMO whose handle is
                 // already in *their* per-process HandleTable; we
@@ -345,6 +375,20 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
             // wait4 status on the next syscall.
             match handlers::process::sys_pause(table) {
                 Ok(()) => 0,
+                Err(e) => e.to_raw() as usize,
+            }
+        }
+
+        SYSCALL_PIPE => {
+            match handlers::process::sys_pipe(table, arg0) {
+                Ok(()) => 0,
+                Err(e) => e.to_raw() as usize,
+            }
+        }
+
+        SYSCALL_DUP2 => {
+            match handlers::process::sys_dup2(table, arg0 as u32, arg1 as u32) {
+                Ok(fd) => fd as usize,
                 Err(e) => e.to_raw() as usize,
             }
         }

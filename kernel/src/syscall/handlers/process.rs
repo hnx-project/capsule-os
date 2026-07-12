@@ -982,3 +982,223 @@ pub fn sys_pause(_table: &HandleTable) -> Result<()> {
         unsafe { crate::task::scheduler::SCHEDULER.schedule(); }
     }
 }
+
+// -------------------------------------------------------------------------
+// B6 (`KERNEL_HEALTH.md` B6): POSIX pipe + dup2 surface (1.0 subset).
+// -------------------------------------------------------------------------
+
+/// `SYSCALL_PIPE(ufds_ptr)` - allocate a new in-kernel pipe and
+/// return its two ends as fresh fds in the caller's per-process
+/// `fd_table`.  The bytes at `ufds_ptr` must be at least 8 bytes
+/// (two `i32`s) and live in writable user memory; we copy them
+/// back via `safe_copy_to_user`.
+pub fn sys_pipe(
+    table: &HandleTable,
+    ufds_ptr: usize,
+) -> Result<()> {
+    let _ = table;
+    let caller_pid = crate::task::process::current_process_id()?;
+    let caller_proc = crate::task::process::find_process_mut(caller_pid)
+        .ok_or(Status::NotFound)?;
+    let caller_l0 = caller_proc.l0_user_pa;
+    if caller_l0 == 0 || ufds_ptr == 0 {
+        return Err(Status::InvalidArgs);
+    }
+
+    let pipe_id = crate::vfs::pipe::alloc_pipe()?;
+    // Reserve two adjacent user slots; bump refcount for the
+    // caller's hold so the pipe is not freed prematurely.
+    let rd_fd = alloc_user_fd(caller_proc)?;
+    let wr_fd = alloc_user_fd(caller_proc)?;
+    caller_proc.fd_table[rd_fd as usize] = Some(
+        crate::task::process::FdEntry::Pipe {
+            pipe: pipe_id,
+            role: crate::vfs::pipe::PipeRole::Read,
+        }
+    );
+    caller_proc.fd_table[wr_fd as usize] = Some(
+        crate::task::process::FdEntry::Pipe {
+            pipe: pipe_id,
+            role: crate::vfs::pipe::PipeRole::Write,
+        }
+    );
+
+    let pair: [i32; 2] = [rd_fd as i32, wr_fd as i32];
+    let bytes: [u8; 8] = unsafe {
+        core::mem::transmute::<[i32; 2], [u8; 8]>(pair)
+    };
+    crate::syscall::handlers::ipc::safe_copy_to_user(
+        caller_l0,
+        &bytes,
+        ufds_ptr,
+        8,
+    )
+    .ok();
+
+    crate::log_info!(
+        "PIPE",
+        "allocated pipe id={} for pid={} -> read_fd={} write_fd={}",
+        pipe_id.0,
+        caller_pid,
+        rd_fd,
+        wr_fd
+    );
+    Ok(())
+}
+
+/// Pick the next free fd slot in `proc.fd_table` and bump
+/// `proc.next_fd`.  Skips `0/1/2` (kernel-builtin UART) and the
+/// 16-byte cap.
+fn alloc_user_fd(proc: &mut crate::task::process::Process) -> Result<u32> {
+    let mut start = proc.next_fd.max(crate::task::process::USER_FD_BASE);
+    for _ in 0..crate::task::process::FD_TABLE_SIZE as u32 {
+        if start as usize >= crate::task::process::FD_TABLE_SIZE as u32 as usize {
+            start = crate::task::process::USER_FD_BASE;
+        }
+        if proc.fd_table[start as usize].is_none() {
+            let fd = start as u32;
+            proc.next_fd = (start + 1) % crate::task::process::FD_TABLE_SIZE as u32;
+            return Ok(fd);
+        }
+        start = (start + 1) % crate::task::process::FD_TABLE_SIZE as u32;
+    }
+    Err(Status::NoMemory)
+}
+
+/// `SYSCALL_DUP2(oldfd, newfd)` - duplicate a process's fd into a
+/// specific slot.  Mirror of Linux semantics at the 1.0 level.
+/// Returns the new fd on success.
+pub fn sys_dup2(_table: &HandleTable, oldfd: u32, newfd: u32) -> Result<u32> {
+    let caller_pid = crate::task::process::current_process_id()?;
+    let caller_proc = crate::task::process::find_process_mut(caller_pid)
+        .ok_or(Status::NotFound)?;
+
+    if oldfd == newfd {
+        return Ok(newfd);
+    }
+    if newfd == 0 || newfd == 1 || newfd == 2 {
+        // The kernel owns fd 0/1/2 (K-D2 UART path); we cannot
+        // hand them to user-space without breaking the early
+        // boot console.  Linux allows dup2 with values in
+        // {0,1,2} (and ESHOPEN / Linux 3.6 actually bumps the
+        // O_CLOEXEC bits), but for 1.0 we reject explicitly so
+        // smoke tests fail loudly instead of silently dropping
+        // bytes on stderr.
+        return Err(Status::NotAllowed);
+    }
+
+    let src_entry = if (oldfd as usize) < crate::task::process::FD_TABLE_SIZE {
+        caller_proc.fd_table[oldfd as usize].ok_or(Status::BadHandle)?
+    } else {
+        return Err(Status::BadHandle);
+    };
+
+    // If newfd already had an entry, close the old one (drop a
+    // refcount on the pipe); mirror Linux dup2's silent close.
+    if let Some(old_entry) = caller_proc.fd_table[newfd as usize] {
+        match old_entry {
+            crate::task::process::FdEntry::Pipe { pipe, role } => {
+                crate::vfs::pipe::pipe_close_role(pipe, role);
+            }
+        }
+    }
+    caller_proc.fd_table[newfd as usize] = Some(src_entry);
+
+    // Bump refcount because we just added a second fd pointing
+    // into the same pipe.
+    if let crate::task::process::FdEntry::Pipe { pipe, role } = src_entry {
+        crate::vfs::pipe::pipe_clone_role(pipe, role);
+    }
+    Ok(newfd)
+}
+
+/// Helper used by sys_read_posix / sys_write_posix to check
+/// whether `fd` is a pipe end inside the calling process.  When
+/// it is, the bytes are copied in-place out of / into the kernel
+/// pipe buffer and the function returns `true` (caller drops the
+/// fileagent forwarder).  When it isn't, the function returns
+/// `false` (caller falls through to the channel forwarder).
+pub(crate) fn dispatch_pipe_io(
+    table: &HandleTable,
+    fd: u32,
+    buf_ptr: usize,
+    buf_len: usize,
+    is_write: bool,
+) -> Result<Option<usize>> {
+    let _ = table;
+    if (fd as usize) >= crate::task::process::FD_TABLE_SIZE
+        || fd < crate::task::process::USER_FD_BASE
+    {
+        return Ok(None);
+    }
+    let caller_pid = crate::task::process::current_process_id()?;
+    let proc = match crate::task::process::find_process_mut(caller_pid) {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    let entry = match proc.fd_table[fd as usize] {
+        Some(e) => e,
+        None => return Ok(None),
+    };
+    let (pipe_id, role) = match entry {
+        crate::task::process::FdEntry::Pipe { pipe, role } => (pipe, role),
+    };
+
+    // Build a transient &[u8] / &mut [u8] view into user memory.
+    // safe_copy_to_user / safe_copy_from_user operate on kernel
+    // buffers that have already been translated; we do the
+    // equivalent pre-step here so that the pipe write path can
+    // process bytes in one shot.
+    if buf_ptr == 0 || buf_len == 0 {
+        return Ok(Some(0));
+    }
+    let mut kernel_buf = [0u8; 4096];
+    let want = core::cmp::min(buf_len, kernel_buf.len());
+    if is_write {
+        // Caller wants to write to the pipe.  Pull the bytes
+        // out of user memory via safe_copy_from_user.
+        match role {
+            crate::vfs::pipe::PipeRole::Write => {}
+            crate::vfs::pipe::PipeRole::Read => {
+                return Err(Status::NotAllowed);
+            }
+        }
+        if proc.l0_user_pa == 0 {
+            return Err(Status::InvalidArgs);
+        }
+        crate::syscall::handlers::ipc::safe_copy_from_user(
+            proc.l0_user_pa,
+            buf_ptr,
+            want,
+            &mut kernel_buf[..want],
+        )?;
+        let n = crate::vfs::pipe::pipe_write(pipe_id, &kernel_buf[..want])?;
+        // Wake any consumers on the read end so the kernel's
+        // spawn-stay-complete path is unaffected.  1.0 pipe is
+        // non-blocking; this is a no-op for the current
+        // implementation but matches the contract that callers
+        // will see.
+        Ok(Some(n))
+    } else {
+        match role {
+            crate::vfs::pipe::PipeRole::Read => {}
+            crate::vfs::pipe::PipeRole::Write => {
+                return Err(Status::NotAllowed);
+            }
+        }
+        let n = crate::vfs::pipe::pipe_read(
+            pipe_id,
+            &mut kernel_buf[..want],
+        )?;
+        if n > 0 && proc.l0_user_pa != 0 {
+            crate::syscall::handlers::ipc::safe_copy_to_user(
+                proc.l0_user_pa,
+                &kernel_buf[..n],
+                buf_ptr,
+                n,
+            )
+            .ok();
+        }
+        Ok(Some(n))
+    }
+}

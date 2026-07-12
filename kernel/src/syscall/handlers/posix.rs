@@ -196,6 +196,36 @@ pub fn sys_open_posix(table: &HandleTable, path_ptr: usize, path_len: usize, fla
 
 /// POSIX `close(2)` forwarder.
 pub fn sys_close_posix(table: &HandleTable, fd: u32) -> Result<()> {
+    // B6 path: if this fd is a pipe end in the per-process
+    // `fd_table`, drop a refcount and free the slot directly
+    // without going through the fileagent forwarder.
+    if let Some(n) = crate::syscall::handlers::process::dispatch_pipe_io(
+        table, fd, 0, 0, false,
+    ).ok().flatten() {
+        // dispatch_pipe_io returns Ok(None) when fd is not a
+        // pipe; treat n as a probe here (we don't read/write).
+        let _ = n;
+    }
+    let caller_pid = crate::task::process::current_process_id()
+        .or_else(|_| Err(Status::NotFound))?;
+    let proc = match crate::task::process::find_process_mut(caller_pid) {
+        Some(p) => p,
+        None => return Err(Status::NotFound),
+    };
+    if (fd as usize) < crate::task::process::FD_TABLE_SIZE
+        && fd >= crate::task::process::USER_FD_BASE
+    {
+        if let Some(entry) = proc.fd_table[fd as usize] {
+            match entry {
+                crate::task::process::FdEntry::Pipe { pipe, role } => {
+                    crate::vfs::pipe::pipe_close_role(pipe, role);
+                }
+            }
+            proc.fd_table[fd as usize] = None;
+            return Ok(());
+        }
+    }
+
     let (proc_id, _) = current_process_id_and_l0()?;
     let entry = posix_fd_table::get_fd(proc_id, fd)?;
     let cmd = FileAgentCmd::Close { fd: entry.remote_fd };
@@ -214,6 +244,14 @@ pub fn sys_close_posix(table: &HandleTable, fd: u32) -> Result<()> {
 /// POSIX `read(2)` fd>=3 forwarder.  Fileagent replies with a VMO
 /// handle; we map it read-only and copy the bytes back to user buf.
 pub fn sys_read_posix(table: &HandleTable, fd: u32, buf_ptr: usize, buf_len: usize) -> Result<usize> {
+    // B6: route through per-process fd_table first.  If the fd
+    // is a pipe-reader end, dispatch_pipe_io handles it directly
+    // and we return early.
+    if let Ok(Some(n)) = crate::syscall::handlers::process::dispatch_pipe_io(
+        table, fd, buf_ptr, buf_len, false,
+    ) {
+        return Ok(n);
+    }
     let (proc_id, l0_pa) = current_process_id_and_l0()?;
     if l0_pa == 0 {
         return Err(Status::InvalidArgs);

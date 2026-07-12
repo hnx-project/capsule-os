@@ -80,6 +80,29 @@ pub const SYSCALL_SEEK: u32 = 103;
 pub const SYSCALL_GETCWD: u32 = 104;
 pub const SYSCALL_CHDIR: u32 = 105;
 
+/// POSIX `pipe(ufds[2])` - allocate a fresh in-kernel pipe and
+/// place its two fd numbers in the caller's per-process fd table
+/// at indices `ufds[0]` (read end) and `ufds[1]` (write end).
+/// `ufds_ptr` is a user VA pointing to two consecutive `i32`
+/// slots; the kernel writes the new fd numbers back via
+/// `safe_copy_to_user`.  Returns 0 on success; `NoMemory` if
+/// the pipe table or the calling process's fd table is full.
+pub const SYSCALL_PIPE: u32 = 96;
+
+/// POSIX `dup2(oldfd, newfd)` - duplicate `oldfd` into `newfd`.
+/// For 1.0 we only support the common "redirect stdout to a
+/// pipe's write end" pattern from shell pipelines:
+///   newfd == 1 -> dup into the in-kernel UART stdout path
+///                (treated as a no-op + NotAllowed because the
+///                kernel always owns fd 1)
+///   newfd >= 3 -> if oldfd is a pipe-end, the new fd in the
+///                caller's fd_table gets the same `PipeRole`.
+///                If `newfd == oldfd` the syscall is a no-op
+///                success (matching Linux).
+/// Returns the new fd (which equals `newfd` on success) or a
+/// Status code.
+pub const SYSCALL_DUP2: u32 = 97;
+
 /// Wait for a child process to exit, optionally restricted to a
 /// specific pid.  `pid` semantics match Linux's `wait4(pid, ...)`:
 ///
