@@ -431,6 +431,90 @@ impl Process {
         crate::log_info!("LAUNCHER", "Successfully launched program '{}' at EL0 (entry={:#x}, pid={}, argc={})",
             name, user_entry, pid, argc);
 
+        // **B1.2 diagnostic dump.**  FAR=0x92003d68 from KERNEL_HEALTH
+        // A2 points into the new process's user stack region (vmar_base +
+        // 0x2000000 + 0x3d68), so the fault is on the very first stack
+        // access rather than at the ELF entry.  Two readings of
+        // `user_entry` from the same process's freshly-populated L0 are
+        // enough to discriminate between "the mapping was never written"
+        // (BUG) and "the mapping is fine but the icache or TLB is stale"
+        // (which B1.1 + B1.3 harden); the hex-dump is gated behind
+        // `cfg(debug_assertions)` per the AGENTS §4 "no trace-and-keep"
+        // rule (AGENTS.md / debug discipline) and lights up only in
+        // debug builds, where the QEMU A2 fault is being chased.
+        //
+        // We translate user_entry through THIS process's l0_user_pa
+        // (we *just* armed TTBR0 back to the caller, so redoing the
+        // translation has to be explicit via translate_user_va), then
+        // translate + load 64 bytes through the kernel-side alias of
+        // the resulting physical page.  If the bytes are a normal
+        // ELF entry prologue (e.g. `e_entry=0x..1000` shows the
+        // hnxlibc `_start` shape: mov x9, x0; mov x10, x1; ...; bl
+        // _hnx_user_entry) the mapping is sound and A2 is a kernel
+        // boundary cache issue rather than a launch-time data abort.
+        #[cfg(all(target_arch = "aarch64", debug_assertions))]
+        {
+            if let Some(entry_pa) =
+                crate::arch::aarch64::mmu::translate_user_va(l0_user_pa, user_entry)
+            {
+                let entry_kernel_va = crate::mm::mmu::pa_to_kernel_va(entry_pa);
+                let mut dump = [0u8; 64];
+                for i in 0..64usize {
+                    unsafe {
+                        dump[i] = core::ptr::read_volatile((entry_kernel_va as *const u8).add(i));
+                    }
+                }
+                crate::log_info!(
+                    "LAUNCHER",
+                    "B1.2 entry dump {} bytes at VA={:#x} (PA={:#x}): {:02x?}",
+                    64usize,
+                    user_entry,
+                    entry_pa,
+                    &dump[..],
+                );
+            } else {
+                crate::log_info!(
+                    "LAUNCHER",
+                    "B1.2 entry dump: translate_user_va({:#x}) -> None -- mapping MISSING",
+                    user_entry,
+                );
+            }
+
+            // Also dump 64 bytes at the stack top so we can see whether
+            // the stack mapping is filled with zeros (still being
+            // rematerialised) or with the freshly-allocated 16 KiB
+            // page-backing physical memory.  FAR in the prior A2
+            // report was 0x2003d68, i.e. vmar_base + 0x2000000 + 0x3d68,
+            // which lands 15720 bytes into the stack -- within the
+            // stack region but not at the very top.
+            let stack_base_va = proc.root_vmar.base + 0x2000000 + 0x3d00;
+            if let Some(stack_pa) =
+                crate::arch::aarch64::mmu::translate_user_va(l0_user_pa, stack_base_va)
+            {
+                let stack_kernel_va = crate::mm::mmu::pa_to_kernel_va(stack_pa);
+                let mut dump = [0u8; 64];
+                for i in 0..64usize {
+                    unsafe {
+                        dump[i] = core::ptr::read_volatile((stack_kernel_va as *const u8).add(i));
+                    }
+                }
+                crate::log_info!(
+                    "LAUNCHER",
+                    "B1.2 stack dump {} bytes at VA={:#x} (PA={:#x}): {:02x?}",
+                    64usize,
+                    stack_base_va,
+                    stack_pa,
+                    &dump[..],
+                );
+            } else {
+                crate::log_info!(
+                    "LAUNCHER",
+                    "B1.2 stack dump: translate_user_va({:#x}) -> None -- stack mapping MISSING",
+                    stack_base_va,
+                );
+            }
+        }
+
         Ok(())
     }
 }
