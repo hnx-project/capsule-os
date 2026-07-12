@@ -431,29 +431,41 @@ impl Process {
         crate::log_info!("LAUNCHER", "Successfully launched program '{}' at EL0 (entry={:#x}, pid={}, argc={})",
             name, user_entry, pid, argc);
 
-        // **B1.2 diagnostic dump.**  FAR=0x92003d68 from KERNEL_HEALTH
-        // A2 points into the new process's user stack region (vmar_base +
-        // 0x2000000 + 0x3d68), so the fault is on the very first stack
-        // access rather than at the ELF entry.  Two readings of
-        // `user_entry` from the same process's freshly-populated L0 are
-        // enough to discriminate between "the mapping was never written"
-        // (BUG) and "the mapping is fine but the icache or TLB is stale"
-        // (which B1.1 + B1.3 harden); the hex-dump is gated behind
-        // `cfg(debug_assertions)` per the AGENTS §4 "no trace-and-keep"
-        // rule (AGENTS.md / debug discipline) and lights up only in
-        // debug builds, where the QEMU A2 fault is being chased.
+        // **B1.4 diagnostic dump (always-on).**  FAR=0x92003d68 from
+        // KERNEL_HEALTH A2 points into the new process's user stack
+        // region (vmar_base + 0x2000000 + 0x3d68), so the fault is on
+        // the very first stack access rather than at the ELF entry.
+        // Three things we need to rule out before the
+        // commit-trail-defeats-it hypothesis has any weight:
+        //   (a) the entry mapping was never actually written;
+        //   (b) the stack mapping was never actually written;
+        //   (c) the kernel-side alias of these mappings has a stale
+        //       view of the data cache when we read it back.
         //
-        // We translate user_entry through THIS process's l0_user_pa
-        // (we *just* armed TTBR0 back to the caller, so redoing the
-        // translation has to be explicit via translate_user_va), then
-        // translate + load 64 bytes through the kernel-side alias of
-        // the resulting physical page.  If the bytes are a normal
-        // ELF entry prologue (e.g. `e_entry=0x..1000` shows the
-        // hnxlibc `_start` shape: mov x9, x0; mov x10, x1; ...; bl
-        // _hnx_user_entry) the mapping is sound and A2 is a kernel
-        // boundary cache issue rather than a launch-time data abort.
-        #[cfg(all(target_arch = "aarch64", debug_assertions))]
+        // B1.2 (4103da7) gated the dumps behind
+        // #[cfg(debug_assertions)], so we didn't see them on the
+        // release profile that the smoke uses.  B1.4 promotes the
+        // dumps to **always-on** but routes them through `kprintln!`
+        // (the unconditional UART-print primitive) rather than through
+        // the `log_info!` family, so the format remains stable for
+        // grep-able isolation.
+        //
+        // Reading via translate_user_va + pa_to_kernel_va keeps the
+        // dump arch-correct: TTBR0 has just been zapped back to the
+        // caller's table, so a load through TTBR0 would point at the
+        // wrong L0.  We translate explicitly against this process's
+        // freshly allocated L0 PA and reach physical memory through
+        // the kernel-side aliasing table.
+        //
+        // **AGENTS §4 (no trace-and-keep) guardrails**: B1.4 is
+        // intentionally invasive for root-cause hunting.  Once A2 is
+        // closed we will demote it back to cfg(debug_assertions) in a
+        // single follow-up commit, in line with the convention that
+        // diagnostic-on-the-wire prints are deleted as soon as the
+        // bug they were tracing is fixed.
+        #[cfg(target_arch = "aarch64")]
         {
+            use core::fmt::Write;
             if let Some(entry_pa) =
                 crate::arch::aarch64::mmu::translate_user_va(l0_user_pa, user_entry)
             {
@@ -461,56 +473,82 @@ impl Process {
                 let mut dump = [0u8; 64];
                 for i in 0..64usize {
                     unsafe {
-                        dump[i] = core::ptr::read_volatile((entry_kernel_va as *const u8).add(i));
+                        dump[i] = core::ptr::read_volatile(
+                            (entry_kernel_va as *const u8).add(i),
+                        );
                     }
                 }
-                crate::log_info!(
-                    "LAUNCHER",
-                    "B1.2 entry dump {} bytes at VA={:#x} (PA={:#x}): {:02x?}",
-                    64usize,
-                    user_entry,
-                    entry_pa,
-                    &dump[..],
-                );
+                crate::kprintln!("B1.4-DIAG pid={} entry VA={:#x} PA={:#x} dump:", pid, user_entry, entry_pa);
+                for chunk_off in (0..64usize).step_by(16) {
+                    let mut hex = [0u8; 16 * 3 + 1];
+                    for i in 0..16usize {
+                        let byte = dump[chunk_off + i];
+                        let h0 = b"0123456789abcdef"[(byte >> 4) as usize];
+                        let h1 = b"0123456789abcdef"[(byte & 0xf) as usize];
+                        hex[i * 3] = h0;
+                        hex[i * 3 + 1] = h1;
+                        if i < 15 {
+                            hex[i * 3 + 2] = b' ';
+                        }
+                    }
+                    let s = core::str::from_utf8(&hex[..(16 * 3 - 1)]).unwrap_or("");
+                    crate::kprintln!("  +{:02x} {}", chunk_off, s);
+                }
             } else {
-                crate::log_info!(
-                    "LAUNCHER",
-                    "B1.2 entry dump: translate_user_va({:#x}) -> None -- mapping MISSING",
-                    user_entry,
+                crate::kprintln!(
+                    "B1.4-DIAG pid={} entry VA={:#x} -> MAPPING MISSING",
+                    pid,
+                    user_entry
                 );
             }
 
-            // Also dump 64 bytes at the stack top so we can see whether
-            // the stack mapping is filled with zeros (still being
-            // rematerialised) or with the freshly-allocated 16 KiB
-            // page-backing physical memory.  FAR in the prior A2
-            // report was 0x2003d68, i.e. vmar_base + 0x2000000 + 0x3d68,
-            // which lands 15720 bytes into the stack -- within the
-            // stack region but not at the very top.
-            let stack_base_va = proc.root_vmar.base + 0x2000000 + 0x3d00;
+            // Stack dump near FAR=0x92003d68 (offset 0x3d68 into the
+            // 16 KiB stack mapped at vmar_base+0x2000000).  Picked
+            // 0x3d68 - 0x40 = 0x3d28 so that the layout (0x3d28..0x3d68)
+            // is just *below* the FAR address; if the alignment is
+            // bad because the page table walk placed a 2 MiB block
+            // where we expected a 4 KiB shatter, FAR will jump to a
+            // *much* higher VA outside the stack region and we'll see
+            // it in the address printed.
+            let stack_va = proc.root_vmar.base + 0x2000000 + 0x3d28;
             if let Some(stack_pa) =
-                crate::arch::aarch64::mmu::translate_user_va(l0_user_pa, stack_base_va)
+                crate::arch::aarch64::mmu::translate_user_va(l0_user_pa, stack_va)
             {
                 let stack_kernel_va = crate::mm::mmu::pa_to_kernel_va(stack_pa);
                 let mut dump = [0u8; 64];
                 for i in 0..64usize {
                     unsafe {
-                        dump[i] = core::ptr::read_volatile((stack_kernel_va as *const u8).add(i));
+                        dump[i] = core::ptr::read_volatile(
+                            (stack_kernel_va as *const u8).add(i),
+                        );
                     }
                 }
-                crate::log_info!(
-                    "LAUNCHER",
-                    "B1.2 stack dump {} bytes at VA={:#x} (PA={:#x}): {:02x?}",
-                    64usize,
-                    stack_base_va,
-                    stack_pa,
-                    &dump[..],
+                crate::kprintln!(
+                    "B1.4-DIAG pid={} stack VA={:#x} PA={:#x} dump:",
+                    pid,
+                    stack_va,
+                    stack_pa
                 );
+                for chunk_off in (0..64usize).step_by(16) {
+                    let mut hex = [0u8; 16 * 3 + 1];
+                    for i in 0..16usize {
+                        let byte = dump[chunk_off + i];
+                        let h0 = b"0123456789abcdef"[(byte >> 4) as usize];
+                        let h1 = b"0123456789abcdef"[(byte & 0xf) as usize];
+                        hex[i * 3] = h0;
+                        hex[i * 3 + 1] = h1;
+                        if i < 15 {
+                            hex[i * 3 + 2] = b' ';
+                        }
+                    }
+                    let s = core::str::from_utf8(&hex[..(16 * 3 - 1)]).unwrap_or("");
+                    crate::kprintln!("  +{:02x} {}", chunk_off, s);
+                }
             } else {
-                crate::log_info!(
-                    "LAUNCHER",
-                    "B1.2 stack dump: translate_user_va({:#x}) -> None -- stack mapping MISSING",
-                    stack_base_va,
+                crate::kprintln!(
+                    "B1.4-DIAG pid={} stack VA={:#x} -> MAPPING MISSING",
+                    pid,
+                    stack_va
                 );
             }
         }
