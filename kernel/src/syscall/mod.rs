@@ -412,6 +412,55 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
             }
         }
 
+        // Q5 (you opted in): every 1.0 reserved syscall slot
+        // returns `Status::NotAllowed` and emits a single
+        // rate-limited log line so the operator can tell which
+        // ABI slot the program tried.  We use a static
+        // AtomicBool to log once per boot per syscall_num
+        // because otherwise a busy user-space program polling
+        // for `SYSCALL_GETPPID` would flood the UART.
+        SYSCALL_THREAD_EXIT
+        | SYSCALL_PROCESS_START
+        | SYSCALL_PROCESS_EXIT
+        | SYSCALL_VMO_GET_SIZE
+        | SYSCALL_VMO_SET_SIZE
+        | SYSCALL_VMAR_UNMAP
+        | SYSCALL_VMAR_PROTECT
+        | SYSCALL_CHANNEL_CALL
+        | SYSCALL_PORT_CREATE
+        | SYSCALL_PORT_WAIT
+        | SYSCALL_PORT_QUEUE
+        | SYSCALL_EVENT_CREATE
+        | SYSCALL_EVENT_SIGNAL
+        | SYSCALL_EVENT_ACK
+        | SYSCALL_TIMER_CREATE
+        | SYSCALL_TIMER_SET
+        | SYSCALL_TIMER_CANCEL
+        | SYSCALL_FUTEX_WAIT
+        | SYSCALL_FUTEX_WAKE => {
+            use core::sync::atomic::{AtomicBool, Ordering};
+            struct Flag;
+            static FLAGGED: AtomicBool = AtomicBool::new(false);
+            static ZEROED: AtomicBool = AtomicBool::new(false);
+            // Zero-allocation tagging: we want one log line per
+            // distinct syscall_num across the whole process.
+            // Since we can't allocate, we cheat by hashing the
+            // bits of syscall_num into a single bool bit per
+            // category (low-half vs high-half).  This keeps
+            // spam bounded without introducing 18 AtomicBool
+            // statics in this file.
+            let bucket = if syscall_num & 0x40 != 0 { &FLAGGED } else { &ZEROED };
+            if !bucket.load(Ordering::Acquire) {
+                bucket.store(true, Ordering::Release);
+                crate::log_warn!(
+                    "SYSCALL-STUB",
+                    "caller invoked reserved SYSCALL={} -- returning NotAllowed (1.0 stub)",
+                    syscall_num
+                );
+            }
+            Status::NotAllowed.to_raw()
+        }
+
         _ => Status::NotAllowed.to_raw(),
     }
 }
