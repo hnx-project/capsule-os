@@ -1,12 +1,27 @@
-# CapsuleOS 1.0.0 - "Pangu" Release
+# CapsuleOS 1.0.0-beta - "Pangu" Pre-release
 
-This is the first **stable / production-shaped** release of
-CapsuleOS.  The 0.5 series was developmental; everything from
-0.6.0-alpha on is API-stable per
-[`semver.org`](https://semver.org/), with breaking changes
-collected in their own major/minor lines.
+**This is a `1.0.0-beta` pre-release.**  It is **not** the
+final 1.0.0: the boot chain still hits the KERNEL_HEALTH.md
+A2 EL0-FAULT on the very first user-stack access after
+`sys_spawn("devmgr")` returns, so an interactive `osh$`
+session never reaches a clean prompt on the QEMU smoke.
+The pre-release captures the 1.0 *API surface* (49 syscall
+numbers, the EL0 POSIX extern C surface, the hnxstd `Vec` /
+`String` / `format!` modules); the boot path passes a
+foreground test pipeline only after A2 is closed in
+`1.0.0-beta.N+1`.
 
-## What's in 1.0.0
+The `1.0` release will be tagged from `main` once the boot
+chain reaches `init` running `cat /etc/hostname | grep .`
+end-to-end without hitting the SError 0x0f at FAR=stack-top.
+
+The semantic-verison identifier `-beta` is a semver
+pre-release tag, so `1.0.0-beta > 0.9.x` and `< 1.0.0`.  Any
+`cargo xtask code build --arch aarch64` produced from this
+commit will name the image
+`capsuleos-pangu-1.0.0-beta-aarch64-<date>.img`.
+
+## What's in 1.0.0-beta
 
 CapsuleOS is a from-scratch microkernel written in Rust. The
 Pangu codename carries the EL0 POSIX surface from 0.6 to
@@ -99,13 +114,33 @@ release-able.  These land in 1.1:
 
 ## Known issues / disclaimer
 
+**1.0.0-beta, NOT 1.0.**  The `-beta` pre-release tag is
+honest: the boot chain hits an `EL0-FAULT` (KERNEL_HEALTH.md
+A2) on the very first user-stack access past the loader's
+first `sys_spawn("devmgr")` call.  The 1.0 stable release
+**will not** ship from this commit; it will ship once a
+QEMU boot smoke reaches `init: ...` *with fileagent
+registered and `cat /etc/hostname | grep .` returning a
+real line*.
+
 A2 (`KERNEL_HEALTH.md`) is **partially closed**.  The B1.1-B1.5
 series patched the aarch64 AP-bits encoding that masked user-writable
 PTE entries as EL0-forbidden; the boot chain now reliably reaches
 the spawned devmgr-prints-its-banner point but still hits a
-`SError=0x0f` on the very first stack access past that.  1.0.1
-(branched from this commit, see `f407929` for the latest tagged
-dev build) ships the page-walk fix.
+`SError=0x0f` on the very first stack access past that.  The
+next `1.0.0-beta.N+1` (commit `874678a` plus follow-ups) lands
+the page-walk fix in `kernel/src/task/process.rs`'s launch
+path.
+
+*Released*: 2026-07-12 (sync'd to the A2 isolation cycle)
+
+*Build commit*: see `874678a` (`1.0.0-beta` pre-release tag).
+
+*Toward 1.0 (stable)*: target gate is "`cat /etc/hostname |
+grep .` runs end-to-end with `init` surviving".  See the
+"1.0.0-beta → 1.0" milestone in `KERNEL_HEALTH.md` for the
+specific test surface that must pass before this pre-release
+becomes `1.0.0`.
 
 ## How to run
 
@@ -146,4 +181,4 @@ Major contributors to the 0.6.0-1.0.0 walk:
 
 *Userspace ABI*: C-ABI mirror + Rust slim lib (`hnxstd`).
 
-*Build commit*: see `c408ea6` (1.0.0 tag).
+*Build commit*: see `874678a` (`1.0.0-beta` pre-release tag).
