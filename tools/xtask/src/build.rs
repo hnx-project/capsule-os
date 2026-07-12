@@ -1,5 +1,8 @@
 use std::process::Command;
 
+use std::path::Path;
+use std::io;
+
 use crate::output::run_silent;
 use crate::platform::Platform;
 use crate::toolchain::{find_objcopy, find_rust_lld};
@@ -46,6 +49,14 @@ pub fn build(plat: &Platform) -> Result<(), String> {
     extract_bootloader_bin(plat)?;
     print_build_summary(plat);
     generate_dist_image(plat)?;
+
+    // B8 (`KERNEL_HEALTH.md` B8): copy /etc/* files from
+    // `kernel/files/etc/` into the staging tree so the
+    // generated rootfs.img ships a real `/etc/hostname` and
+    // `/etc/os-release` for `cat /etc/hostname | grep .` and
+    // friends to print on the boot log.  The directory is
+    // optional; if absent the boot falls through cleanly.
+    stage_etc_files().map_err(|e| e.to_string())?;
 
     println!(
         "\n{}     Success{} CapsuleOS built successfully!\n",
@@ -439,5 +450,37 @@ fn generate_dist_image(plat: &Platform) -> Result<(), String> {
         );
     }
 
+    Ok(())
+}
+
+/// B8: walk `kernel/files/etc/` recursively and copy each file
+/// into the staging tree under `build/dist/staging_rootfs/etc/`.
+/// File modes are preserved (we treat the source as authoritative).
+fn stage_etc_files() -> io::Result<()> {
+    use std::fs;
+    let src = Path::new("kernel/files/etc");
+    if !src.exists() {
+        return Ok(());
+    }
+    let dst_root = Path::new("build/dist/staging_rootfs/etc");
+    fs::create_dir_all(dst_root)?;
+    copy_recursive(src, dst_root)?;
+    Ok(())
+}
+
+fn copy_recursive(src: &Path, dst: &Path) -> io::Result<()> {
+    use std::fs;
+    if src.is_dir() {
+        fs::create_dir_all(dst)?;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            let child_src = entry.path();
+            let child_dst = dst.join(entry.file_name());
+            copy_recursive(&child_src, &child_dst)?;
+        }
+    } else {
+        let bytes = fs::read(src)?;
+        fs::write(dst, &bytes)?;
+    }
     Ok(())
 }
