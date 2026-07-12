@@ -2,6 +2,7 @@
 
 pub mod syscalls;
 pub use shared::status::Status;
+pub use shared::syscall_nums::*;
 pub use syscalls::*;
 
 extern "Rust" {

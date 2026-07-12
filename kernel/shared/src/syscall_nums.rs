@@ -1,3 +1,33 @@
+//! # SYSCALL_* 编号总表 —— kernel / userspace 单一真理源
+//!
+//! 历史上 `kernel/src/syscall/numbers.rs` 与 `hnxlibc/src/syscalls.rs`
+//! 各自维护了一份相同的常量表。本文件承担**两边共享**的角色，
+//! 与 `Status`、`HandleValue` 等已被 `kernel/shared` 收纳的
+//! ABI 契约项并列。kernel 自身也改为 `pub use
+//! shared::syscall_nums::*` —— 因此全仓再不存在第二份 `SYSCALL_*`
+//! 数值定义。
+//!
+//! ## 编号空间布局
+//!
+//! | 范围      | 类别                          | 状态   |
+//! |-----------|-------------------------------|--------|
+//! | 0-3       | POSIX 基础 (退/写/取 tid/pid) | 实装    |
+//! | 10-16     | IPC Channel + 句柄复制         | 实装    |
+//! | 13        | CHANNEL_CALL                  | 预留    |
+//! | 20-22     | IPC Port                      | 预留    |
+//! | 30-34     | VMO (含 GET/SET_SIZE)         | 实装    |
+//! | 40-42     | VMAR (UNMAP/PROTECT 预留)      | 实装    |
+//! | 50-52     | Thread (EXIT 预留)            | 实装    |
+//! | 60-62     | Process (START/EXIT 预留)     | 实装    |
+//! | 70-72     | Event                         | 预留    |
+//! | 80-82     | Timer                         | 预留    |
+//! | 90-91     | Futex                         | 预留    |
+//! | 100-105   | POSIX fd 集 (含 SEEK)         | 实装    |
+//! | 110-114   | ELF/EXEC/SPAWN/YIELD          | 实装    |
+//!
+//! 实装 arm 仍在 dispatcher 表中；预留 arm 仍受 `SYSCALL_NR` sentinel
+//! 守护，调用侧会得到 `Status::NotAllowed`，参见 `syscall_dispatch`。
+
 pub const SYSCALL_EXIT: u32 = 0;
 pub const SYSCALL_WRITE: u32 = 1;
 pub const SYSCALL_GET_TID: u32 = 2;
@@ -65,4 +95,7 @@ pub const SYSCALL_SPAWN: u32 = 113;
 /// registering `svc.vfs`, etc.) without blocking on the IPC bus.
 pub const SYSCALL_YIELD: u32 = 114;
 
+/// One past the last valid syscall number.  Any `syscall_num >= SYSCALL_NR`
+/// is reserved by the ABI for future extensions and must not be accepted by
+/// the dispatcher — see `kernel/src/syscall/mod.rs`.
 pub const SYSCALL_NR: u32 = 115;

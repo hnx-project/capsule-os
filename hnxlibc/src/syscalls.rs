@@ -1,4 +1,5 @@
 use shared::status::Status;
+pub use shared::syscall_nums::*;
 
 #[macro_export]
 macro_rules! syscall {
@@ -38,30 +39,6 @@ macro_rules! syscall {
         r0
     }};
 }
-
-pub const SYSCALL_EXIT: u32 = 0;
-pub const SYSCALL_WRITE: u32 = 1;
-pub const SYSCALL_GET_TID: u32 = 2;
-pub const SYSCALL_GET_PID: u32 = 3;
-pub const SYSCALL_CHANNEL_CREATE: u32 = 10;
-pub const SYSCALL_CHANNEL_READ: u32 = 11;
-pub const SYSCALL_CHANNEL_WRITE: u32 = 12;
-pub const SYSCALL_CHANNEL_REGISTER: u32 = 14;
-pub const SYSCALL_CHANNEL_LOOKUP: u32 = 15;
-pub const SYSCALL_HANDLE_DUPLICATE: u32 = 16;
-pub const SYSCALL_VMO_CREATE: u32 = 30;
-pub const SYSCALL_VMO_READ: u32 = 31;
-pub const SYSCALL_VMO_WRITE: u32 = 32;
-pub const SYSCALL_OPEN: u32 = 100;
-pub const SYSCALL_CLOSE: u32 = 101;
-pub const SYSCALL_READ: u32 = 102;
-pub const SYSCALL_GETCWD: u32 = 104;
-pub const SYSCALL_CHDIR: u32 = 105;
-pub const SYSCALL_EXEC: u32 = 110;
-pub const SYSCALL_LOAD_BINARY: u32 = 111;
-pub const SYSCALL_EXECVE: u32 = 112;
-pub const SYSCALL_SPAWN: u32 = 113;
-pub const SYSCALL_YIELD: u32 = 114;
 
 pub fn exit(code: i32) -> ! {
     syscall!(SYSCALL_EXIT, code as usize, 0, 0, 0, 0, 0);

@@ -1,8 +1,6 @@
-pub mod numbers;
 pub mod validation;
 pub mod handlers;
 
-pub use numbers::*;
 pub use validation::*;
 
 use shared::status::Status;
@@ -31,7 +29,8 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
         }
     };
 
-    use crate::syscall::numbers::*;
+    use crate::syscall::validation::*;
+    use shared::syscall_nums::*;
 
     match syscall_num {
         SYSCALL_EXIT => {
