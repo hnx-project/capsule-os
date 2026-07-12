@@ -483,7 +483,87 @@ pub extern "C" fn unlink(path: *const u8) -> i32 {
     }
 }
 
+// B10 (`KERNEL_HEALTH.md` B10): EL0 panic msg visible.
+//
+// The pre-B10 panic handler was a silent `loop {}` -- any
+// `panic!()` in userspace would leave the operator looking
+// at the UART with no explanation.  This commit lands a
+// minimum-viable message: we write the literal "EL0 PANIC: "
+// followed by the panic message to stderr (fd 2) via the
+// in-kernel UART path (K-D2), then spin.  When the source
+// binary includes a payload alongside the message we print
+// that too (e.g. `panic!("could not open: {}", path)` ends
+// up showing the message's static prefix because the 1.0
+// hnxstd lacks a Display impl; the panic-cleanup story is
+// B10.1).
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    write(2, b"EL0 PANIC: ".as_ptr(), 10);
+    // Format the message into a stack buffer via the
+    // associated `fmt::Arguments` of the panic info, then
+    // write the bytes to fd 2 (the in-kernel UART stderr path).
+    // We use the lower-level format_args!() macro indirectly
+    // through `info.message()` -- a simple `&str` for 1.0.
+    let mut buf = [0u8; 256];
+    let mut written = 0;
+    use core::fmt::Write;
+    struct StackWriter<'a> {
+        buf: &'a mut [u8; 256],
+        written: &'a mut usize,
+    }
+    impl<'a> Write for StackWriter<'a> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let bytes = s.as_bytes();
+            let remaining = self.buf.len() - *self.written;
+            let n = core::cmp::min(bytes.len(), remaining);
+            self.buf[*self.written..*self.written + n].copy_from_slice(&bytes[..n]);
+            *self.written += n;
+            Ok(())
+        }
+    }
+    let mut w = StackWriter {
+        buf: &mut buf,
+        written: &mut written,
+    };
+    let _ = core::fmt::write(&mut w, format_args!("{}", info.message()));
+    if written > 0 {
+        write(2, buf.as_ptr(), written);
+    }
+    if let Some(loc) = info.location() {
+        write(2, b" @ ".as_ptr(), 3);
+        let file = loc.file();
+        let file_bytes = file.as_bytes();
+        write(2, file_bytes.as_ptr(), file_bytes.len());
+        write(2, b":".as_ptr(), 1);
+        let mut line_buf = [0u8; 16];
+        let n = format_u32_into(loc.line() as u32, &mut line_buf);
+        write(2, line_buf.as_ptr(), n);
+    }
+    write(2, b"\n".as_ptr(), 1);
     loop {}
+}
+
+fn format_u32_into(mut v: u32, buf: &mut [u8; 16]) -> usize {
+    if v == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
+    let mut i = 0;
+    while v > 0 && i < buf.len() {
+        let digit = b'0' + (v % 10) as u8;
+        v /= 10;
+        buf[i] = digit;
+        i += 1;
+    }
+    // Reverse in place.
+    let mut lo = 0usize;
+    let mut hi = i as isize - 1;
+    while lo < (hi as usize) {
+        let t = buf[lo];
+        buf[lo] = buf[hi as usize];
+        buf[hi as usize] = t;
+        lo += 1;
+        hi -= 1;
+    }
+    i
 }
