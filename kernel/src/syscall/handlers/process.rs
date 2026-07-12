@@ -2,7 +2,7 @@ use crate::mm::vmar::VmarFlags;
 use crate::mm::vmo::Vmo;
 use crate::object::handle_table::{HandleTable, KernelObject};
 use crate::object::rights::Rights;
-use crate::task::process::CWD_MAX;
+use crate::task::process::{CWD_MAX, ProcessState};
 use crate::task::thread::Thread;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use shared::status::{Result, Status};
@@ -714,15 +714,7 @@ pub fn sys_chdir(path_ptr: usize, path_len: usize) -> Result<usize> {
 }
 
 fn current_process_id() -> Result<u64> {
-    // `get_current_thread_ptr` is locked by the dispatcher; reading it
-    // here from inside SYSCALL_GETCWD / SYSCALL_CHDIR handlers is safe
-    // because both run with kernel IRQs still masked.
-    unsafe {
-        let t = crate::task::scheduler::SCHEDULER
-            .get_current_thread_ptr()
-            .ok_or(Status::NotFound)?;
-        Ok((*t).process_id)
-    }
+    crate::task::process::current_process_id()
 }
 
 /// POSIX `gettid(2)` — returns the kernel-internal `Thread::id` (usize).
@@ -872,4 +864,121 @@ pub fn sys_wait4(
         return Err(Status::TryAgain);
     }
     Err(Status::NotFound)
+}
+
+// -------------------------------------------------------------------------
+// B5 (`KERNEL_HEALTH.md` B5): POSIX signal surface (1.0 subset).
+// -------------------------------------------------------------------------
+
+/// `SYSCALL_SIGACTION(sig, sa_handler, mask, flags)` - 1.0 stub.
+/// Accepts `sa_handler = SIG_DFL (0)` or `SIG_IGN (1)` only;
+/// custom user-mode handler trampolines are not yet supported.
+/// `mask` is the bitfield of signals to block; ignored in 1.0
+/// because `sigprocmask` is a stub.  `flags` is forwarded but
+/// not honored.  Returns the previous disposition so callers
+/// can chain.
+pub fn sys_sigaction(
+    _table: &HandleTable,
+    sig: usize,
+    sa_handler: usize,
+    _mask: usize,
+    _flags: usize,
+) -> Result<usize> {
+    crate::task::signals::sigaction_set(sig, sa_handler)
+}
+
+/// `SYSCALL_RAISE(sig)` - self-targeted signal.
+pub fn sys_raise(_table: &HandleTable, sig: usize) -> Result<()> {
+    crate::task::signals::raise(sig)?;
+    // Eager dispatch: raise() returns to the caller at the next
+    // syscall_exit anyway via `signals::dispatch_pending`, but
+    // checking here lets us return NotAllowed immediately if the
+    // caller is in an invalid state (Zombie -> NotAllowed).
+    let caller_pid = current_process_id()?;
+    if matches!(
+        crate::task::process::find_process_mut(caller_pid)
+            .map(|p| p.state),
+        Some(crate::task::process::ProcessState::Zombie)
+    ) {
+        return Err(Status::NotAllowed);
+    }
+    Ok(())
+}
+
+/// `SYSCALL_KILL(pid, sig)` - cross-process signal.
+/// For 1.0 we support `pid > 0` (specific process) and `pid = 0`
+/// (broadcast to all direct children of the caller); `pid = -1`
+/// and `pid < -1` are reserved for future process-group support
+/// and return `InvalidArgs`.
+pub fn sys_kill(_table: &HandleTable, pid: i64, sig: usize) -> Result<()> {
+    let caller_pid = current_process_id()?;
+    if pid < 0 {
+        return Err(Status::InvalidArgs);
+    }
+    let pid_u64: u64 = pid as u64;
+    if pid == 0 {
+        // Broadcast to all direct children of the caller.
+        let mut count = 0;
+        for slot in unsafe { &mut crate::task::process::PROCESSES }.iter() {
+            if let Some(p) = slot.as_ref() {
+                if p.parent_pid == caller_pid {
+                    crate::task::signals::signal_send(p.id, sig)?;
+                    count += 1;
+                }
+            }
+        }
+        if count == 0 {
+            return Err(Status::NotFound);
+        }
+        return Ok(());
+    }
+    // Validate that the caller is allowed to signal the target.
+    // 1.0 rule: a process may signal itself or any of its direct
+    // children.  Other-pid signals return `PermissionDenied`.
+    if pid_u64 != caller_pid {
+        let target = crate::task::process::find_process_mut(pid_u64)
+            .ok_or(Status::NotFound)?;
+        if target.parent_pid != caller_pid {
+            return Err(Status::AccessDenied);
+        }
+    }
+    crate::task::signals::signal_send(pid_u64, sig)
+}
+
+/// `SYSCALL_PAUSE()` - yield the calling thread until a non-blocked
+/// signal is pending.  Returns `Ok(0)` after a signal has been
+/// dispatched; the caller can then re-poll pending.
+pub fn sys_pause(_table: &HandleTable) -> Result<()> {
+    let caller_pid = current_process_id()?;
+    // Spin-yield: until either a signal is delivered (Zombie)
+    // or the caller changes its own disposition to ignore, we
+    // call SCHEDULER.schedule() and let the timer tick wake us
+    // back.  1.0 has no sync wakeup primitive on EL0 yet, so the
+    // poll cadence is the scheduler tick (~10 ms) - good enough
+    // for shell pipelines.
+    let mut counter: u32 = 0;
+    loop {
+        let proc = crate::task::process::find_process_mut(caller_pid)
+            .ok_or(Status::NotFound)?;
+        if matches!(proc.state, ProcessState::Zombie) {
+            // Signal has dispatched via SIG_DFL.
+            return Ok(());
+        }
+        if proc.pending_signals == 0 {
+            // Wait for one.
+            counter = counter.wrapping_add(1);
+            unsafe { crate::task::scheduler::SCHEDULER.schedule(); }
+            // Avoid hot-spin
+            if counter > 10000 {
+                return Err(Status::TimedOut);
+            }
+            continue;
+        }
+        // Pending and not yet dispatched.  Force-dispatch now.
+        if crate::task::signals::dispatch_pending(caller_pid)? {
+            return Ok(());
+        }
+        // All bits were IGN.
+        unsafe { crate::task::scheduler::SCHEDULER.schedule(); }
+    }
 }

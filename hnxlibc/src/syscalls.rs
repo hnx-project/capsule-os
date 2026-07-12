@@ -397,3 +397,71 @@ pub fn getppid() -> Result<u64, Status> {
         Ok(ret as u64)
     }
 }
+
+/// POSIX `sigaction(sig, sa_handler, mask, flags)`.
+///
+/// We accept `sa_handler = SIG_DFL (0)` or `SIG_IGN (1)` only;
+/// passing a function pointer returns `Status::InvalidArgs`.
+/// `mask` and `flags` are accepted-but-ignored in this 1.0
+/// release.  Returns the previous disposition in x0.
+pub fn sigaction(
+    sig: usize,
+    sa_handler: usize,
+    mask: usize,
+    flags: usize,
+) -> Result<usize, Status> {
+    let ret = syscall!(
+        SYSCALL_SIGACTION,
+        sig,
+        sa_handler,
+        mask,
+        flags,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        let s = Status::from_raw(ret as i32);
+        return Err(s);
+    }
+    Ok(ret)
+}
+
+/// POSIX `raise(sig)` - self-targeted signal.
+pub fn raise(sig: usize) -> Result<(), Status> {
+    let ret = syscall!(SYSCALL_RAISE, sig, 0, 0, 0, 0, 0);
+    if (ret as isize) < 0 {
+        let s = Status::from_raw(ret as i32);
+        return Err(s);
+    }
+    Ok(())
+}
+
+/// POSIX `kill(pid, sig)` - cross-process signal.
+///
+/// `pid > 0` targets that specific pid; `pid = 0` broadcasts to
+/// all direct children of the caller.  Returns InvalidArgs for
+/// `pid = -1` / `pid < -1` because process-group support is a
+/// future phase.
+pub fn kill(pid: i64, sig: usize) -> Result<(), Status> {
+    let ret = syscall!(SYSCALL_KILL, pid as usize, sig, 0, 0, 0, 0);
+    if (ret as isize) < 0 {
+        let s = Status::from_raw(ret as i32);
+        return Err(s);
+    }
+    Ok(())
+}
+
+/// POSIX `pause()` - yield until a non-ignored signal is pending.
+///
+/// For 1.0 we return `Ok(())` once the scheduler has resumed us
+/// after a SIG_DFL dispatch; the user-space caller is expected
+/// to inspect its own pending state via `wait4(some_pid, ...)`
+/// after `pause` returns.
+pub fn pause() -> Result<(), Status> {
+    let ret = syscall!(SYSCALL_PAUSE, 0, 0, 0, 0, 0, 0);
+    if (ret as isize) < 0 {
+        let s = Status::from_raw(ret as i32);
+        return Err(s);
+    }
+    Ok(())
+}

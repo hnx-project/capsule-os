@@ -317,6 +317,38 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
             }
         }
 
+        SYSCALL_SIGACTION => {
+            match handlers::process::sys_sigaction(table, arg0, arg1, arg2, arg3) {
+                Ok(prev) => prev,
+                Err(e) => e.to_raw() as usize,
+            }
+        }
+
+        SYSCALL_RAISE => {
+            match handlers::process::sys_raise(table, arg0) {
+                Ok(()) => 0,
+                Err(e) => e.to_raw() as usize,
+            }
+        }
+
+        SYSCALL_KILL => {
+            match handlers::process::sys_kill(table, arg0 as i64, arg1) {
+                Ok(()) => 0,
+                Err(e) => e.to_raw() as usize,
+            }
+        }
+
+        SYSCALL_PAUSE => {
+            // pause() may take effect only after the dispatcher
+            // returns to the trap exit path; for 1.0 we return
+            // Ok and let the user-space caller spin-poll the
+            // wait4 status on the next syscall.
+            match handlers::process::sys_pause(table) {
+                Ok(()) => 0,
+                Err(e) => e.to_raw() as usize,
+            }
+        }
+
         SYSCALL_GET_TID => {
             // POSIX `gettid(2)` — kernel TID of the calling thread.
             // Wire per KERNEL_HEALTH.md P6 (Phase 6 v0.6.0-α POSIX push).

@@ -100,6 +100,49 @@ pub const SYSCALL_CHDIR: u32 = 105;
 /// `Status::NotFound` if no such child exists.
 pub const SYSCALL_WAIT4: u32 = 88;
 
+// -------------------------------------------------------------------------
+// B5: POSIX `signal.h` surface
+//
+// We allocate the 92-95 range for the small signal/raise/kill/sigprocmask
+// family that drives the 1.0 demo: shell pipelines (B7) need to be able
+// to terminate children, ignore SIGPIPE on broken pipes, and propagate
+// Ctrl-C across the foreground process group.  We expose:
+//   - sigaction  (degenerate: SIG_DFL / SIG_IGN only)
+//   - raise      (self-targeted)
+//   - kill       (cross-process)
+//   - pause      (yield until any non-blocked signal is pending)
+//
+// sigprocmask is a 1.0 stub returning InvalidArgs because we have no
+// per-process signal-block table yet; B7's pipeline uses the SIG_DFL /
+// SIG_IGN only through sigaction.
+// -------------------------------------------------------------------------
+
+/// Install (or query) the disposition for a signal.
+///
+/// act.sa_handler is a `usize` value; we accept:
+///   0 (SIG_DFL) - default disposition (kill the process for most sigs)
+///   1 (SIG_IGN) - ignore the signal
+/// We do not support user-mode handler trampolines in 1.0 (those
+/// would require an SA_RESTORER-style sigreturn frame and an aarch64
+/// trampoline in hnxlibc).  Returns the *previous* disposition's
+/// `sa_handler` value so a caller can chain.
+pub const SYSCALL_SIGACTION: u32 = 92;
+
+/// Self-targeted signal: send `signo` to the calling process.
+pub const SYSCALL_RAISE: u32 = 93;
+
+/// Cross-process signal: send `signo` to process `pid`.  `pid`
+/// follows the kill(2) convention but for 1.0 only `pid > 0`
+/// (specific process) and `pid = 0` (any child via the wait4
+/// path) are wired; `pid < -1` / `pid = -1` return InvalidArgs.
+pub const SYSCALL_KILL: u32 = 94;
+
+/// Suspend the calling thread until a non-blocked, non-ignored
+/// signal becomes pending.  Always returns `Status::Ok` once the
+/// caller is resumed (the signal that woke us has already been
+/// processed by the kernel-side dispatcher on the way out).
+pub const SYSCALL_PAUSE: u32 = 95;
+
 pub const SYSCALL_EXEC: u32 = 110;
 pub const SYSCALL_LOAD_BINARY: u32 = 111;
 pub const SYSCALL_EXECVE: u32 = 112;

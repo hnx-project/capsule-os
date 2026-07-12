@@ -38,6 +38,19 @@ pub struct Process {
     /// `SYSCALL_GETPPID` and by the kernel scheduler to decide
     /// which process is allowed to `wait` on which children.
     pub parent_pid: u64,
+    /// Signal dispositions for this process.  Index `n` is the
+    /// handler for signal `n + 1` (we use a 32-bit bitfield on
+    /// `NSIG=32` to keep signal state compact).  Values:
+    ///   0 (SIG_DFL) - default disposition (terminate for most sigs)
+    ///   1 (SIG_IGN) - ignore
+    /// Custom user-mode handlers are not supported in 1.0; a value
+    /// of `2..` is rejected by `sys_sigaction`.
+    pub sig_handlers: [u8; 32],
+    /// Pending signals queued for this process.  The kernel
+    /// dispatches each non-blocked, non-ignored bit lazily on
+    /// `syscall_dispatch`'s way out (with the process's previous
+    /// IRQ state held) or immediately at `raise(2)` time.
+    pub pending_signals: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +89,8 @@ impl Process {
             cwd_len,
             exit_status: None,
             parent_pid: 0,
+            sig_handlers: [0u8; 32],
+            pending_signals: 0u32,
         })
     }
 
@@ -781,6 +796,19 @@ impl Process {
 
 pub const MAX_PROCESSES: usize = 8;
 pub static mut PROCESSES: [Option<Process>; MAX_PROCESSES] = [None, None, None, None, None, None, None, None];
+
+/// Returns the calling thread's owning process id, or `NotFound`
+/// if no thread is currently scheduled.  Useful for paths that
+/// need the PID without dragging in the syscall-handler module
+/// (e.g. the B5 signal layer).
+pub fn current_process_id() -> Result<u64> {
+    unsafe {
+        let t = crate::task::scheduler::SCHEDULER
+            .get_current_thread_ptr()
+            .ok_or(Status::NotFound)?;
+        Ok((*t).process_id)
+    }
+}
 
 pub fn allocate_process(name: &'static str) -> Result<&'static mut Process> {
     unsafe {
