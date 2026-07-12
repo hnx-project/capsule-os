@@ -79,7 +79,7 @@ pub fn handle_release(
     run_cmd_status(&["cargo", "xtask", "build", "--arch", "aarch64"], None)
         .map_err(|_| "❌ Failed to compile AArch64 targets!".to_string())?;
 
-    let aarch64_ohc = Path::new("dist/kernel/hnxcore");
+    let aarch64_ohc = Path::new("build/dist/kernel/hnxcore");
     let aarch64_bin = Path::new("build/target/aarch64-unknown-none/release/capsule-bootloader.bin");
 
     let temp_aarch64_ohc = Path::new("build/hnxcore_aarch64");
@@ -91,7 +91,7 @@ pub fn handle_release(
     run_cmd_status(&["cargo", "xtask", "build", "--arch", "riscv64"], None)
         .map_err(|_| "❌ Failed to compile RISC-V 64 targets!".to_string())?;
 
-    let riscv64_ohc = Path::new("dist/kernel/hnxcore");
+    let riscv64_ohc = Path::new("build/dist/kernel/hnxcore");
     let riscv64_bin =
         Path::new("build/target/riscv64imac-unknown-none-elf/release/capsule-bootloader.bin");
 
@@ -103,7 +103,7 @@ pub fn handle_release(
         "capsuleos-{}-{}-hnx-{}.zip",
         config.project.codename, version, date_str
     );
-    let zip_path = PathBuf::from(format!("dist/{}", zip_name));
+    let zip_path = PathBuf::from(format!("build/dist/distribution/{}", zip_name));
 
     if let Some(parent) = zip_path.parent() {
         let _ = fs::create_dir_all(parent);
@@ -122,7 +122,7 @@ pub fn handle_release(
 
     let zip_size_mb = zip_bytes.len() as f64 / 1024.0 / 1024.0;
     println!(
-        "💾 Archive ZIP created: \x1B[1;36mdist/{}\x1B[0m ({:.2} MB)",
+        "💾 Archive ZIP created: \x1B[1;36mbuild/dist/distribution/{}\x1B[0m ({:.2} MB)",
         zip_name, zip_size_mb
     );
 

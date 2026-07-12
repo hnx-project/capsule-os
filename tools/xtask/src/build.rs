@@ -121,7 +121,7 @@ fn build_userspace_program(plat: &Platform, crate_name: &str) -> Result<(), Stri
 }
 
 fn pack_user_programs(plat: &Platform) -> Result<(), String> {
-    let staging_bin = "dist/staging_rootfs/system/bin";
+    let staging_bin = "build/dist/staging_rootfs/system/bin";
     std::fs::create_dir_all(staging_bin).map_err(|e| e.to_string())?;
 
     for (crate_name, out_name) in USERCRATE_S {
@@ -160,7 +160,7 @@ fn pack_user_programs(plat: &Platform) -> Result<(), String> {
     // Pack the entire staging_rootfs to a unified rootfs.img inside kernel/files
     print!("{}  Archiving{} rootfs.img...", BOLD_GREEN, RESET);
     std::fs::create_dir_all("kernel/files").map_err(|e| e.to_string())?;
-    crate::pack::pack_rootfs("dist/staging_rootfs", "kernel/files/rootfs.img")
+    crate::pack::pack_rootfs("build/dist/staging_rootfs", "kernel/files/rootfs.img")
         .map_err(|e| format!("Failed to archive rootfs: {}", e))?;
     println!("\r{}  Archiving{} rootfs.img... Done", BOLD_GREEN, RESET);
 
@@ -201,8 +201,11 @@ fn build_kernel(plat: &Platform) -> Result<(), String> {
 }
 
 fn link_kernel(plat: &Platform) -> Result<(), String> {
-    std::fs::create_dir_all("dist/kernel").map_err(|e| e.to_string())?;
-    print!("{}  Linking{} dist/kernel/kernel.elf...", BOLD_GREEN, RESET);
+    std::fs::create_dir_all("build/dist/kernel").map_err(|e| e.to_string())?;
+    print!(
+        "{}  Linking{} build/dist/kernel/kernel.elf...",
+        BOLD_GREEN, RESET
+    );
     let lld = find_rust_lld();
     let result = run_silent(
         Command::new(&lld).args([
@@ -220,11 +223,11 @@ fn link_kernel(plat: &Platform) -> Result<(), String> {
             ),
             "--no-whole-archive",
             "-o",
-            "dist/kernel/kernel.elf",
+            "build/dist/kernel/kernel.elf",
         ]),
         || {
             println!(
-                "\r{}  Linking{} dist/kernel/kernel.elf... Done",
+                "\r{}  Linking{} build/dist/kernel/kernel.elf... Done",
                 BOLD_GREEN, RESET
             );
         },
@@ -238,7 +241,7 @@ fn link_kernel(plat: &Platform) -> Result<(), String> {
 
 fn extract_kernel_raw() -> Result<(), String> {
     print!(
-        "{}  Extracting{} dist/kernel/kernel.raw...",
+        "{}  Extracting{} build/dist/kernel/kernel.raw...",
         BOLD_GREEN, RESET
     );
     let objcopy = find_objcopy();
@@ -246,12 +249,12 @@ fn extract_kernel_raw() -> Result<(), String> {
         Command::new(&objcopy).args([
             "-O",
             "binary",
-            "dist/kernel/kernel.elf",
-            "dist/kernel/kernel.raw",
+            "build/dist/kernel/kernel.elf",
+            "build/dist/kernel/kernel.raw",
         ]),
         || {
             println!(
-                "\r{}  Extracting{} dist/kernel/kernel.raw... Done",
+                "\r{}  Extracting{} build/dist/kernel/kernel.raw... Done",
                 BOLD_GREEN, RESET
             );
         },
@@ -264,7 +267,10 @@ fn extract_kernel_raw() -> Result<(), String> {
 }
 
 fn pack_kernel_ohc(plat: &Platform) -> Result<(), String> {
-    print!("{}  Packing{} dist/kernel/hnxcore...", BOLD_GREEN, RESET);
+    print!(
+        "{}  Packing{} build/dist/kernel/hnxcore...",
+        BOLD_GREEN, RESET
+    );
     let decimal_entry = if plat.kernel_entry.starts_with("0x") {
         u64::from_str_radix(plat.kernel_entry.trim_start_matches("0x"), 16)
             .map(|v| v.to_string())
@@ -281,15 +287,15 @@ fn pack_kernel_ohc(plat: &Platform) -> Result<(), String> {
             "ohlink-linker",
             "--",
             "--input",
-            "dist/kernel/kernel.raw",
+            "build/dist/kernel/kernel.raw",
             "--output",
-            "dist/kernel/hnxcore",
+            "build/dist/kernel/hnxcore",
             "--entry",
             &decimal_entry,
         ]),
         || {
             println!(
-                "\r{}  Packing{} dist/kernel/hnxcore... Done",
+                "\r{}  Packing{} build/dist/kernel/hnxcore... Done",
                 BOLD_GREEN, RESET
             );
         },
@@ -357,7 +363,7 @@ fn print_build_summary(plat: &Platform) {
             println!("  {}: [{:.1} KB]", label, size_kb);
         }
     };
-    print_size("hnxcore", "dist/kernel/hnxcore");
+    print_size("hnxcore", "build/dist/kernel/hnxcore");
     print_size(
         "capsule-bootloader.bin",
         &format!(
@@ -388,10 +394,10 @@ fn generate_dist_image(plat: &Platform) -> Result<(), String> {
         "capsuleos-pangu-{}-{}-{}.img",
         version, plat.arch, date_output
     );
-    let img_path = format!("dist/{}", img_name);
+    let img_path = format!("build/dist/distribution/{}", img_name);
 
     println!(
-        "{}  Packaging{} Release Distribution Image: dist/{}",
+        "{}  Packaging{} Release Distribution Image: build/dist/distribution/{}",
         BOLD_CYAN, RESET, img_name
     );
 
@@ -400,7 +406,7 @@ fn generate_dist_image(plat: &Platform) -> Result<(), String> {
         "build/target/{}/release/capsule-bootloader.bin",
         plat.rust_target
     );
-    let hnxcore_path = "dist/kernel/hnxcore";
+    let hnxcore_path = "build/dist/kernel/hnxcore";
 
     let mut bootloader_data =
         std::fs::read(&bootloader_path).map_err(|e| format!("Failed to read bootloader: {}", e))?;
@@ -428,7 +434,7 @@ fn generate_dist_image(plat: &Platform) -> Result<(), String> {
     if let Ok(meta) = std::fs::metadata(&img_path) {
         let size_kb = meta.len() as f64 / 1024.0;
         println!(
-            "  {}Generated{} dist/{} [{:.1} KB]",
+            "  {}Generated{} build/dist/distribution/{} [{:.1} KB]",
             BOLD_GREEN, RESET, img_name, size_kb
         );
     }

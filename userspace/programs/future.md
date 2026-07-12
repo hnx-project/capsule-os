@@ -29,7 +29,7 @@ fn build_userspace_programs() -> Result<(), xShellError> {
             
         // 复制 ELF 映像到 staging_rootfs 对应的 system/bin 目录下
         let src_binary = format!("{}/target/riscv64-unknown-capsule/release/{}", path, prog);
-        let dest_binary = format!("dist/staging_rootfs/system/bin/{}", prog);
+        let dest_binary = format!("build/dist/staging_rootfs/system/bin/{}", prog);
         std::fs::copy(src_binary, dest_binary)?;
     }
     Ok(())

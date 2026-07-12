@@ -76,8 +76,13 @@ capsule-os/                          (this repo, GitCode)
 ├── xtask.toml                       global build / project metadata
 │
 ├── install_xtask                    bootstrap script (host)
-├── build/                           host-side xtask build output (gitignored)
-├── dist/                            per-architecture images (gitignored)
+├── build/                           host-side build artefacts (gitignored)
+│   ├── target/                      cargo intermediate artefacts
+│   └── dist/                        xtask emit (kernel/qemu.dtb live here)
+│       ├── kernel/                  kernel.elf, kernel.raw, hnxcore
+│       ├── qemu.dtb
+│       ├── staging_rootfs/          rootfs components
+│       └── distribution/            final capsuleos-pangu-*.img (per-version)
 │
 ├── bootloader/                      subtree: capsule-bootloader    (L0)
 ├── kernel/                          subtree: hnx-core              (L1)
@@ -434,7 +439,7 @@ ERROR | SCHED           | No runnable threads left! Halting CPU safely...
 xtask code run --arch aarch64 --gdb &
 
 # Terminal 2: attach gdb-multiarch
-gdb-multiarch dist/kernel/kernel.elf \
+gdb-multiarch build/dist/kernel/kernel.elf \
     -ex "target remote :1234" \
     -ex "hbreak kernel_main" \
     -ex "continue"
@@ -456,7 +461,7 @@ gpa2hva 0x92003d68
 ### Panic stack
 A kernel panic prints the file:line, the trap class, `ESR`, `ISS`,
 `ELR`, and `FAR`.  Walk the printed frame by feeding `ELR - 4`
-into `addr2line -e dist/kernel/kernel.elf` to get the source line.
+into `addr2line -e build/dist/kernel/kernel.elf` to get the source line.
 
 ---
 

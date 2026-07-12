@@ -115,7 +115,7 @@ qemu-system-aarch64 \
     -m 128M \
     -nographic \
     -kernel target/aarch64-unknown-none/release/capsule-bootloader \
-    -device loader,file=../dist/kernel/hnxcore.ohc,addr=0x40700000,force-raw=on \
+    -device loader,file=../build/dist/kernel/hnxcore.ohc,addr=0x40700000,force-raw=on \
     -semihosting
 ```
 

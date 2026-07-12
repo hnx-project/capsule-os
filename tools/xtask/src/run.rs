@@ -76,7 +76,7 @@ fn generate_qemu_dtb(plat: &Platform) -> Result<(), String> {
             "dtb",
             "/tmp/qemu.dts",
             "-o",
-            "dist/qemu.dtb",
+            "build/dist/qemu.dtb",
         ]),
         || {},
     );
@@ -104,8 +104,8 @@ fn launch_qemu(plat: &Platform, gdb: bool) {
         qemu.args([
             "-M", machine, "-cpu", plat.qemu_cpu, "-m", plat.qemu_mem, "-nographic",
             "-device", &format!("loader,file=build/target/{}/release/capsule-bootloader.bin,addr={},cpu-num=0,force-raw=on", plat.rust_target, plat.boot_addr),
-            "-device", &format!("loader,file=dist/kernel/hnxcore,addr={},force-raw=on", plat.ohc_addr),
-            "-device", &format!("loader,file=dist/qemu.dtb,addr={},force-raw=on", plat.dtb_addr),
+            "-device", &format!("loader,file=build/dist/kernel/hnxcore,addr={},force-raw=on", plat.ohc_addr),
+            "-device", &format!("loader,file=build/dist/qemu.dtb,addr={},force-raw=on", plat.dtb_addr),
         ]);
     } else {
         qemu.args([
@@ -123,12 +123,12 @@ fn launch_qemu(plat: &Platform, gdb: bool) {
             ),
             "-device",
             &format!(
-                "loader,file=dist/kernel/hnxcore,addr={},force-raw=on",
+                "loader,file=build/dist/kernel/hnxcore,addr={},force-raw=on",
                 plat.ohc_addr
             ),
             "-device",
             &format!(
-                "loader,file=dist/qemu.dtb,addr={},force-raw=on",
+                "loader,file=build/dist/qemu.dtb,addr={},force-raw=on",
                 plat.dtb_addr
             ),
         ]);
@@ -163,7 +163,7 @@ fn get_latest_dist_image(arch: &str) -> Result<String, String> {
         .unwrap_or_else(|_| "20260709".to_string());
 
     let img_name = format!("capsuleos-pangu-{}-{}-{}.img", version, arch, date_output);
-    let img_path = format!("dist/{}", img_name);
+    let img_path = format!("build/dist/distribution/{}", img_name);
     if std::path::Path::new(&img_path).exists() {
         Ok(img_path)
     } else {

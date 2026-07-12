@@ -109,7 +109,7 @@ xtask repo release v0.5.6
 ---
 
 ## 🖥️ Booting Output Demonstration
-When launched using `xtask code run --arch aarch64`, the bootloader aligns, validates, and hands control over to the HNX Microkernel, which securely initiates the sandboxed EL0 environment.  The following is a real capture from `dist/capsuleos-pangu-0.5.9-develop-aarch64-20260711.img`:
+When launched using `xtask code run --arch aarch64`, the bootloader aligns, validates, and hands control over to the HNX Microkernel, which securely initiates the sandboxed EL0 environment.  The following is a real capture from `build/dist/capsuleos-pangu-0.5.9-develop-aarch64-20260711.img`:
 
 ```text
 INFO  | BOOT           | Booting v0.5.9-develop...
