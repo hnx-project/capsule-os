@@ -264,3 +264,79 @@ it leaves pre-1.0 development.
 [0.3.0]: https://gitcode.com/hnx-project/capsule-os/compare/0.2.0...0.3.0
 [0.2.0]: https://gitcode.com/hnx-project/capsule-os/compare/0.1.0...0.2.0
 [0.1.0]: https://gitcode.com/hnx-project/capsule-os/releases/tag/0.1.0
+
+---
+
+## [1.0.0] - 2026-07-12 - "Pangu"
+
+### Highlights
+This is the first **stable** release of CapsuleOS.  The Pangu
+codename carries the EL0 POSIX surface from 0.6 to a kernel
+ABI that every program in `userspace/programs/` and
+`userspace/services/` can compile against.
+
+### Added (kernel)
+- `SYSCALL_WAIT4 (88)` - `wait4(pid, status_ptr, options)`.
+  Parents can now harvest child exit codes.  Per-process
+  `exit_status + parent_pid` tracked via `Process::exit_status`
+  / `Process::parent_pid`.  See commit `e26f5b8` (B4).
+- `SYSCALL_SIGACTION (92), SYSCALL_RAISE (93), SYSCALL_KILL (94),`
+  `SYSCALL_PAUSE (95)` — POSIX signal/raise/kill/sigaction/pause
+  set.  Disposition is `SIG_DFL (0)` / `SIG_IGN (1)` only for
+  1.0 (custom user-mode handlers land in 1.1).  See commit
+  `9295fc7` (B5).
+- `SYSCALL_PIPE (96), SYSCALL_DUP2 (97)` — in-kernel pipe (4 KiB
+  ring buffer) + per-process `fd_table` of size 16.  Pipe halves
+  indexed by user-fd, kernel-owned 0/1/2 stay on K-D2 UART.
+  See commit `8a32b8b` (B6).
+- aarch64 **AP-bits fix** on L3 PTE writes for user-writable
+  pages: pre-1.0 set bit 6 only, producing `AP[2:1]=01`
+  ("EL0 forbidden") on the loader's stack; 1.0 sets both 6 + 7
+  producing `AP[2:1]=11` ("EL0 RW").  See commit `f4f601a`
+  (B1.5 partial close of KERNEL_HEALTH.md A2).
+
+### Added (userspace / runtime)
+- `hnxlibc::pipe`, `dup2`, `wait4`, `getppid`, `sigaction`,
+  `raise`, `kill`, `pause`, `pipe_pair` C-ABI wrappers.
+- EL0 `panic_handler` (B10): pre-1.0 was a silent `loop {}`.
+  1.0 prints `EL0 PANIC: <msg> @ <file>:<line>` to fd 2 before
+  halting the processor.  Source location comes from the
+  compiler's `#[track_caller]` metadata.
+- `hnxstd` (B9) now ships `vec::Vec<T>`, `string::String`,
+  `fmt::format!`, `write!` macros for EL0 ELF programs.
+
+### Added (build)
+- xtask `stage_etc_files()` recursively copies `kernel/files/
+  etc/` into the staging tree before pack_rootfs.  1.0
+  ships `capsule-os-pangu-1.0` as `/etc/hostname` and a
+  LSB-style `/etc/os-release`.  See commit `f407929` (B8).
+
+### Added (shell)
+- osh `parser.rs` now returns a `Pipeline` (up to 4 stages
+  joined by `|`).  `shell.rs` dispatches single-stage via
+  the existing fast path and multi-stage via `spawn() +
+  yield_cpu() + wait()`.  See commit `1dd1261` (B7).
+
+### Stable ABI
+
+- SYSCALL numbering from `kernel/shared/src/syscall_nums.rs`
+  is the canonical contract.  1.0.* keeps the 49 assigned
+  numbers; the 12 reserved numbers (CHANNEL_CALL,
+  PORT_*, EVENT_*, TIMER_*, FUTEX_* along with the
+  unconnected PMEM_*) are now numbered and documented.
+- `Process` / `Thread` / `TrapFrame` layouts are frozen.
+
+### Known issues
+
+- **A2 EL0-FAULT T10** (`KERNEL_HEALTH.md`) is partially
+  closed (B1.1–B1.5 + B1.6 SError 0x0f on the second pass);
+  the boot chain reaches the devmgr-banner point but stops
+  short of fileagent registration.  1.0.1 will close the
+  page-walk half by demoting the always-on B1.4 hex dump
+  back to `cfg(debug_assertions)` after the root cause
+  is finalised.
+- RISC-V (K-D3) was deliberately parked per the 1.0 scope
+  discussion.  RISC-V boot is gated by the 5 mnemonic
+  errors visible in `cargo xtask code build --arch riscv64`.
+
+[1.0.0]: https://gitcode.com/hnx-project/capsule-os/releases/tag/v1.0.0
