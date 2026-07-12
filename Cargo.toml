@@ -6,8 +6,18 @@ edition = "2021"
 # Top-level OS runtime contract crates.  All userspace/* crates
 # inherit via `dep.workspace = true` so a future rename of the
 # directory layout only needs to touch this block.
+#
+# Two roles live side by side:
+#  - hnxlibc is the production C-ABI shim over SYSCALL_* and is
+#    promoted to top-level because every EL0 program in userspace/
+#    depends on it.
+#  - hnxstd is the pure-Rust #![no_std] std lib replacement,
+#    currently a 0-caller skeleton mirroring the Rust
+#    core/alloc/std split.  It lives under std/ next to the
+#    sysroot descriptors because the stdlib and the sysroot are
+#    two faces of the same OS ABI contract.
 hnxlibc = { path = "hnxlibc" }
-hnxstd = { path = "hnxstd" }
+hnxstd = { path = "std/hnxstd" }
 
 [workspace]
 members = [
@@ -16,9 +26,11 @@ members = [
     "tools/ohlink-toolchain/crates/ohlink-format",
     "tools/ohlink-toolchain/crates/ohlink-linker",
     "tools/ohlink-toolchain/crates/ohlink-read",
-    # stdlib | CapsuleOS runtime contract (top-level OS ABI crates)
+    # stdlib | CapsuleOS runtime contract
+    #  - hnxlibc is the production C-ABI shim (top-level).
+    #  - hnxstd lives under std/ next to the sysroot descriptors.
     "hnxlibc",
-    "hnxstd",
+    "std/hnxstd",
     # userspace | capsuleOS
     "userspace/services/devmgr",
     "userspace/services/fileagent",

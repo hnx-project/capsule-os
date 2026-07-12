@@ -45,19 +45,24 @@ AI Agents must respect that **all projects are now strictly integrated using Git
 │   ├── hal/               # Hardware Abstraction Layer
 │   └── src/               # Process/Thread context, VMAR, VMO, IPC Channels, Scheduler
 ├── hnxlibc/               # 📂 Top-level OS runtime contract: C-ABI syscall wrappers
-├── hnxstd/                # 📂 Top-level OS runtime contract: Pure-Rust #![no_std] std lib skeleton
+├── std/                   # 📂 OS std tree (targets + std lib replacement)
+│   ├── hnxstd/            # 📂 Pure-Rust #![no_std] std lib skeleton (core/alloc/std split)
+│   └── targets/           # 📜 CapsuleOS custom cross-compilation JSON targets
 ├── userspace/             # 📂 User-Space Sandbox Ecosystem (services + programs)
 │   └── services/          # Sandboxed system services (init, devmgr, loader, fileagent)
 ├── tools/                 # 📂 Development Tooling
 │   └── ohlink-cc/         # 📂 (Subtree) ohlink-format, rustc_codegen_ohlink, ohlink-linker
-└── std/targets/           # 📜 CapsuleOS custom cross-compilation JSON targets
 ```
 
-The **`hnxlibc/` and `hnxstd/`** crates are top-level OS runtime
-contract crates — they are **not** EL0 sandbox services.  Every
-userspace service and program depends on them via
-`hnxlibc.workspace = true` (see `[workspace.dependencies]` in the
-root `Cargo.toml`); the corresponding import paths are
+The **`hnxlibc/` and `std/hnxstd/`** crates are top-level OS
+runtime contract crates — they are **not** EL0 sandbox services.
+`hnxlibc` is the production C-ABI shim and lives at top-level
+because every EL0 program in `userspace/` depends on it.
+`hnxstd` lives under `std/` next to the sysroot descriptors
+because the stdlib and the sysroot are two faces of the same
+OS ABI contract.  Both are inherited by downstream manifests
+via `dep.workspace = true` (see `[workspace.dependencies]` in
+the root `Cargo.toml`); the import paths are
 `extern crate hnxlibc;` / `use hnxlibc::syscalls;` and are
 unaffected by the directory layout.
 

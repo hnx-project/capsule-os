@@ -332,15 +332,7 @@ pub extern "C" fn open(path: *const u8, flags: i32, _mode: i32) -> i32 {
     //    talks to fileagent on our behalf and parks the resulting
     //    (process_id, fd) -> {session_chan, remote_fd} mapping in
     //    its PosixFdTable; we just get the local fd back.
-    syscall!(
-        SYSCALL_OPEN,
-        path as usize,
-        len,
-        flags as usize,
-        0,
-        0,
-        0
-    ) as i32
+    syscall!(SYSCALL_OPEN, path as usize, len, flags as usize, 0, 0, 0) as i32
 }
 
 #[no_mangle]
