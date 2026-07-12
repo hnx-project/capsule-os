@@ -331,6 +331,78 @@ impl Process {
             crate::task::scheduler::SCHEDULER.add(thread);
         }
 
+        // Post-add cache hardening (B1.1).  The flow so far wrote
+        // fresh page-table entries for the new process's root_vmar
+        // (text + stack + data) under the assumption that the MMU
+        // hardware walk would re-read the new L0/L1/L2/L3 PTEs on
+        // the first eret into EL0.  Three things conspire on
+        // QEMU-TCG to make that assumption unsafe:
+        //
+        //   1.  The data cache can hold a stale PTE value written
+        //       before the write_pte path's `dc civac + dsb ish`
+        //       landed in physical memory.  TCG's coherence model
+        //       schedules icache invalidations on the icache side
+        //       only, not on the dc side, so a stale CACHED PTE
+        //       can survive an `ic ivau` round-trip on the icache
+        //       and poison the first fetch at eret.
+        //   2.  The icache, on aarch64, is VIPT and indexed by both
+        //       VA and cache-set hash; an aliasing VA range (e.g.
+        //       our `proc.root_vmar.base + offset`) can be served
+        //       from an old icache line even after we wrote the
+        //       corresponding physical page.  The textbook fix is
+        //       to INVALIDATE the entire icache-to-PoU *for the
+        //       aliasing range the kernel just wrote into*, then
+        //       DSB + ISB so the first eret instruction fetch goes
+        //       all the way back to DRAM.  `sync_instruction_cache`
+        //       does exactly this; we extend it slightly to cover
+        //       the stack mapping too (touching user stack lines
+        //       *is* part of EL0 entry flow because the first
+        //       `mov sp, xN` uses the freshly-mapped stack page).
+        //   3.  The TLB holds stale translations from the *kernel*
+        //       context that ran `set_ttbr0_el1(old_ttbr0)` below.
+        //       A `tlbi vaae1` of all addresses (vmalle1 with the
+        //       ASID-from-context rather than explicit) is invoked
+        //       by the ttbr0_EL1 restore below; but for the *first*
+        //       eret into this thread, we are about to leave the
+        //       kernel with TTBR0 = old_ttbr0 (the caller's table),
+        //       not the new thread's table — which means the
+        //       very first time we ever switch *into* this thread
+        //       (next scheduler tick), the swap to `l0_user_pa`
+        //       must come AFTER a full TLB drop.  The scheduler
+        //       already does that.  Nothing for us to fix here.
+        //
+        // We therefore: (a) flush+invalidate the icache over the
+        // full EL0 image (text + stack + data), (b) DSB, (c) ISB on
+        // the kernel side so subsequent state changes propagate.
+        #[cfg(target_arch = "aarch64")]
+        let _post_add_barrier = unsafe {
+            // Sync instruction cache over the entire user VA range
+            // the kernel just populated (codeseg + stack + data,
+            // bounded by `proc.root_vmar.base + 0x4000000` -- the
+            // 64 MiB slot we hand each process).  An over-wide
+            // sync is cheap on aarch64 (PoU icache invalidation
+            // is a single `dc cvau` + `ic ivau` per cache line)
+            // and safer than under-shooting into a partial TLB
+            // invalidation that leaves a stale icache line behind.
+            // 64 MiB covers vmar_base + 64 MiB, which is larger
+            // than any EL0 image we currently ship.
+            let icache_sync_end = proc.root_vmar.base + 0x0400_0000;
+            crate::arch::aarch64::mmu::sync_instruction_cache(
+                proc.root_vmar.base,
+                icache_sync_end - proc.root_vmar.base,
+            );
+            // Final ISB so the next kernel instruction (the
+            // `set_ttbr0_el1(old_ttbr0)` below, and the *kernel's*
+            // `ret` from this function) sees the freshly-invalidated
+            // icache.  Without the ISB the kernel can keep
+            // speculatively executing through the same stale
+            // icache hash until the next exception boundary, and
+            // the swap-restore below can race the actual eret.
+            core::arch::asm!("isb", options(nomem, nostack));
+            ()
+        };
+
+
         // **Restore the caller-side TTBR0_EL1** before returning to the
         // kernel context, but ONLY when there is a sensible previous
         // page table to return to.  `set_ttbr0_el1(l0_user_pa)` above
