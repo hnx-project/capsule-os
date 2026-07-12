@@ -127,10 +127,40 @@ impl Process {
                 let entry = core::ptr::read_volatile(kernel_l0_va.add(i));
                 core::ptr::write_volatile(user_l0_va.add(i), entry);
             }
-            // Cache maintenance on the L0 entries we just wrote --
-            // without it, a later MMU walk through TTBR0_EL1 can read
-            // a stale entry from the data cache while the new bytes
-            // are still sitting in a write buffer.
+            // **B1.5 cache flush for the entire new L0 page.**  The
+            // populate-512 loop just wrote every L0 entry, but only
+            // entries 0 and 511 had their cache line
+            // clean+invalidated (dc civac on those two specific
+            // addresses).  Entries 1..510 still hold dirty cache
+            // lines that the MMU walker can serve stale: when the
+            // next vmar::map / arch_mmu::map_page call asks for a
+            // L1/L2/L3 page allocation, it uses `write_pte` (which
+            // does have its own dc civac), so subsequent L0 entries
+            // written for that walk are kept coherent -- but the 511
+            // entries we wrote *here*, before we even switch TTBR0
+            // to l0_user_pa, carry no such safety net.  Without the
+            // full-page flush, an MMU walk issued immediately after
+            // `set_ttbr0_el1(l0_user_pa)` can read an entry written
+            // *here* but kept only in the data-cache write buffer,
+            // and a qemu-tcg-cache-aliasing race then maps the
+            // user's stack pointer to an L1 page that was nominally
+            // populated by vmar::map but is not yet architecturally
+            // visible -- producing the FAR=0x92003d68 EC=0x24 ESF=0x07
+            // Address Size Fault observed in KERNEL_HEALTH.md A2.
+            //
+            // Calling `flush_table_page(l0_user_pa)` here re-uses
+            // the existing post-shatter maintenance path (clean+invalidate
+            // every cache line, dsb ish).  Net cost: ~64 dc civac on
+            // a 4 KiB L0 page, a few microseconds at boot; this is a
+            // one-shot cost at process-launch time.
+            crate::arch::aarch64::mmu::flush_table_page_pub(l0_user_pa);
+
+            // The two manual flushes below are kept as a belt-and-braces
+            // step so existing release profiles (which build with
+            // debug_assertions disabled and *don't* re-call flush_table_page)
+            // still have their entry 0 + 511 lines made architectural-
+            // observable.  Once B1.5 is verified end-to-end we can
+            // collapse these two lines into the single flush above.
             core::arch::asm!("dc civac, {0}", in(reg) user_l0_va, options(nomem, nostack));
             core::arch::asm!("dc civac, {0}", in(reg) user_l0_va.add(511 * 8), options(nomem, nostack));
             core::arch::asm!("dsb ish", options(nomem, nostack));
@@ -430,6 +460,184 @@ impl Process {
 
         crate::log_info!("LAUNCHER", "Successfully launched program '{}' at EL0 (entry={:#x}, pid={}, argc={})",
             name, user_entry, pid, argc);
+
+        // **B1.5 PTE-walk dump (always-on).**  Build on B1.4: dump
+        // not just the bytes at the entry VA and the stack VA, but
+        // also the *page-table entries* on the L0 -> L1 -> L2 -> L3
+        // walk the MMU will issue when EL0 first fetches.
+        //
+        // The hypothesis we are still pursuing is that one of the
+        // L0/L1/L2 intermediate entries the kernel wrote during the
+        // populate-512 + L1/L2/L3 allocation sequence is not
+        // *architecturally* observable at the time the MMU walks it
+        // (cache-aliasing race, write-buffer vs icache, etc.).  The
+        // B1.5 dump reads those entries back through the kernel-side
+        // direct-map alias of the freshly-populated L0 PA, and they
+        // are printed via kprintln! so they appear on every release
+        // smoke that the 0.6.0-alpha / 1.0 track captures.
+        //
+        // The walk runs both for the entry VA (the path the MMU
+        // takes at the first eret into the new thread) and the
+        // 0xd68-specific stack offset (the FAR address the loader
+        // in the existing boot log faulted at).  If the entry-VA
+        // walk shows a complete L0/L1/L2/L3 chain ending in a
+        // 4-KiB leaf pointing at the right physical page but the
+        // stack-VA walk shows a missing entry at some intermediate
+        // level, that pinpoints exactly which vmar::map install step
+        // needs extra cache/TLB maintenance.
+        //
+        // **AGENTS §4 guardrails**: the same comment as B1.4:
+        // B1.5 is intentionally invasive for root-cause hunting.
+        // We demote back to cfg(debug_assertions) in a single
+        // follow-up commit once A2 is closed.
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            use core::fmt::Write;
+
+            // Walk the entry VA.  We can't reuse `debug_walk_va`
+            // (which is `log_info!`-gated) because the release
+            // profile would silence this whole block.  Inline it.
+            let l0e_e = unsafe {
+                (crate::mm::mmu::pa_to_kernel_va(l0_user_pa)
+                    as *const u64).add(0)
+            };
+            crate::kprintln!(
+                "B1.5-DIAG pid={} entry-VA={:#x} L0E={:#018x}",
+                pid,
+                user_entry,
+                unsafe { core::ptr::read_volatile(l0e_e) }
+            );
+
+            // Walk the FAR address directly: 0x92003d68 == (loader
+            // vmar_base + 0x2000000 + 0x3d68) but we genericise
+            // through `proc.root_vmar.base` so this works for
+            // devmgr / init / fileagent too.
+            let far_va = proc.root_vmar.base + 0x2000000 + 0x3d68;
+            let l0_idx_f = (far_va >> 39) & 0x1FF;
+            let l1_idx_f = (far_va >> 30) & 0x1FF;
+            let l2_idx_f = (far_va >> 21) & 0x1FF;
+            let l3_idx_f = (far_va >> 12) & 0x1FF;
+            let l0e_f = unsafe {
+                core::ptr::read_volatile(
+                    (crate::mm::mmu::pa_to_kernel_va(l0_user_pa) as *const u64).add(l0_idx_f)
+                )
+            };
+            crate::kprintln!(
+                "B1.5-DIAG pid={} FAR-VA={:#x} L0E={:#018x} L0_IDX={}",
+                pid,
+                far_va,
+                l0e_f,
+                l0_idx_f,
+            );
+            if l0e_f & 1 != 0 && l0e_f & 0b10 != 0 {
+                let l1_pa = (l0e_f & 0x0000_FFFF_FFFF_F000) as usize;
+                let l1e = unsafe {
+                    core::ptr::read_volatile(
+                        (crate::mm::mmu::pa_to_kernel_va(l1_pa) as *const u64).add(l1_idx_f)
+                    )
+                };
+                crate::kprintln!(
+                    "  L1_PA={:#x} L1_IDX={} L1E={:#018x}",
+                    l1_pa,
+                    l1_idx_f,
+                    l1e
+                );
+                if l1e & 1 != 0 && l1e & 0b10 != 0 {
+                    let l2_pa = (l1e & 0x0000_FFFF_FFFF_F000) as usize;
+                    let l2e = unsafe {
+                        core::ptr::read_volatile(
+                            (crate::mm::mmu::pa_to_kernel_va(l2_pa) as *const u64).add(l2_idx_f)
+                        )
+                    };
+                    crate::kprintln!(
+                        "    L2_PA={:#x} L2_IDX={} L2E={:#018x}",
+                        l2_pa,
+                        l2_idx_f,
+                        l2e
+                    );
+                    if l2e & 1 != 0 && l2e & 0b10 != 0 {
+                        let l3_pa = (l2e & 0x0000_FFFF_FFFF_F000) as usize;
+                        let l3e = unsafe {
+                            core::ptr::read_volatile(
+                                (crate::mm::mmu::pa_to_kernel_va(l3_pa) as *const u64).add(l3_idx_f)
+                            )
+                        };
+                        crate::kprintln!(
+                            "      L3_PA={:#x} L3_IDX={} L3E={:#018x}",
+                            l3_pa,
+                            l3_idx_f,
+                            l3e
+                        );
+                    }
+                }
+            }
+
+            // Walk the stack-0x1000-prior neighbour (the page
+            // immediately below the FAR address).  If the FAR walk
+            // shows a complete L0/L1/L2/L3 chain while this
+            // neighbour's chain ALSO does, then the A2 fault is NOT
+            // an unmapped page: it is a translation-cache-aliasing
+            // hazard on a mapped page.
+            let prior_va = proc.root_vmar.base + 0x2000000 + 0x2d68;
+            crate::kprintln!("B1.5-DIAG pid={} PRIOR-VA={:#x}", pid, prior_va);
+            let l0_idx_p = (prior_va >> 39) & 0x1FF;
+            let l1_idx_p = (prior_va >> 30) & 0x1FF;
+            let l2_idx_p = (prior_va >> 21) & 0x1FF;
+            let l3_idx_p = (prior_va >> 12) & 0x1FF;
+            let l0e_p = unsafe {
+                core::ptr::read_volatile(
+                    (crate::mm::mmu::pa_to_kernel_va(l0_user_pa) as *const u64).add(l0_idx_p)
+                )
+            };
+            crate::kprintln!(
+                "  prior L0_IDX={} L0E={:#018x}",
+                l0_idx_p,
+                l0e_p
+            );
+            if l0e_p & 1 != 0 && l0e_p & 0b10 != 0 {
+                let l1_pa = (l0e_p & 0x0000_FFFF_FFFF_F000) as usize;
+                let l1e = unsafe {
+                    core::ptr::read_volatile(
+                        (crate::mm::mmu::pa_to_kernel_va(l1_pa) as *const u64).add(l1_idx_p)
+                    )
+                };
+                crate::kprintln!(
+                    "  prior L1_PA={:#x} L1_IDX={} L1E={:#018x}",
+                    l1_pa,
+                    l1_idx_p,
+                    l1e
+                );
+                if l1e & 1 != 0 && l1e & 0b10 != 0 {
+                    let l2_pa = (l1e & 0x0000_FFFF_FFFF_F000) as usize;
+                    let l2e = unsafe {
+                        core::ptr::read_volatile(
+                            (crate::mm::mmu::pa_to_kernel_va(l2_pa) as *const u64).add(l2_idx_p)
+                        )
+                    };
+                    crate::kprintln!(
+                        "  prior L2_PA={:#x} L2_IDX={} L2E={:#018x}",
+                        l2_pa,
+                        l2_idx_p,
+                        l2e
+                    );
+                    if l2e & 1 != 0 && l2e & 0b10 != 0 {
+                        let l3_pa = (l2e & 0x0000_FFFF_FFFF_F000) as usize;
+                        let l3e = unsafe {
+                            core::ptr::read_volatile(
+                                (crate::mm::mmu::pa_to_kernel_va(l3_pa) as *const u64).add(l3_idx_p)
+                            )
+                        };
+                        crate::kprintln!(
+                            "  prior L3_PA={:#x} L3_IDX={} L3E={:#018x}",
+                            l3_pa,
+                            l3_idx_p,
+                            l3e
+                        );
+                    }
+                }
+            }
+        }
 
         // **B1.4 diagnostic dump (always-on).**  FAR=0x92003d68 from
         // KERNEL_HEALTH A2 points into the new process's user stack

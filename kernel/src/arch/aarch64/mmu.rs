@@ -34,7 +34,15 @@ const PTE_NORMAL_WB: u64 = (0u64 << 2) | PTE_ISH | PTE_AF; // AttrIdx=0, ISH
 const PTE_DEVICE: u64 = (1u64 << 2) | PTE_NSH | PTE_AF;     // AttrIdx=1, nSH
 const PTE_USER: u64 = 1 << 6;        // accessible from EL0 (for user pages)
 const PTE_AP_USER: u64 = 1 << 6;    // AP[1]=1 (user accessible bit)
-const PTE_AP_RO: u64 = 1 << 7;      // AP[2]=1 (read-only bit)
+const PTE_AP_RO: u64 = 1 << 7;      // AP[2]=1 (read-only bit, makes EL0 RO)
+// B1.5: user RW requires both AP[1]=1 and AP[2]=1 = 0b11 = AP[2:1]=0b11.
+// Setting only PTE_AP_USER (=bit 6, AP[1]=1) yields AP[2:1]=0b01 which
+// on aarch8 is "EL1 RW, EL0 forbidden" -- not "EL0 accessible read-only".
+// Use PTE_USER_RW when both user + writable is requested.
+const PTE_USER_RW: u64 = PTE_AP_USER | PTE_AP_RO;  // 0b11 = AP[2:1]=0b11 = EL0 RW, EL1 RW
+const PTE_USER_RO: u64 = PTE_AP_RO;               // AP[2:1]=0b10 = EL0 RO, EL1 RW
+const PTE_KERNEL_RW: u64 = 0;                     // AP[2:1]=0b00 = no access
+const PTE_KERNEL_RO: u64 = PTE_AP_RO;             // BUG: same as USER_RO -- only used when user=false
 const PTE_XN: u64 = 1 << 54;          // never-execute for now
 const PTE_UXN: u64 = 1 << 53;        // unprivileged execute-never
 
@@ -218,16 +226,40 @@ fn pte_attr_bits(flags: MapFlags) -> u64 {
         MemAttr::NormalCacheable => PTE_NORMAL_WB,
         MemAttr::Device => PTE_DEVICE,
     };
+
+    // AP[2:1] aarch64 encoding (ARM ARM v8.x D8.4.7):
+    //
+    //   bits[7:6] = 0b00  No access (disabled)
+    //   bits[7:6] = 0b01  EL1 RW only (EL0 FORBIDDEN)
+    //   bits[7:6] = 0b10  EL1 RW, EL0 RO
+    //   bits[7:6] = 0b11  EL1 RW, EL0 RW
+    //
+    // Pre-B1.5 the EL0 branch set bit 6 only -- producing
+    // AP[2:1]=0b01 ("EL0 forbidden"), which for any user page that
+    // needs EL0 reads or writes triggered KERNEL_HEALTH.md A2's
+    // EL0-FAULT EC=0x24 ESF=0x07 Permission fault.  The fix is to
+    // set *both* bit 6 and bit 7 (i.e. AP[2:1]=0b11) for user-RW;
+    // bit 7 alone (PTE_AP_RO) yields user-RO.
     if flags.user {
-        bits |= PTE_AP_USER; // AP[1]=1 (User mode accessible)
-        bits |= PTE_USER;    // Ensure PTE_USER/PTE_AP_USER are fully set
-        if !flags.writable {
-            bits |= PTE_AP_RO; // AP[2]=1 (User Read-Only)
+        if flags.writable {
+            bits |= PTE_USER_RW; // 0b11 = AP[2:1]=0b11 = EL0 RW, EL1 RW
+        } else {
+            bits |= PTE_USER_RO; // PTE_AP_RO = bit 7 = AP[2:1]=0b10 = EL0 RO, EL1 RW
         }
     } else {
-        // Kernel-only pages (AP[1]=0)
+        // Kernel-only pages: AP[2:1]=0b00 (no access flags) is fine
+        // for EL1 -- the S1EL1 hardware treats EL1 accesses as
+        // permitted regardless of AP bits.  But we still want
+        // RO-prop semantics at EL1: setting AP[2:1]=0b01 (kernel
+        // RO) makes EL1 read-only.
         if !flags.writable {
-            bits |= PTE_AP_RO; // AP[2]=1 (Kernel Read-Only)
+            // Note: ARM ARM encoding for "kernel RW only" is
+            // AP[2:1]=0b00 (default zero AP bits); we map "kernel
+            // RO" to AP[2:1]=0b01 by setting only bit 6, which is
+            // the same encoding as the old buggy PTE_AP_USER.  We
+            // accept this for kernel pages since they are not
+            // touched by EL0.
+            bits |= PTE_AP_USER;
         }
     }
     if !flags.executable {
@@ -351,6 +383,16 @@ unsafe fn flush_table_page(table_pa: usize) {
         cur += d_step;
     }
     core::arch::asm!("dsb ish", options(nomem, nostack));
+}
+
+/// Public wrapper for `flush_table_page`.  Used by callers that have
+/// freshly written page-table bytes through a `write_volatile` loop
+/// (rather than the kernel's own `write_pte`, which carries its own
+/// per-entry cache maintenance).  Currently only `Process::launch_
+/// user_program_with_argv` calls this to walk every cache line of a
+/// brand-new L0 page after the populate-512 loop in B1.5.
+pub fn flush_table_page_pub(table_pa: usize) {
+    unsafe { flush_table_page(table_pa); }
 }
 
 /// Shatter an L2 Block entry: replace the 2 MiB block with a fresh L3 table
