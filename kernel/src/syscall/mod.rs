@@ -305,6 +305,18 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
             }
         }
 
+        SYSCALL_WAIT4 => {
+            // sys_wait4(pid, status_out_ptr, options).  See
+            // `ProcessState::Zombie` traversal in handlers::process
+            // for the full algorithm; for 1.0 we only support
+            // pid > 0 (specific child) and pid = -1 (any child),
+            // returning the reaped pid or a Status code.
+            match handlers::process::sys_wait4(table, arg0 as i64, arg1, arg2 as i32) {
+                Ok(reaped_pid) => reaped_pid as usize,
+                Err(e) => e.to_raw() as usize,
+            }
+        }
+
         SYSCALL_GET_TID => {
             // POSIX `gettid(2)` — kernel TID of the calling thread.
             // Wire per KERNEL_HEALTH.md P6 (Phase 6 v0.6.0-α POSIX push).

@@ -80,6 +80,26 @@ pub const SYSCALL_SEEK: u32 = 103;
 pub const SYSCALL_GETCWD: u32 = 104;
 pub const SYSCALL_CHDIR: u32 = 105;
 
+/// Wait for a child process to exit, optionally restricted to a
+/// specific pid.  `pid` semantics match Linux's `wait4(pid, ...)`:
+///
+///   pid > 0   - wait for child whose process_id == pid
+///   pid = 0   - wait for any child whose parent is the caller and
+///                whose process group is the caller's pgrp
+///                (process-group support is a stub for 1.0; we
+///                collapse to "wait for any direct child")
+///   pid = -1  - wait for any child of the caller (1.0 behaviour)
+///   pid < -1  - process-group wait (1.0 stub, returns InvalidArgs)
+///
+/// On success the user-mode buffer pointed to by `status_out_ptr`
+/// receives a Posix-style exit status (low 8 bits = exit code; bit
+/// 8 set = killed by signal; we only distinguish "WIFEXITED" + the
+/// raw 8-bit code in 1.0 -- signal exit is reserved for the B5
+/// signal pipeline).  Returns the pid of the reaped child, or
+/// `Status::TryAgain` if the chosen child is still running, or
+/// `Status::NotFound` if no such child exists.
+pub const SYSCALL_WAIT4: u32 = 88;
+
 pub const SYSCALL_EXEC: u32 = 110;
 pub const SYSCALL_LOAD_BINARY: u32 = 111;
 pub const SYSCALL_EXECVE: u32 = 112;

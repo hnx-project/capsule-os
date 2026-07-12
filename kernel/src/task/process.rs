@@ -28,6 +28,16 @@ pub struct Process {
     pub l0_user_pa: usize,
     pub cwd: [u8; CWD_MAX],
     pub cwd_len: usize,
+    /// Exit code recorded by `SYSCALL_EXIT` so the parent can harvest
+    /// it via `SYSCALL_WAIT`.  `None` while the process is still
+    /// running or zombie with no exit recorded yet.  When set, the
+    /// process becomes a proper Zombie and the parent can reap it
+    /// to Dead via `SYSCALL_WAIT`.
+    pub exit_status: Option<i32>,
+    /// pid of the parent process (`0` for pid 1 anchor).  Used by
+    /// `SYSCALL_GETPPID` and by the kernel scheduler to decide
+    /// which process is allowed to `wait` on which children.
+    pub parent_pid: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +74,8 @@ impl Process {
             l0_user_pa: 0,
             cwd,
             cwd_len,
+            exit_status: None,
+            parent_pid: 0,
         })
     }
 
@@ -78,7 +90,7 @@ impl Process {
     }
 
     pub fn launch_user_program(name: &'static str, binary_bytes: &[u8]) -> Result<()> {
-        Self::launch_user_program_with_argv(name, binary_bytes, &[], &[], 0)
+        Self::launch_user_program_with_argv(name, binary_bytes, &[], &[], 0, 0)
     }
 
     /// Launch a fresh EL0 program with `argc`/`argv` materialised onto its
@@ -94,6 +106,7 @@ impl Process {
         arg_strs: &[[u8; 256]],
         arg_lens: &[usize],
         argc: usize,
+        parent_pid: u64,
     ) -> Result<()> {
         use crate::mm::vmo::Vmo;
         use crate::mm::vmar::VmarFlags;
@@ -108,6 +121,7 @@ impl Process {
 
         let proc = allocate_process(name)?;
         let pid = proc.id;
+        proc.parent_pid = parent_pid;
 
         let l0_user_pa = crate::mm::phys::alloc_page()?.as_usize();
         proc.l0_user_pa = l0_user_pa;
