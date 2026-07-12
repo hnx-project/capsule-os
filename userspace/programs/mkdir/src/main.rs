@@ -68,7 +68,7 @@ fn main() {
 }
 
 // 3. Capsule OS 入口：hnxlibc 在 _start 之后会调用
-//    `extern "Rust" { fn main() -> i32 }`（见 userspace/hnxlibc/src/lib.rs）。
+//    `extern "Rust" { fn main() -> i32 }`（见 hnxlibc/src/lib.rs）。
 //    我们不再自己实现 `_start` 和 `panic_handler`：这两者都由 hnxlibc
 //    统一接管。argv 由 kernel 透传过来 (见 SYSCALL_EXECVE +
 //    `kernel/src/syscall/handlers/process.rs::sys_execve`)，通过

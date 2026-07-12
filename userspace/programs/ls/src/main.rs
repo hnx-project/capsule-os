@@ -59,7 +59,7 @@ fn main() {
 }
 
 // 3. Capsule OS 入口：hnxlibc 在 _start 之后会调用
-//    `extern "Rust" { fn main() -> i32 }`（见 userspace/hnxlibc/src/lib.rs）。
+//    `extern "Rust" { fn main() -> i32 }`（见 hnxlibc/src/lib.rs）。
 //    `_start` 和 `panic_handler` 都由 hnxlibc 统一接管。
 //
 //    TODO: 真正的目录遍历依赖 SYSCALL_READDIR + Dirent 协议

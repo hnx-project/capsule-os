@@ -24,7 +24,7 @@ fn main() {
 }
 
 // 2. Capsule OS 用户态入口：hnxlibc 在 _start 之后会调用
-//    `extern "Rust" { fn main() -> i32 }`（见 userspace/hnxlibc/src/lib.rs）。
+//    `extern "Rust" { fn main() -> i32 }`（见 hnxlibc/src/lib.rs）。
 //    我们把 REPL 入口挂到 `pub fn main` 上，让 hnxlibc 接管栈对齐、RA 清零
 //    和退出码回传。不需要我们自己的 `#[panic_handler]`：hnxlibc 已注册一个。
 #[cfg(not(feature = "host"))]

@@ -75,7 +75,7 @@ fn current_process_id_and_l0() -> Result<(u64, usize)> {
 /// Acquire (or create) a fresh session channel connected to fileagent's
 /// `svc.vfs` endpoint, returning the client-side `HandleValue`.  Every
 /// `open` syscall gets its own channel; this matches what hnxlibc does
-/// today (`userspace/hnxlibc/src/lib.rs:329`).  When we later add a
+/// today (`hnxlibc/src/lib.rs:329`).  When we later add a
 /// `posix_session_chan` cache to `Process` we can skip the lookup.
 fn lookup_svc_vfs(table: &HandleTable) -> Result<HandleValue> {
     // The forwarder runs in syscall-handler context, so the user's

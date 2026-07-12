@@ -8,7 +8,7 @@ name = "init"
 path = "src/main.rs"
 
 [dependencies]
-hnxlibc = { path = "../../hnxlibc" }
+hnxlibc.workspace = true
 
 [features]
 capsule = []

@@ -25,7 +25,7 @@
 
 ## 2. hnxlibc 现状深度剖析
 
-通过阅读 `capsule-os/userspace/hnxlibc` 源码，该用户态库采用了一种非常现代化且高效的微内核架构（类似于 Fuchsia OS）：
+通过阅读 `capsule-os/hnxlibc` 源码，该用户态库采用了一种非常现代化且高效的微内核架构（类似于 Fuchsia OS）：
 * **虚拟文件系统 (VFS)**：核心功能委派给 `svc.vfs` 服务进程（`fileagent`）。
 * **跨进程 IPC 通道**：利用内核的 `SYSCALL_CHANNEL_READ` / `SYSCALL_CHANNEL_WRITE` 实现会话消息推送。
 * **零拷贝文件读写**：采用 `SYSCALL_VMO_CREATE`、`SYSCALL_VMO_READ`、`SYSCALL_VMO_WRITE` 临时创建虚拟内存对象 (VMO) 句柄进行进程间的数据零拷贝交换。

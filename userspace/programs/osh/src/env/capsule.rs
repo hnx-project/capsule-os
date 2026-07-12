@@ -65,7 +65,7 @@ impl Environment for CapsuleEnv {
         // The kernel materialises argv on the child process's user stack
         // and hands argc / argv in x0/x1 at entry; see
         // `kernel/src/syscall/handlers/process.rs::sys_execve` and the
-        // hnxlibc user entry trampoline in `userspace/hnxlibc/src/lib.rs`.
+        // hnxlibc user entry trampoline in `hnxlibc/src/lib.rs`.
         let mut argv_storage: [&[u8]; 16] = [&[]; 16];
         argv_storage[0] = cmd.as_bytes();
         for (i, a) in args.iter().enumerate() {

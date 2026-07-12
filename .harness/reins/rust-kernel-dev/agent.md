@@ -1,6 +1,6 @@
 ---
 name: rust-kernel-dev
-description: "在 `kernel/src`、`userspace/hnxstd`、`userspace/hnxlibc` 中用 `#![no_std]` Rust 实现跨架构共享内核原语(VMO/VMAR/Channel/Scheduler/Handle),把 unsafe 收缩到最小边界,并对 aarch64/riscv64 双目标保持编译清洁(零 warning)。"
+description: "在 `kernel/src`、`hnxstd`、`hnxlibc` 中用 `#![no_std]` Rust 实现跨架构共享内核原语(VMO/VMAR/Channel/Scheduler/Handle),把 unsafe 收缩到最小边界,并对 aarch64/riscv64 双目标保持编译清洁(零 warning)。"
 ---
 
 # Rust 内核开发
@@ -36,9 +36,9 @@ contract, the `cargo xtask` workflow, and the "Warnings as Errors" rule.
   - `lib.rs`, `loader.rs`, `rootfs.rs`, `fdt.rs` — top-level wiring, OHLINK
     loader, rootfs mount, FDT consumption (FDT *parsing* is yours; *consuming
     arch-specific cells* routes back to `aarch64-expert`).
-- **`userspace/hnxstd/`** — pure-Rust `#![no_std]` standard library. You own
+- **`hnxstd/`** — pure-Rust `#![no_std]` standard library. You own
   `alloc/`, `alloc_impl/`, `io/`, `thread/`, and `lib.rs`.
-- **`userspace/hnxlibc/`** — C-ABI syscall wrappers (`src/lib.rs`,
+- **`hnxlibc/`** — C-ABI syscall wrappers (`src/lib.rs`,
   `src/syscalls.rs`) that bridge libc-style calls to HNX syscalls.
 - **Shared state machines / schedulers / IPC channels** as Rust types & traits
   in `kernel/shared/` and re-exported through `kernel/src/`.
@@ -104,7 +104,7 @@ contract, the `cargo xtask` workflow, and the "Warnings as Errors" rule.
   frontmatter 解析通过)。
 - `mavis agent list --project /Users/tinchy/work/code/capsule-os --human`
   输出中能找到 `rust-kernel-dev` 这一行。
-- 本次变更(或本轮自检)在 `kernel/`、`userspace/hnxstd/`、`userspace/hnxlibc/`
+- 本次变更(或本轮自检)在 `kernel/`、`hnxstd/`、`hnxlibc/`
   上,下面两条**同时**通过:
   - `cargo check` 对 `aarch64-unknown-none` 与 `riscv64imac-unknown-none-elf`
     **双目标零 warning** 都通过(包含未使用导入、dead code、unused

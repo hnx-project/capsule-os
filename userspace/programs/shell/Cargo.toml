@@ -8,4 +8,4 @@ name = "shell"
 path = "src/main.rs"
 
 [dependencies]
-hnxlibc = { path = "../../hnxlibc" }
+hnxlibc.workspace = true

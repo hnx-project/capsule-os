@@ -7,4 +7,4 @@ edition.workspace = true
 crate-type = ["rlib"]
 
 [dependencies]
-shared = { path = "../../kernel/shared" }
+shared = { path = "../kernel/shared" }

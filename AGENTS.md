@@ -44,14 +44,22 @@ AI Agents must respect that **all projects are now strictly integrated using Git
 │   ├── shared/            # Common shared kernel/userspace status and types
 │   ├── hal/               # Hardware Abstraction Layer
 │   └── src/               # Process/Thread context, VMAR, VMO, IPC Channels, Scheduler
-├── userspace/             # 📂 User-Space Sandbox Ecosystem
-│   ├── hnxlibc/           # Standard C-ABI syscall wrappers
-│   ├── hnxstd/            # Pure-Rust custom standard library
-│   └── services/          # Sandboxed system services (init, devmgr, loader, vfs)
+├── hnxlibc/               # 📂 Top-level OS runtime contract: C-ABI syscall wrappers
+├── hnxstd/                # 📂 Top-level OS runtime contract: Pure-Rust #![no_std] std lib skeleton
+├── userspace/             # 📂 User-Space Sandbox Ecosystem (services + programs)
+│   └── services/          # Sandboxed system services (init, devmgr, loader, fileagent)
 ├── tools/                 # 📂 Development Tooling
 │   └── ohlink-cc/         # 📂 (Subtree) ohlink-format, rustc_codegen_ohlink, ohlink-linker
 └── std/targets/           # 📜 CapsuleOS custom cross-compilation JSON targets
 ```
+
+The **`hnxlibc/` and `hnxstd/`** crates are top-level OS runtime
+contract crates — they are **not** EL0 sandbox services.  Every
+userspace service and program depends on them via
+`hnxlibc.workspace = true` (see `[workspace.dependencies]` in the
+root `Cargo.toml`); the corresponding import paths are
+`extern crate hnxlibc;` / `use hnxlibc::syscalls;` and are
+unaffected by the directory layout.
 
 ---
 

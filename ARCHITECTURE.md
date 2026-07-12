@@ -472,6 +472,6 @@ into `addr2line -e dist/kernel/kernel.elf` to get the source line.
 | Change the OHLINK parser                             | `tools/ohlink-cc/ohlink-format/`            |
 | Add a new trap class (e.g. wire up `fiq_el0`)        | `kernel/src/arch/<arch>/boot_asm.S`        |
 | Tweak the boot sequence                              | `kernel/src/lib.rs::kernel_main`           |
-| Update the public API surface (libc / std)            | `userspace/hnxlibc/` + `userspace/hnxstd/` |
+| Update the public API surface (libc / std)            | `hnxlibc/` + `hnxstd/` |
 | Tweak the `xtask` workflow                           | `tools/xtask/src/`                         |
 | Change the dual-arch contract                        | `kernel/src/arch/mod.rs` + per-arch sibling |

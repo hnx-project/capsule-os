@@ -275,7 +275,7 @@ impl Process {
             // First: copy each argv string payload upward, capturing the
             // user-VA of each one so the pointer array below points at it.
             // Each string is NUL-terminated so the user entry trampoline's
-            // "scan until 0 byte" loop (in `userspace/hnxlibc/src/lib.rs`
+            // "scan until 0 byte" loop (in `hnxlibc/src/lib.rs`
             // `_hnx_user_entry`) finds the end of the string instead of
             // running through the 16-byte pad area into adjacent argv
             // entries — without the NUL, `__HNX_ARGV_LENS[i]` would

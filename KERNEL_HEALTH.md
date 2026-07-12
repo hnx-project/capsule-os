@@ -82,7 +82,7 @@ calls).`
 
 | # | Item | State | Notes |
 |---|------|-------|-------|
-| **L1** | `libc::open` C-ABI | `code-ready-not-verified` | `hnxlibc::open` (`userspace/hnxlibc/src/lib.rs:313`) is `#[no_mangle] pub extern "C"`. Body bypasses `__NR_open` and goes straight through `channel_lookup("svc.vfs")`. Bypasses any raw `syscall(__NR_open, ...)` caller. **0.6-α target:** hnxlibc calls `sys_open`-via-syscall ABI so EL0 programs that link hnxlibc AND EL0 programs that raw-syscall both work. |
+| **L1** | `libc::open` C-ABI | `code-ready-not-verified` | `hnxlibc::open` (`hnxlibc/src/lib.rs:313`) is `#[no_mangle] pub extern "C"`. Body bypasses `__NR_open` and goes straight through `channel_lookup("svc.vfs")`. Bypasses any raw `syscall(__NR_open, ...)` caller. **0.6-α target:** hnxlibc calls `sys_open`-via-syscall ABI so EL0 programs that link hnxlibc AND EL0 programs that raw-syscall both work. |
 | **L2** | `libc::read / write / close / lseek` C-ABI | `code-ready-not-verified` | Same C-ABI shape as L1. **0.6-α target:** same. |
 | **L3** | `libc::execve(2)` C-ABI | `working` | `sys_exec` accepts a NUL-terminated path pointer and parsed OHLINK bytes; phase 5.2 wired this up. C name `execve` is exposed in hnxlibc. |
 | **L4** | `libc::wait / waitpid` | `not-started` | `syscall/numbers.rs` doesn't define these. Dead process zombies never reaped. **0.7 target:** wrap a PID-collection side channel on `sys_process_exit`. |

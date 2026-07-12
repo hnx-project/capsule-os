@@ -50,7 +50,7 @@ it leaves pre-1.0 development.
     it requires changing `init/src/main.rs` to call
     `hnxlibc::execve("osh", &["osh"])` (or similar) and
     confirming `argc=1, argv[0]="osh"` reaches the new process
-    via the `user entry trampoline` in `userspace/hnxlibc/src/entry/`.
+    via the `user entry trampoline` in `hnxlibc/src/entry/`.
 
 ### Landed since 0.5.9 (on `develop`, pending release as 0.5.10)
 - **Init anchor respawn** (`555333b feat(init-anchor)`): new module

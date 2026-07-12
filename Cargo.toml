@@ -2,6 +2,13 @@
 version = "0.5.9-develop"
 edition = "2021"
 
+[workspace.dependencies]
+# Top-level OS runtime contract crates.  All userspace/* crates
+# inherit via `dep.workspace = true` so a future rename of the
+# directory layout only needs to touch this block.
+hnxlibc = { path = "hnxlibc" }
+hnxstd = { path = "hnxstd" }
+
 [workspace]
 members = [
     "bootloader",
@@ -9,9 +16,10 @@ members = [
     "tools/ohlink-toolchain/crates/ohlink-format",
     "tools/ohlink-toolchain/crates/ohlink-linker",
     "tools/ohlink-toolchain/crates/ohlink-read",
+    # stdlib | CapsuleOS runtime contract (top-level OS ABI crates)
+    "hnxlibc",
+    "hnxstd",
     # userspace | capsuleOS
-    "userspace/hnxlibc",
-    "userspace/hnxstd",
     "userspace/services/devmgr",
     "userspace/services/fileagent",
     "userspace/services/loader",

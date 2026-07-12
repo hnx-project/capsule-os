@@ -8,7 +8,7 @@ name = "loader"
 path = "src/main.rs"
 
 [dependencies]
-hnxlibc = { path = "../../hnxlibc" }
+hnxlibc.workspace = true
 
 # [build]
 # rustflags = ["-C", "link-arg=-Tloader.ld"]

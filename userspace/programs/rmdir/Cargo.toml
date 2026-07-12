@@ -13,7 +13,7 @@ name = "rmdir"
 path = "src/main.rs"
 
 [dependencies]
-hnxlibc = { path = "../../hnxlibc" }
+hnxlibc.workspace = true
 
 [profile.release]
 panic = "abort"

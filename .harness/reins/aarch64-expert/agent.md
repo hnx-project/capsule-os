@@ -100,7 +100,7 @@ aarch64 branch of every `#[cfg(target_arch = "aarch64")]` in
   flag the riscv64 impact explicitly so a future expert can pick it up.
 - **General code style, CI plumbing, xtask behaviour** — leave alone
   unless the change is required for an AArch64 build artifact.
-- **Userspace C-ABI surface (`userspace/hnxlibc`, `userspace/hnxstd`)** —
+- **Userspace C-ABI surface (`hnxlibc`, `hnxstd`)** —
   never touch it directly; surface ABI issues to `microkernel-architect`.
 
 ## How you work
