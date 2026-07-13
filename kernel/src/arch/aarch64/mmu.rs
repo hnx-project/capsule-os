@@ -677,15 +677,17 @@ pub fn enable_inner(ram_base: usize, ram_size: usize, _uart_base: usize) -> Resu
         zero_page(l1_id_pa);
         zero_page(l1_high_pa);
 
-        // Identity: 1 GiB blocks covering UART (low 1 GiB) and RAM.
+        // Identity: 2 GiB blocks covering UART (low 1 GiB) and full 1 GiB of potential RAM.
         write_l1_block(l1_id_pa, 0, 0x0000_0000, MemAttr::Device);
         write_l1_block(l1_id_pa, 1, 0x4000_0000, MemAttr::NormalCacheable);
+        write_l1_block(l1_id_pa, 2, 0x8000_0000, MemAttr::NormalCacheable);
 
-        // High-half mirror: 1 GiB block @ 0x4000_0000 reachable from the high half.
+        // High-half mirror: 2 GiB blocks starting @ 0x4000_0000 reachable from the high half.
         let ram_va = pa_to_kernel_va(ram_base);
         let l0_idx_high = va_l0_index(ram_va);
         let l1_idx_high = va_l1_index(ram_va);
         write_l1_block(l1_high_pa, l1_idx_high, 0x4000_0000, MemAttr::NormalCacheable);
+        write_l1_block(l1_high_pa, l1_idx_high + 1, 0x8000_0000, MemAttr::NormalCacheable);
 
         // L0[0] -> L1_ID, L0[l0_idx_high] -> L1_HIGH.
         write_l0_table(l0_pa, 0, l1_id_pa);

@@ -11,21 +11,20 @@ const BOLD_GREEN: &str = "\x1b[1;32m";
 const BOLD_CYAN: &str = "\x1b[1;36m";
 const RESET: &str = "\x1b[0m";
 
-// TESTLOADER ONLY — 调试期间只编译 testloader
 const USERCRATE_S: &[(&str, &str)] = &[
-    // ("hnx-init", "init"),
-    // ("hnx-devmgr", "devmgr"),
-    // ("hnx-fileagent", "fileagent"),
-    // ("hnx-loader", "loader"),
-    // ("hnx-osh", "osh"),
-    // ("hnx-ls", "ls"),
-    // ("hnx-cat", "cat"),
-    // ("hnx-mkdir", "mkdir"),
-    // ("hnx-touch", "touch"),
-    // ("hnx-rm", "rm"),
-    // ("hnx-rmdir", "rmdir"),
-    // ("hnx-ps", "ps"),
-    // ("hnx-kill", "kill"),
+    ("hnx-init", "init"),
+    ("hnx-devmgr", "devmgr"),
+    ("hnx-fileagent", "fileagent"),
+    ("hnx-loader", "loader"),
+    ("hnx-osh", "osh"),
+    ("hnx-ls", "ls"),
+    ("hnx-cat", "cat"),
+    ("hnx-mkdir", "mkdir"),
+    ("hnx-touch", "touch"),
+    ("hnx-rm", "rm"),
+    ("hnx-rmdir", "rmdir"),
+    ("hnx-ps", "ps"),
+    ("hnx-kill", "kill"),
     ("hnx-testloader", "testloader"),
 ];
 

@@ -772,6 +772,8 @@ impl Process {
                 use crate::mm::mmu::ArchMmu;
                 crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
                 crate::arch::aarch64::mmu::set_ttbr0_el1(old_ttbr0);
+            } else {
+                crate::arch::aarch64::mmu::set_ttbr0_el1(l0_user_pa);
             }
         }
 

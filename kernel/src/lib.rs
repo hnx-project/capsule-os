@@ -146,12 +146,12 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8) {
             //     loop {}
             // }
 
-            match crate::loader::launch_testloader() {
+            match crate::loader::launch_loader() {
                 Ok(_) => {
-                    crate::log_info!("BOOT", "Testloader process ready to schedule");
+                    crate::log_info!("BOOT", "Loader process ready to schedule");
                 }
                 Err(e) => {
-                    crate::log_warn!("BOOT", "Testloader skipped or failed ({:?}), falling back to kernel smoke threads", e);
+                    crate::log_warn!("BOOT", "Loader skipped or failed ({:?}), falling back to kernel smoke threads", e);
                 }
             }
 
