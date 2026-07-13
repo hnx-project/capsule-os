@@ -127,32 +127,14 @@ pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
     let esr = unsafe { (*frame).esr };
     let elr = unsafe { (*frame).elr };
     let spsr = unsafe { (*frame).spsr };
-    crate::log_info!("TRAP", " EL0 Trap Intercepted! ESR={:#x}, ELR={:#x}, SPSR={:#x}", esr, elr, spsr);
     let ec = (esr >> 26) & 0x3F; // Exception Class
 
     if ec == 0x11 || ec == 0x15 {
         // SVC exceptions in AArch64/AArch32 state
         // EC=0x11: SVC in AArch64
         // EC=0x15: SVC in AArch32 (or trapped MSR/MRS)
-        crate::log_debug!(
-            "SVC-PRE",
-            "n=#{} ec={:#x} elr={:#x}",
-            unsafe { (*frame).x[16] }, ec, elr
-        );
         unsafe {
             let syscall_num = (*frame).x[16];
-
-            // One-line visibility for the EXEC syscall (#110); every other
-            // syscall is silent and is handled by the dispatch table.
-            if syscall_num == 110 {
-                crate::log_info!(
-                    "SYSCALL",
-                    "EXEC x0={:#x} x1={:#x} ELR={:#x}",
-                    (*frame).x[0],
-                    (*frame).x[1],
-                    (*frame).elr,
-                );
-            }
 
             let ret = crate::syscall::syscall_dispatch(
                 syscall_num as u32,
@@ -174,6 +156,7 @@ pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
             // the SVC PC.  Without `+= 4` the eret jumps straight back
             // into the same `svc #0`, the loader's T11+ tracepoints stop
             // firing, and the user-mode program appears to hang.
+
             if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
                 unsafe { (*t).context.elr = (*frame).elr; }
             }

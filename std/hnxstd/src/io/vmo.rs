@@ -19,19 +19,21 @@ impl Vmo {
     /// Create a child VMO slicing an existing parent VMO range
     pub fn create_child(&self, offset: usize, size: usize) -> Result<Self, Status> {
         let child_handle = hnxlibc::syscalls::vmo_create_child(self.handle, offset, size)?;
-        Ok(Self { handle: child_handle })
+        Ok(Self {
+            handle: child_handle,
+        })
     }
 
     /// Safely read a struct of type `T` from the VMO at specific byte `offset`
     pub fn read_struct<T: Copy>(&self, offset: usize) -> Result<T, Status> {
         let mut temp = core::mem::MaybeUninit::<T>::uninit();
         let size = core::mem::size_of::<T>();
-        
+
         let buf_ptr = temp.as_mut_ptr() as *mut u8;
         let slice = unsafe { core::slice::from_raw_parts_mut(buf_ptr, size) };
-        
+
         hnxlibc::syscalls::vmo_read(self.handle, offset, slice)?;
-            
+
         unsafe { Ok(temp.assume_init()) }
     }
 

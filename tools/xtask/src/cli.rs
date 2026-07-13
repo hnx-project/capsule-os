@@ -17,6 +17,8 @@ pub enum Commands {
         #[command(subcommand)]
         sub: RepoSubcommands,
     },
+    #[command(about = "Clean all build artifacts (cargo clean + custom directories)")]
+    Clean,
     #[command(about = "Operating System code development and execution (Build, Run, Check Env)")]
     Code {
         #[command(subcommand)]

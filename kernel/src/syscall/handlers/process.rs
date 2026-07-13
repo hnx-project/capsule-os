@@ -380,6 +380,7 @@ pub fn sys_spawn(
     let copy_path_len = core::cmp::min(path_len, path_buf.len());
     
     // Hardening translation verification for direct map access to eliminate TLB/Cache mismatch EL1 Data Aborts
+    #[cfg(target_arch = "aarch64")]
     if let Some(resolved_pa) = crate::arch::aarch64::mmu::translate_user_va(caller_l0_pa, path_ptr) {
         let kva = crate::mm::mmu::pa_to_kernel_va(resolved_pa);
         // Evict/Clean user rodata page to Point of Coherency (PoC) to make sure main memory has correct values
@@ -389,6 +390,7 @@ pub fn sys_spawn(
             core::arch::asm!("isb", options(nomem, nostack));
         }
     }
+
 
     if let Err(e) = crate::syscall::handlers::ipc::safe_copy_from_user(
         caller_l0_pa,

@@ -1,5 +1,5 @@
-use shared::status::Status;
 use crate::io::vmo::Vmo;
+use shared::status::Status;
 
 /// Safer Object Wrapper for Process management
 pub struct Process {

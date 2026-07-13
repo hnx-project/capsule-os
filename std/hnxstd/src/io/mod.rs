@@ -1,5 +1,5 @@
-pub mod vmo;
 pub mod process;
+pub mod vmo;
 
 pub fn println(s: &str) {
     use hnxlibc::write;

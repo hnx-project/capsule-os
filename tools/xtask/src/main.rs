@@ -1,4 +1,5 @@
 mod build;
+mod clean;
 mod cli;
 mod output;
 mod pack;
@@ -14,6 +15,12 @@ use platform::Platform;
 fn main() {
     let cli = Cli::parse();
     match &cli.command {
+        Commands::Clean => {
+            if let Err(e) = clean::clean() {
+                eprintln!("Clean failed: {}", e);
+                std::process::exit(1);
+            }
+        }
         Commands::Code { sub } => match sub {
             CodeSubcommands::CheckEnv { expected_rust } => {
                 match toolchain::check_toolchain(expected_rust.as_deref()) {

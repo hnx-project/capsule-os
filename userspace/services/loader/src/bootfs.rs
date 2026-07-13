@@ -68,11 +68,11 @@ impl<'a> BootFsLoader<'a> {
     /// Load and spawn a process directly from BootFS by path
     pub fn load_and_spawn(&self, path: &str) -> Result<u64, Status> {
         let scanner = BootFsScanner::new(self.vmo)?;
-        
+
         for entry in scanner {
             let path_len = entry.path.iter().position(|&b| b == 0).unwrap_or(128);
-            let file_path = core::str::from_utf8(&entry.path[..path_len])
-                .map_err(|_| Status::InvalidArgs)?;
+            let file_path =
+                core::str::from_utf8(&entry.path[..path_len]).map_err(|_| Status::InvalidArgs)?;
 
             if file_path == path {
                 let file_offset = entry.offset as usize;

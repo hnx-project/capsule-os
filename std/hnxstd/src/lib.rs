@@ -22,5 +22,5 @@ pub mod string;
 pub mod thread;
 pub mod vec;
 
-pub use io::vmo::Vmo;
 pub use io::process::Process;
+pub use io::vmo::Vmo;

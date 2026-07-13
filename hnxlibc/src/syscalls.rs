@@ -249,7 +249,15 @@ pub fn vmo_create(size: usize) -> Result<usize, Status> {
 }
 
 pub fn vmo_create_child(parent_handle: usize, offset: usize, size: usize) -> Result<usize, Status> {
-    let ret = syscall!(SYSCALL_VMO_CREATE_CHILD, parent_handle, offset, size, 0, 0, 0);
+    let ret = syscall!(
+        SYSCALL_VMO_CREATE_CHILD,
+        parent_handle,
+        offset,
+        size,
+        0,
+        0,
+        0
+    );
     if (ret as isize) < 0 {
         Err(Status::from_raw(ret as i32))
     } else {

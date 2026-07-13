@@ -219,6 +219,15 @@ impl MapFlags {
             user: false,
         }
     }
+    pub const fn device_rw_user() -> Self {
+        Self {
+            mem_attr: MemAttr::Device,
+            readable: true,
+            writable: true,
+            executable: false,
+            user: true,
+        }
+    }
 }
 
 fn pte_attr_bits(flags: MapFlags) -> u64 {

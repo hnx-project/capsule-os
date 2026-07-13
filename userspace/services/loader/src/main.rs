@@ -1,20 +1,22 @@
 #![no_std]
 #![no_main]
 
-extern crate hnxstd;
 extern crate hnxlibc;
+extern crate hnxstd;
 
-mod log;
 mod bootfs;
+mod log;
 
-use hnxstd::Vmo;
-use hnxlibc::syscalls;
-use log::Logger;
 use bootfs::BootFsLoader;
+use hnxlibc::syscalls;
+use hnxstd::Vmo;
+use log::Logger;
 
 #[no_mangle]
 pub fn main() -> i32 {
-    Logger::write("Loader: bringing up EL0 services (devmgr + fileagent) via Userboot VMO slices!\n");
+    Logger::write(
+        "Loader: bringing up EL0 services (devmgr + fileagent) via Userboot VMO slices!\n",
+    );
 
     // Strictly resolve raw handle on main stack to guarantee handle 100 lives until main exits!
     let root_vmo = unsafe { Vmo::from_raw_handle(100) };

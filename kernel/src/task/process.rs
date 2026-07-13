@@ -158,8 +158,6 @@ impl Process {
         use crate::mm::vmar::VmarFlags;
         use crate::task::thread::{Thread, ThreadState};
 
-        crate::kprintln!("[DIAG] launch_user_program ENTRY, binary_bytes.len={}", binary_bytes.len());
-
         let parser = ohlink_format::parser::OHLK_Parser::new(binary_bytes).map_err(|e| {
             crate::log_error!("LAUNCHER", "Failed to parse OHLINK format: {:?}", e);
             Status::InvalidArgs
@@ -194,13 +192,12 @@ impl Process {
             core::ptr::write_volatile(l0_kva, l1_entry);
             core::arch::asm!("dc cvac, {0}", in(reg) l0_kva as usize, options(nomem, nostack));
             core::arch::asm!("dsb ish", options(nomem, nostack));
-            crate::kprintln!("[DIAG] user L0[0] -> user L1={:#x}", user_l1_pa);
 
             // Crucial Fix: Map the UART device physical page (0x09000000) under the process L0 page directory.
             // When we run in userspace with TTBR0_EL1, any kernel trap/SVC print statement uses 0x09000000
             // to print log characters. Without this mapping, a Kernel Data Abort (ESR_EL1=0x96000045, FAR_EL1=0x09000000)
             // occurs inside the sync_el0 / irq vector handlers, leading to double-fault locking.
-            let uart_flags = crate::arch::aarch64::mmu::MapFlags::device_rw();
+            let uart_flags = crate::arch::aarch64::mmu::MapFlags::device_rw_user();
             if let Err(e) = crate::arch::aarch64::mmu::map_page_under_l0(l0_user_pa, 0x09000000, 0x09000000, uart_flags) {
                 crate::kprintln!("WARNING: Failed to map UART under user L0: {:?}", e);
             }
@@ -230,31 +227,16 @@ impl Process {
         for &b in b"LAUNCHER OK fresh L0\n" {
             crate::arch::console_putchar(b);
         }
-        for &b in b"[DIAG] about to map segments\n" {
-            crate::arch::console_putchar(b);
-        }
 
         let mut lowest_vaddr: usize = usize::MAX;
-        for &b in b"[DIAG] entering segment loop\n" {
-            crate::arch::console_putchar(b);
-        }
 
         for idx in 0..header.header_count {
-            for &b in b"[DIAG] get_entry start\n" {
-                crate::arch::console_putchar(b);
-            }
             let entry_meta = match parser.get_entry(idx) {
                 Ok(e) => e,
                 _ => {
-                    for &b in b"[DIAG] get_entry err\n" {
-                        crate::arch::console_putchar(b);
-                    }
                     continue;
                 }
             };
-            for &b in b"[DIAG] get_entry OK\n" {
-                crate::arch::console_putchar(b);
-            }
 
             let ty = entry_meta.ty;
             if ty != 1 && ty != 2 && ty != 3 && ty != 4 {
@@ -279,31 +261,9 @@ impl Process {
 
             let target_va = proc.root_vmar.base + aligned_vaddr;
             let flags = VmarFlags::from_bits(flags_raw);
-            for &b in b"[DIAG] seg ty=" {
-                crate::arch::console_putchar(b);
-            }
-            crate::arch::console_putchar(b'0' + ty as u8);
-            for &b in b" tgt_va=0x" {
-                crate::arch::console_putchar(b);
-            }
-            let mut tmp = target_va;
-            for i in (0..16).rev() {
-                let nibble = (tmp >> (i * 4)) & 0xF;
-                crate::arch::console_putchar(if nibble < 10 { b'0' + nibble as u8 } else { b'A' + (nibble - 10) as u8 });
-            }
-            crate::arch::console_putchar(b'\n');
 
             let mut vmo = Vmo::create_with_size(aligned_size)?;
-            for &b in b"[DIAG] vmo created\n" {
-                crate::arch::console_putchar(b);
-            }
             vmo.commit_all()?;
-            for &b in b"[DIAG] vmo committed\n" {
-                crate::arch::console_putchar(b);
-            }
-            for &b in b"[DIAG] about to vmar.map\n" {
-                crate::arch::console_putchar(b);
-            }
             if entry_meta.file_size > 0 {
                 let segment_payload = parser.get_segment_data(&entry_meta).map_err(|e| {
                     crate::log_error!("LAUNCHER", "Failed to retrieve segment payload: {:?}", e);
@@ -314,9 +274,6 @@ impl Process {
             }
 
             proc.root_vmar.map_under_l0(&mut vmo, 0, target_va, aligned_size, flags, l0_user_pa)?;
-            for &b in b"[DIAG] vmar.map OK\n" {
-                crate::arch::console_putchar(b);
-            }
             #[cfg(target_arch = "aarch64")]
             {
                 // To maintain full cache coherency, we must clean D-cache and invalidate I-cache
@@ -331,9 +288,6 @@ impl Process {
                     }
                 }
             }
-        }
-        for &b in b"[DIAG] segment loop done\n" {
-            crate::arch::console_putchar(b);
         }
 
         // Compute the user-mode entry VA.  The OHLINK header carries the
@@ -358,14 +312,8 @@ impl Process {
         let user_entry = proc.root_vmar.base + user_entry_offset;
 
         let stack_size = 16 * 1024;
-        for &b in b"[DIAG] creating stack vmo\n" {
-            crate::arch::console_putchar(b);
-        }
         let mut stack_vmo = Vmo::create_with_size(stack_size)?;
         stack_vmo.commit_all()?;
-        for &b in b"[DIAG] stack vmo committed\n" {
-            crate::arch::console_putchar(b);
-        }
         let stack_vaddr_offset = 0x2000000;
         let stack_va = proc.root_vmar.base + stack_vaddr_offset;
 
@@ -374,9 +322,6 @@ impl Process {
         );
 
         proc.root_vmar.map_under_l0(&mut stack_vmo, 0, stack_va, stack_size, stack_flags, l0_user_pa)?;
-        for &b in b"[DIAG] stack vmar.map done\n" {
-            crate::arch::console_putchar(b);
-        }
 
         let stack_top = (stack_va + stack_size) & !(15usize);
 
@@ -449,40 +394,12 @@ impl Process {
         }
 
         use crate::mm::mmu::ArchMmu;
-        crate::kprintln!("[DIAG] about to flush_tlb_all");
         #[cfg(target_arch = "aarch64")]
         crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
-        crate::kprintln!("[DIAG] flush_tlb_all done");
 
         let user_entry = proc.root_vmar.base + user_entry_offset;
-        for &b in b"[DIAG] user_entry=0x" {
-            crate::arch::console_putchar(b);
-        }
-        let mut tmp = user_entry;
-        for i in (0..16).rev() {
-            let nibble = (tmp >> (i * 4)) & 0xF;
-            crate::arch::console_putchar(if nibble < 10 { b'0' + nibble as u8 } else { b'A' + (nibble - 10) as u8 });
-        }
-        crate::arch::console_putchar(b'\n');
-        #[cfg(target_arch = "aarch64")]
-        if let Some(pa) = crate::arch::aarch64::mmu::translate_user_va(l0_user_pa, user_entry) {
-            for &b in b"[DIAG] user_entry->PA=0x" {
-                crate::arch::console_putchar(b);
-            }
-            let mut tmp = pa;
-            for i in (0..16).rev() {
-                let nibble = (tmp >> (i * 4)) & 0xF;
-                crate::arch::console_putchar(if nibble < 10 { b'0' + nibble as u8 } else { b'A' + (nibble - 10) as u8 });
-            }
-            crate::arch::console_putchar(b'\n');
-        } else {
-            for &b in b"[DIAG] user_entry TRANSLATE FAILED\n" {
-                crate::arch::console_putchar(b);
-            }
-        }
 
         let mut thread = Thread::new_user(name, user_entry, stack_top)?;
-        crate::kprintln!("[DIAG] Thread::new_user done, thread_id={}", thread.id);
         thread.process_id = pid;
         thread.context.process_id = pid;
         thread.context.l0_user_pa = l0_user_pa as u64;
