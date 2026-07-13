@@ -256,6 +256,71 @@ impl Vmar {
         Ok(size)
     }
 
+    /// Map a range into a specific L0 root (bypassing TTBR0).
+    /// Used during process launch: the caller temporarily switches TTBR0 to
+    /// kernel L0 so that kernel address accesses work, but this function
+    /// installs the page-table entries into the explicit `l0_pa` (the
+    /// per-process user L0) so the user page table ends up correct.
+    pub fn map_under_l0(&mut self, vmo: &mut Vmo, vmo_offset: usize,
+                virt_addr: usize, size: usize, flags: VmarFlags, l0_pa: usize) -> Result<usize> {
+        #[cfg(target_arch = "aarch64")]
+        {
+            if size == 0 {
+                crate::log_error!("VMAR", "map_under_l0 fail: size == 0");
+                return Err(Status::InvalidArgs);
+            }
+            if virt_addr & (PAGE_SIZE - 1) != 0 {
+                crate::log_error!("VMAR", "map_under_l0 fail: virt_addr={:#x} not page aligned", virt_addr);
+                return Err(Status::InvalidArgs);
+            }
+            if vmo_offset & (PAGE_SIZE - 1) != 0 {
+                crate::log_error!("VMAR", "map_under_l0 fail: vmo_offset={} not page aligned", vmo_offset);
+                return Err(Status::InvalidArgs);
+            }
+            if virt_addr < self.base || virt_addr.checked_add(size)
+                .ok_or(Status::InvalidArgs)? > self.base + self.size {
+                crate::log_error!("VMAR", "map_under_l0 fail: out of VMAR bounds. virt_addr={:#x}, size={}, base={:#x}, max={:#x}", virt_addr, size, self.base, self.base + self.size);
+                return Err(Status::InvalidArgs);
+            }
+            if vmo_offset.checked_add(size).ok_or(Status::InvalidArgs)? > vmo.get_size() {
+                crate::log_error!("VMAR", "map_under_l0 fail: offset+size > vmo_size. offset={}, size={}, vmo_size={}", vmo_offset, size, vmo.get_size());
+                return Err(Status::InvalidArgs);
+            }
+
+            let arch_flags = translate_flags(flags);
+
+            let page_count = size / PAGE_SIZE;
+            for i in 0..page_count {
+                let vmo_off = vmo_offset + i * PAGE_SIZE;
+                let va = virt_addr + i * PAGE_SIZE;
+                vmo.commit_page(vmo_off)?;
+                let pa = vmo.get_page_phys(vmo_off).ok_or(Status::NoMemory)?;
+                arch_mmu::map_page_under_l0(l0_pa, va, pa.as_usize(), arch_flags)?;
+            }
+
+            let mut storage = self.load_storage();
+            if storage.map_count >= MAX_MAPPINGS {
+                return Err(Status::NoMemory);
+            }
+            storage.mappings[storage.map_count] = Mapping {
+                vmo_id: vmo.id,
+                vmo_offset,
+                virt_addr,
+                size,
+                flags,
+                installed: true,
+            };
+            storage.map_count += 1;
+            self.store_storage(&storage);
+            Ok(size)
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            // Fallback for non-aarch64 (like riscv64) during launch, or we can use normal map
+            self.map(vmo, vmo_offset, virt_addr, size, flags)
+        }
+    }
+
     /// Unmap the range `[virt_addr, virt_addr + size)`.  The VMO
     /// itself is not touched: any committed physical pages stay
     /// live inside the VMO and can be remapped by another VMAR.

@@ -26,8 +26,12 @@ impl Write for crate::string::String {
 }
 
 impl Write for () {
-    fn write_str(&mut self, _s: &str) -> Result<(), ()> { Ok(()) }
-    fn write_byte(&mut self, _b: u8) -> Result<(), ()> { Ok(()) }
+    fn write_str(&mut self, _s: &str) -> Result<(), ()> {
+        Ok(())
+    }
+    fn write_byte(&mut self, _b: u8) -> Result<(), ()> {
+        Ok(())
+    }
 }
 
 /// `format_args!` style minimum: parse one placeholder at a
@@ -37,7 +41,7 @@ pub fn format_to<W: Write>(writer: &mut W, s: &str) -> Result<(), ()> {
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'{' && i + 1 < bytes.len() && bytes[i+1] == b'}' {
+        if bytes[i] == b'{' && i + 1 < bytes.len() && bytes[i + 1] == b'}' {
             // 1.0: literal "{}" placeholder is not implemented;
             // would need an argument list fed in separately.
             // The B10 EL0 panic uses `format_to(writer, msg)`

@@ -158,6 +158,8 @@ impl Process {
         use crate::mm::vmar::VmarFlags;
         use crate::task::thread::{Thread, ThreadState};
 
+        crate::kprintln!("[DIAG] launch_user_program ENTRY, binary_bytes.len={}", binary_bytes.len());
+
         let parser = ohlink_format::parser::OHLK_Parser::new(binary_bytes).map_err(|e| {
             crate::log_error!("LAUNCHER", "Failed to parse OHLINK format: {:?}", e);
             Status::InvalidArgs
@@ -170,75 +172,67 @@ impl Process {
         proc.parent_pid = parent_pid;
 
         let l0_user_pa = crate::mm::phys::alloc_page()?.as_usize();
+        let user_l1_pa = crate::mm::phys::alloc_page()?.as_usize();
         proc.l0_user_pa = l0_user_pa;
 
         let mut old_ttbr0: usize = 0;
-
         #[cfg(target_arch = "aarch64")]
         unsafe {
-            let mut ttbr1: u64;
-            core::arch::asm!("mrs {0}, ttbr1_el1", out(reg) ttbr1, options(nomem, nostack));
-            let kernel_l0_pa = (ttbr1 & 0x0000_FFFF_FFFF_F000) as usize;
-
-            let kernel_l0_va = crate::mm::mmu::pa_to_kernel_va(kernel_l0_pa) as *const u64;
-            let user_l0_va = crate::mm::mmu::pa_to_kernel_va(l0_user_pa) as *mut u64;
-
-            for i in 0..512 {
-                let entry = core::ptr::read_volatile(kernel_l0_va.add(i));
-                core::ptr::write_volatile(user_l0_va.add(i), entry);
-            }
-            // **B1.5 cache flush for the entire new L0 page.**  The
-            // populate-512 loop just wrote every L0 entry, but only
-            // entries 0 and 511 had their cache line
-            // clean+invalidated (dc civac on those two specific
-            // addresses).  Entries 1..510 still hold dirty cache
-            // lines that the MMU walker can serve stale: when the
-            // next vmar::map / arch_mmu::map_page call asks for a
-            // L1/L2/L3 page allocation, it uses `write_pte` (which
-            // does have its own dc civac), so subsequent L0 entries
-            // written for that walk are kept coherent -- but the 511
-            // entries we wrote *here*, before we even switch TTBR0
-            // to l0_user_pa, carry no such safety net.  Without the
-            // full-page flush, an MMU walk issued immediately after
-            // `set_ttbr0_el1(l0_user_pa)` can read an entry written
-            // *here* but kept only in the data-cache write buffer,
-            // and a qemu-tcg-cache-aliasing race then maps the
-            // user's stack pointer to an L1 page that was nominally
-            // populated by vmar::map but is not yet architecturally
-            // visible -- producing the FAR=0x92003d68 EC=0x24 ESF=0x07
-            // Address Size Fault observed in KERNEL_HEALTH.md A2.
-            //
-            // Calling `flush_table_page(l0_user_pa)` here re-uses
-            // the existing post-shatter maintenance path (clean+invalidate
-            // every cache line, dsb ish).  Net cost: ~64 dc civac on
-            // a 4 KiB L0 page, a few microseconds at boot; this is a
-            // one-shot cost at process-launch time.
+            crate::arch::aarch64::mmu::zero_page(l0_user_pa);
             crate::arch::aarch64::mmu::flush_table_page_pub(l0_user_pa);
+            crate::arch::aarch64::mmu::zero_page(user_l1_pa);
+            crate::arch::aarch64::mmu::flush_table_page_pub(user_l1_pa);
 
-            // The two manual flushes below are kept as a belt-and-braces
-            // step so existing release profiles (which build with
-            // debug_assertions disabled and *don't* re-call flush_table_page)
-            // still have their entry 0 + 511 lines made architectural-
-            // observable.  Once B1.5 is verified end-to-end we can
-            // collapse these two lines into the single flush above.
-            core::arch::asm!("dc civac, {0}", in(reg) user_l0_va, options(nomem, nostack));
-            core::arch::asm!("dc civac, {0}", in(reg) user_l0_va.add(511 * 8), options(nomem, nostack));
+            let l0_kva = crate::mm::mmu::pa_to_kernel_va(l0_user_pa) as *mut u64;
+            let l1_entry = ((user_l1_pa as u64) & 0x0000_FFFF_FFFF_F000)
+                | 1
+                | 3;
+            core::ptr::write_volatile(l0_kva, l1_entry);
+            core::arch::asm!("dc cvac, {0}", in(reg) l0_kva as usize, options(nomem, nostack));
             core::arch::asm!("dsb ish", options(nomem, nostack));
+            crate::kprintln!("[DIAG] user L0[0] -> user L1={:#x}", user_l1_pa);
+
+            // Crucial Fix: Map the UART device physical page (0x09000000) under the process L0 page directory.
+            // When we run in userspace with TTBR0_EL1, any kernel trap/SVC print statement uses 0x09000000
+            // to print log characters. Without this mapping, a Kernel Data Abort (ESR_EL1=0x96000045, FAR_EL1=0x09000000)
+            // occurs inside the sync_el0 / irq vector handlers, leading to double-fault locking.
+            let uart_flags = crate::arch::aarch64::mmu::MapFlags::device_rw();
+            if let Err(e) = crate::arch::aarch64::mmu::map_page_under_l0(l0_user_pa, 0x09000000, 0x09000000, uart_flags) {
+                crate::kprintln!("WARNING: Failed to map UART under user L0: {:?}", e);
+            }
 
             let mut ttbr0_reg: u64;
             core::arch::asm!("mrs {0}, ttbr0_el1", out(reg) ttbr0_reg, options(nomem, nostack));
             old_ttbr0 = (ttbr0_reg & 0x0000_FFFF_FFFF_F000) as usize;
-
-            crate::arch::aarch64::mmu::set_ttbr0_el1(l0_user_pa);
+        }
+        for &b in b"LAUNCHER OK fresh L0\n" {
+            crate::arch::console_putchar(b);
+        }
+        for &b in b"[DIAG] about to map segments\n" {
+            crate::arch::console_putchar(b);
         }
 
         let mut lowest_vaddr: usize = usize::MAX;
+        for &b in b"[DIAG] entering segment loop\n" {
+            crate::arch::console_putchar(b);
+        }
 
         for idx in 0..header.header_count {
+            for &b in b"[DIAG] get_entry start\n" {
+                crate::arch::console_putchar(b);
+            }
             let entry_meta = match parser.get_entry(idx) {
                 Ok(e) => e,
-                _ => continue,
+                _ => {
+                    for &b in b"[DIAG] get_entry err\n" {
+                        crate::arch::console_putchar(b);
+                    }
+                    continue;
+                }
             };
+            for &b in b"[DIAG] get_entry OK\n" {
+                crate::arch::console_putchar(b);
+            }
 
             let ty = entry_meta.ty;
             if ty != 1 && ty != 2 && ty != 3 && ty != 4 {
@@ -263,11 +257,31 @@ impl Process {
 
             let target_va = proc.root_vmar.base + aligned_vaddr;
             let flags = VmarFlags::from_bits(flags_raw);
-            crate::log_info!("LAUNCHER", "Mapping segment: ty={}, flags={:?} (raw={:#x}), target_va={:#x}, size={}",
-                ty, flags, flags_raw, target_va, aligned_size);
+            for &b in b"[DIAG] seg ty=" {
+                crate::arch::console_putchar(b);
+            }
+            crate::arch::console_putchar(b'0' + ty as u8);
+            for &b in b" tgt_va=0x" {
+                crate::arch::console_putchar(b);
+            }
+            let mut tmp = target_va;
+            for i in (0..16).rev() {
+                let nibble = (tmp >> (i * 4)) & 0xF;
+                crate::arch::console_putchar(if nibble < 10 { b'0' + nibble as u8 } else { b'A' + (nibble - 10) as u8 });
+            }
+            crate::arch::console_putchar(b'\n');
 
             let mut vmo = Vmo::create_with_size(aligned_size)?;
+            for &b in b"[DIAG] vmo created\n" {
+                crate::arch::console_putchar(b);
+            }
             vmo.commit_all()?;
+            for &b in b"[DIAG] vmo committed\n" {
+                crate::arch::console_putchar(b);
+            }
+            for &b in b"[DIAG] about to vmar.map\n" {
+                crate::arch::console_putchar(b);
+            }
             if entry_meta.file_size > 0 {
                 let segment_payload = parser.get_segment_data(&entry_meta).map_err(|e| {
                     crate::log_error!("LAUNCHER", "Failed to retrieve segment payload: {:?}", e);
@@ -277,10 +291,15 @@ impl Process {
                 vmo.write(write_offset, segment_payload)?;
             }
 
-            proc.root_vmar.map(&mut vmo, 0, target_va, aligned_size, flags)?;
-
+            proc.root_vmar.map_under_l0(&mut vmo, 0, target_va, aligned_size, flags, l0_user_pa)?;
+            for &b in b"[DIAG] vmar.map OK\n" {
+                crate::arch::console_putchar(b);
+            }
             #[cfg(target_arch = "aarch64")]
             crate::arch::aarch64::mmu::sync_instruction_cache(target_va, aligned_size);
+        }
+        for &b in b"[DIAG] segment loop done\n" {
+            crate::arch::console_putchar(b);
         }
 
         // Compute the user-mode entry VA.  The OHLINK header carries the
@@ -305,8 +324,14 @@ impl Process {
         let user_entry = proc.root_vmar.base + user_entry_offset;
 
         let stack_size = 16 * 1024;
+        for &b in b"[DIAG] creating stack vmo\n" {
+            crate::arch::console_putchar(b);
+        }
         let mut stack_vmo = Vmo::create_with_size(stack_size)?;
         stack_vmo.commit_all()?;
+        for &b in b"[DIAG] stack vmo committed\n" {
+            crate::arch::console_putchar(b);
+        }
         let stack_vaddr_offset = 0x2000000;
         let stack_va = proc.root_vmar.base + stack_vaddr_offset;
 
@@ -314,7 +339,10 @@ impl Process {
             VmarFlags::READ.bits() | VmarFlags::WRITE.bits() | VmarFlags::USER.bits()
         );
 
-        proc.root_vmar.map(&mut stack_vmo, 0, stack_va, stack_size, stack_flags)?;
+        proc.root_vmar.map_under_l0(&mut stack_vmo, 0, stack_va, stack_size, stack_flags, l0_user_pa)?;
+        for &b in b"[DIAG] stack vmar.map done\n" {
+            crate::arch::console_putchar(b);
+        }
 
         let stack_top = (stack_va + stack_size) & !(15usize);
 
@@ -387,13 +415,43 @@ impl Process {
         }
 
         use crate::mm::mmu::ArchMmu;
+        crate::kprintln!("[DIAG] about to flush_tlb_all");
         #[cfg(target_arch = "aarch64")]
         crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
+        crate::kprintln!("[DIAG] flush_tlb_all done");
 
         let user_entry = proc.root_vmar.base + user_entry_offset;
+        for &b in b"[DIAG] user_entry=0x" {
+            crate::arch::console_putchar(b);
+        }
+        let mut tmp = user_entry;
+        for i in (0..16).rev() {
+            let nibble = (tmp >> (i * 4)) & 0xF;
+            crate::arch::console_putchar(if nibble < 10 { b'0' + nibble as u8 } else { b'A' + (nibble - 10) as u8 });
+        }
+        crate::arch::console_putchar(b'\n');
+        #[cfg(target_arch = "aarch64")]
+        if let Some(pa) = crate::arch::aarch64::mmu::translate_user_va(l0_user_pa, user_entry) {
+            for &b in b"[DIAG] user_entry->PA=0x" {
+                crate::arch::console_putchar(b);
+            }
+            let mut tmp = pa;
+            for i in (0..16).rev() {
+                let nibble = (tmp >> (i * 4)) & 0xF;
+                crate::arch::console_putchar(if nibble < 10 { b'0' + nibble as u8 } else { b'A' + (nibble - 10) as u8 });
+            }
+            crate::arch::console_putchar(b'\n');
+        } else {
+            for &b in b"[DIAG] user_entry TRANSLATE FAILED\n" {
+                crate::arch::console_putchar(b);
+            }
+        }
 
         let mut thread = Thread::new_user(name, user_entry, stack_top)?;
+        crate::kprintln!("[DIAG] Thread::new_user done, thread_id={}", thread.id);
         thread.process_id = pid;
+        thread.context.process_id = pid;
+        thread.context.l0_user_pa = l0_user_pa as u64;
         thread.handle_table = &proc.handle_table;
         thread.state = ThreadState::Ready;
 
@@ -714,373 +772,11 @@ impl Process {
                 use crate::mm::mmu::ArchMmu;
                 crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
                 crate::arch::aarch64::mmu::set_ttbr0_el1(old_ttbr0);
-
-                // **A2 diagnostic #4**: read back the launcher's
-                // full page-table chain (L0 → L1 → L2 → L3) right
-                // here, just before we return to the syscall
-                // handler.  This serves as ground truth for the
-                // GDB-side observation that `x/16gx 0x404cc000`
-                // later reports all zeros: if this kprintln sees
-                // the actual PTEs and the gdbstub later sees
-                // zeros, the writes are regressing between
-                // LAUNCHER returning and the scheduler swap -- if
-                // both see zeros, the writes never made it to
-                // physical memory in the first place (QEMU-TCG
-                // bug).
-                let stack_va_for_walk = proc.root_vmar.base + 0x2000000 + 0x3ff0usize;
-                crate::kprintln!("A2-DIAG pid={} ttbr0={:#x} L0={:#x} walk_for_va={:#x}", pid, old_ttbr0, l0_user_pa, stack_va_for_walk);
-                let l0_kva = crate::mm::mmu::pa_to_kernel_va(l0_user_pa) as *const u64;
-                unsafe {
-                    for i in 0..4usize {
-                        let e0 = core::ptr::read_volatile(l0_kva.add(i * 4));
-                        let e1 = core::ptr::read_volatile(l0_kva.add(i * 4 + 1));
-                        let e2 = core::ptr::read_volatile(l0_kva.add(i * 4 + 2));
-                        let e3 = core::ptr::read_volatile(l0_kva.add(i * 4 + 3));
-                        crate::kprintln!(
-                            "  L0[{}..{}]={:#018x} {:#018x} {:#018x} {:#018x}",
-                            i * 4, i * 4 + 3, e0, e1, e2, e3
-                        );
-                    }
-                    let l0e = core::ptr::read_volatile(l0_kva.add(0));
-                    if l0e & 1 != 0 && l0e & 0b10 != 0 {
-                        let l1_pa = (l0e & 0x0000_FFFF_FFFF_F000) as usize;
-                        crate::kprintln!("  L1 @ {:#x}", l1_pa);
-                        let l1_kva = crate::mm::mmu::pa_to_kernel_va(l1_pa) as *const u64;
-                        for i in 0..4usize {
-                            let e0 = core::ptr::read_volatile(l1_kva.add(i * 4));
-                            let e1 = core::ptr::read_volatile(l1_kva.add(i * 4 + 1));
-                            let e2 = core::ptr::read_volatile(l1_kva.add(i * 4 + 2));
-                            let e3 = core::ptr::read_volatile(l1_kva.add(i * 4 + 3));
-                            crate::kprintln!(
-                                "    L1[{}..{}]={:#018x} {:#018x} {:#018x} {:#018x}",
-                                i * 4, i * 4 + 3, e0, e1, e2, e3
-                            );
-                        }
-                        let l1e = core::ptr::read_volatile(l1_kva.add(2));
-                        if l1e & 1 != 0 && l1e & 0b10 != 0 {
-                            let l2_pa = (l1e & 0x0000_FFFF_FFFF_F000) as usize;
-                            crate::kprintln!("    L2 @ {:#x}", l2_pa);
-                            let l2_kva = crate::mm::mmu::pa_to_kernel_va(l2_pa) as *const u64;
-                            for i in (140..144) {
-                                let e = core::ptr::read_volatile(l2_kva.add(i));
-                                crate::kprintln!("      L2[{}]={:#018x}", i, e);
-                            }
-                            let l2e = core::ptr::read_volatile(l2_kva.add(144));
-                            if l2e & 1 != 0 && l2e & 0b10 != 0 {
-                                let l3_pa = (l2e & 0x0000_FFFF_FFFF_F000) as usize;
-                                crate::kprintln!("      L3 @ {:#x}", l3_pa);
-                                let l3_kva = crate::mm::mmu::pa_to_kernel_va(l3_pa) as *const u64;
-                                let l3e = core::ptr::read_volatile(l3_kva.add(3));
-                                crate::kprintln!("        L3[3]={:#018x}", l3e);
-                            }
-                        }
-                    }
-                }
             }
         }
 
         crate::log_info!("LAUNCHER", "Successfully launched program '{}' at EL0 (entry={:#x}, pid={}, argc={})",
             name, user_entry, pid, argc);
-
-        // **B1.5 PTE-walk dump (debug-only).**  Build on B1.4: dump
-        // not just the bytes at the entry VA and the stack VA, but
-        // also the *page-table entries* on the L0 -> L1 -> L2 -> L3
-        // walk the MMU will issue when EL0 first fetches.
-        //
-        // The hypothesis we are still pursuing is that one of the
-        // L0/L1/L2 intermediate entries the kernel wrote during the
-        // populate-512 + L1/L2/L3 allocation sequence is not
-        // *architecturally* observable at the time the MMU walks it
-        // (cache-aliasing race, write-buffer vs icache, etc.).  The
-        // B1.5 dump reads those entries back through the kernel-side
-        // direct-map alias of the freshly-populated L0 PA, and they
-        // are printed via kprintln! so they appear on every release
-        // smoke that the 0.6.0-alpha / 1.0 track captures.
-        //
-        // The walk runs both for the entry VA (the path the MMU
-        // takes at the first eret into the new thread) and the
-        // 0xd68-specific stack offset (the FAR address the loader
-        // in the existing boot log faulted at).  If the entry-VA
-        // walk shows a complete L0/L1/L2/L3 chain ending in a
-        // 4-KiB leaf pointing at the right physical page but the
-        // stack-VA walk shows a missing entry at some intermediate
-        // level, that pinpoints exactly which vmar::map install step
-        // needs extra cache/TLB maintenance.
-        //
-        // **AGENTS §4 guardrails**: the same comment as B1.4:
-        // B1.5 is intentionally invasive for root-cause hunting.
-        // We demote back to cfg(debug_assertions) in a single
-        // follow-up commit once A2 is closed.
-
-        #[cfg(all(target_arch = "aarch64", debug_assertions))]
-        {
-            use core::fmt::Write;
-
-            // Walk the entry VA.  We can't reuse `debug_walk_va`
-            // (which is `log_info!`-gated) because the release
-            // profile would silence this whole block.  Inline it.
-            let l0e_e = unsafe {
-                (crate::mm::mmu::pa_to_kernel_va(l0_user_pa)
-                    as *const u64).add(0)
-            };
-            crate::kprintln!(
-                "B1.5-DIAG pid={} entry-VA={:#x} L0E={:#018x}",
-                pid,
-                user_entry,
-                unsafe { core::ptr::read_volatile(l0e_e) }
-            );
-
-            // Walk the FAR address directly: 0x92003d68 == (loader
-            // vmar_base + 0x2000000 + 0x3d68) but we genericise
-            // through `proc.root_vmar.base` so this works for
-            // devmgr / init / fileagent too.
-            let far_va = proc.root_vmar.base + 0x2000000 + 0x3d68;
-            let l0_idx_f = (far_va >> 39) & 0x1FF;
-            let l1_idx_f = (far_va >> 30) & 0x1FF;
-            let l2_idx_f = (far_va >> 21) & 0x1FF;
-            let l3_idx_f = (far_va >> 12) & 0x1FF;
-            let l0e_f = unsafe {
-                core::ptr::read_volatile(
-                    (crate::mm::mmu::pa_to_kernel_va(l0_user_pa) as *const u64).add(l0_idx_f)
-                )
-            };
-            crate::kprintln!(
-                "B1.5-DIAG pid={} FAR-VA={:#x} L0E={:#018x} L0_IDX={}",
-                pid,
-                far_va,
-                l0e_f,
-                l0_idx_f,
-            );
-            if l0e_f & 1 != 0 && l0e_f & 0b10 != 0 {
-                let l1_pa = (l0e_f & 0x0000_FFFF_FFFF_F000) as usize;
-                let l1e = unsafe {
-                    core::ptr::read_volatile(
-                        (crate::mm::mmu::pa_to_kernel_va(l1_pa) as *const u64).add(l1_idx_f)
-                    )
-                };
-                crate::kprintln!(
-                    "  L1_PA={:#x} L1_IDX={} L1E={:#018x}",
-                    l1_pa,
-                    l1_idx_f,
-                    l1e
-                );
-                if l1e & 1 != 0 && l1e & 0b10 != 0 {
-                    let l2_pa = (l1e & 0x0000_FFFF_FFFF_F000) as usize;
-                    let l2e = unsafe {
-                        core::ptr::read_volatile(
-                            (crate::mm::mmu::pa_to_kernel_va(l2_pa) as *const u64).add(l2_idx_f)
-                        )
-                    };
-                    crate::kprintln!(
-                        "    L2_PA={:#x} L2_IDX={} L2E={:#018x}",
-                        l2_pa,
-                        l2_idx_f,
-                        l2e
-                    );
-                    if l2e & 1 != 0 && l2e & 0b10 != 0 {
-                        let l3_pa = (l2e & 0x0000_FFFF_FFFF_F000) as usize;
-                        let l3e = unsafe {
-                            core::ptr::read_volatile(
-                                (crate::mm::mmu::pa_to_kernel_va(l3_pa) as *const u64).add(l3_idx_f)
-                            )
-                        };
-                        crate::kprintln!(
-                            "      L3_PA={:#x} L3_IDX={} L3E={:#018x}",
-                            l3_pa,
-                            l3_idx_f,
-                            l3e
-                        );
-                    }
-                }
-            }
-
-            // Walk the stack-0x1000-prior neighbour (the page
-            // immediately below the FAR address).  If the FAR walk
-            // shows a complete L0/L1/L2/L3 chain while this
-            // neighbour's chain ALSO does, then the A2 fault is NOT
-            // an unmapped page: it is a translation-cache-aliasing
-            // hazard on a mapped page.
-            let prior_va = proc.root_vmar.base + 0x2000000 + 0x2d68;
-            crate::kprintln!("B1.5-DIAG pid={} PRIOR-VA={:#x}", pid, prior_va);
-            let l0_idx_p = (prior_va >> 39) & 0x1FF;
-            let l1_idx_p = (prior_va >> 30) & 0x1FF;
-            let l2_idx_p = (prior_va >> 21) & 0x1FF;
-            let l3_idx_p = (prior_va >> 12) & 0x1FF;
-            let l0e_p = unsafe {
-                core::ptr::read_volatile(
-                    (crate::mm::mmu::pa_to_kernel_va(l0_user_pa) as *const u64).add(l0_idx_p)
-                )
-            };
-            crate::kprintln!(
-                "  prior L0_IDX={} L0E={:#018x}",
-                l0_idx_p,
-                l0e_p
-            );
-            if l0e_p & 1 != 0 && l0e_p & 0b10 != 0 {
-                let l1_pa = (l0e_p & 0x0000_FFFF_FFFF_F000) as usize;
-                let l1e = unsafe {
-                    core::ptr::read_volatile(
-                        (crate::mm::mmu::pa_to_kernel_va(l1_pa) as *const u64).add(l1_idx_p)
-                    )
-                };
-                crate::kprintln!(
-                    "  prior L1_PA={:#x} L1_IDX={} L1E={:#018x}",
-                    l1_pa,
-                    l1_idx_p,
-                    l1e
-                );
-                if l1e & 1 != 0 && l1e & 0b10 != 0 {
-                    let l2_pa = (l1e & 0x0000_FFFF_FFFF_F000) as usize;
-                    let l2e = unsafe {
-                        core::ptr::read_volatile(
-                            (crate::mm::mmu::pa_to_kernel_va(l2_pa) as *const u64).add(l2_idx_p)
-                        )
-                    };
-                    crate::kprintln!(
-                        "  prior L2_PA={:#x} L2_IDX={} L2E={:#018x}",
-                        l2_pa,
-                        l2_idx_p,
-                        l2e
-                    );
-                    if l2e & 1 != 0 && l2e & 0b10 != 0 {
-                        let l3_pa = (l2e & 0x0000_FFFF_FFFF_F000) as usize;
-                        let l3e = unsafe {
-                            core::ptr::read_volatile(
-                                (crate::mm::mmu::pa_to_kernel_va(l3_pa) as *const u64).add(l3_idx_p)
-                            )
-                        };
-                        crate::kprintln!(
-                            "  prior L3_PA={:#x} L3_IDX={} L3E={:#018x}",
-                            l3_pa,
-                            l3_idx_p,
-                            l3e
-                        );
-                    }
-                }
-            }
-        }
-
-        // **B1.4 diagnostic dump (debug-only).**  FAR=0x92003d68 from
-        // KERNEL_HEALTH A2 points into the new process's user stack
-        // region (vmar_base + 0x2000000 + 0x3d68), so the fault is on
-        // the very first stack access rather than at the ELF entry.
-        // Three things we need to rule out before the
-        // commit-trail-defeats-it hypothesis has any weight:
-        //   (a) the entry mapping was never actually written;
-        //   (b) the stack mapping was never actually written;
-        //   (c) the kernel-side alias of these mappings has a stale
-        //       view of the data cache when we read it back.
-        //
-        // B1.2 (4103da7) gated the dumps behind
-        // #[cfg(debug_assertions)], so we didn't see them on the
-        // release profile that the smoke uses.  B1.4 promotes the
-        // dumps to **always-on** but routes them through `kprintln!`
-        // (the unconditional UART-print primitive) rather than through
-        // the `log_info!` family, so the format remains stable for
-        // grep-able isolation.
-        //
-        // Reading via translate_user_va + pa_to_kernel_va keeps the
-        // dump arch-correct: TTBR0 has just been zapped back to the
-        // caller's table, so a load through TTBR0 would point at the
-        // wrong L0.  We translate explicitly against this process's
-        // freshly allocated L0 PA and reach physical memory through
-        // the kernel-side aliasing table.
-        //
-        // **AGENTS §4 (no trace-and-keep) guardrails**: B1.4 is
-        // intentionally invasive for root-cause hunting.  Once A2 is
-        // closed we will demote it back to cfg(debug_assertions) in a
-        // single follow-up commit, in line with the convention that
-        // diagnostic-on-the-wire prints are deleted as soon as the
-        // bug they were tracing is fixed.
-        #[cfg(all(target_arch = "aarch64", debug_assertions))]
-        {
-            use core::fmt::Write;
-            if let Some(entry_pa) =
-                crate::arch::aarch64::mmu::translate_user_va(l0_user_pa, user_entry)
-            {
-                let entry_kernel_va = crate::mm::mmu::pa_to_kernel_va(entry_pa);
-                let mut dump = [0u8; 64];
-                for i in 0..64usize {
-                    unsafe {
-                        dump[i] = core::ptr::read_volatile(
-                            (entry_kernel_va as *const u8).add(i),
-                        );
-                    }
-                }
-                crate::kprintln!("B1.4-DIAG pid={} entry VA={:#x} PA={:#x} dump:", pid, user_entry, entry_pa);
-                for chunk_off in (0..64usize).step_by(16) {
-                    let mut hex = [0u8; 16 * 3 + 1];
-                    for i in 0..16usize {
-                        let byte = dump[chunk_off + i];
-                        let h0 = b"0123456789abcdef"[(byte >> 4) as usize];
-                        let h1 = b"0123456789abcdef"[(byte & 0xf) as usize];
-                        hex[i * 3] = h0;
-                        hex[i * 3 + 1] = h1;
-                        if i < 15 {
-                            hex[i * 3 + 2] = b' ';
-                        }
-                    }
-                    let s = core::str::from_utf8(&hex[..(16 * 3 - 1)]).unwrap_or("");
-                    crate::kprintln!("  +{:02x} {}", chunk_off, s);
-                }
-            } else {
-                crate::kprintln!(
-                    "B1.4-DIAG pid={} entry VA={:#x} -> MAPPING MISSING",
-                    pid,
-                    user_entry
-                );
-            }
-
-            // Stack dump near FAR=0x92003d68 (offset 0x3d68 into the
-            // 16 KiB stack mapped at vmar_base+0x2000000).  Picked
-            // 0x3d68 - 0x40 = 0x3d28 so that the layout (0x3d28..0x3d68)
-            // is just *below* the FAR address; if the alignment is
-            // bad because the page table walk placed a 2 MiB block
-            // where we expected a 4 KiB shatter, FAR will jump to a
-            // *much* higher VA outside the stack region and we'll see
-            // it in the address printed.
-            let stack_va = proc.root_vmar.base + 0x2000000 + 0x3d28;
-            if let Some(stack_pa) =
-                crate::arch::aarch64::mmu::translate_user_va(l0_user_pa, stack_va)
-            {
-                let stack_kernel_va = crate::mm::mmu::pa_to_kernel_va(stack_pa);
-                let mut dump = [0u8; 64];
-                for i in 0..64usize {
-                    unsafe {
-                        dump[i] = core::ptr::read_volatile(
-                            (stack_kernel_va as *const u8).add(i),
-                        );
-                    }
-                }
-                crate::kprintln!(
-                    "B1.4-DIAG pid={} stack VA={:#x} PA={:#x} dump:",
-                    pid,
-                    stack_va,
-                    stack_pa
-                );
-                for chunk_off in (0..64usize).step_by(16) {
-                    let mut hex = [0u8; 16 * 3 + 1];
-                    for i in 0..16usize {
-                        let byte = dump[chunk_off + i];
-                        let h0 = b"0123456789abcdef"[(byte >> 4) as usize];
-                        let h1 = b"0123456789abcdef"[(byte & 0xf) as usize];
-                        hex[i * 3] = h0;
-                        hex[i * 3 + 1] = h1;
-                        if i < 15 {
-                            hex[i * 3 + 2] = b' ';
-                        }
-                    }
-                    let s = core::str::from_utf8(&hex[..(16 * 3 - 1)]).unwrap_or("");
-                    crate::kprintln!("  +{:02x} {}", chunk_off, s);
-                }
-            } else {
-                crate::kprintln!(
-                    "B1.4-DIAG pid={} stack VA={:#x} -> MAPPING MISSING",
-                    pid,
-                    stack_va
-                );
-            }
-        }
 
         Ok(())
     }

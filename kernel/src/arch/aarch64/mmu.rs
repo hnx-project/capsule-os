@@ -23,10 +23,10 @@ use crate::mm::mmu::{ArchMmu, KERNEL_OFFSET, MemAttr, PAGE_SIZE, pa_to_kernel_va
 use crate::mm::phys;
 use shared::status::Result;
 
-const PTE_VALID: u64 = 1 << 0;
-const PTE_TYPE_BLOCK: u64 = 1;       // bits[1:0] = 01
-const PTE_TYPE_TABLE: u64 = 3;       // bits[1:0] = 11
-const PTE_TYPE_PAGE: u64 = 3;        // bits[1:0] = 11; L3 page entries share encoding with table
+pub const PTE_VALID: u64 = 1 << 0;
+pub const PTE_TYPE_BLOCK: u64 = 1;       // bits[1:0] = 01
+pub const PTE_TYPE_TABLE: u64 = 3;       // bits[1:0] = 11
+pub const PTE_TYPE_PAGE: u64 = 3;        // bits[1:0] = 11; L3 page entries share encoding with table
 const PTE_AF: u64 = 1 << 10;
 const PTE_NSH: u64 = 0b00 << 8;      // non-shareable
 const PTE_ISH: u64 = 0b11 << 8;      // inner-shareable
@@ -35,14 +35,15 @@ const PTE_DEVICE: u64 = (1u64 << 2) | PTE_NSH | PTE_AF;     // AttrIdx=1, nSH
 const PTE_USER: u64 = 1 << 6;        // accessible from EL0 (for user pages)
 const PTE_AP_USER: u64 = 1 << 6;    // AP[1]=1 (user accessible bit)
 const PTE_AP_RO: u64 = 1 << 7;      // AP[2]=1 (read-only bit, makes EL0 RO)
-// B1.5: user RW requires both AP[1]=1 and AP[2]=1 = 0b11 = AP[2:1]=0b11.
-// Setting only PTE_AP_USER (=bit 6, AP[1]=1) yields AP[2:1]=0b01 which
-// on aarch8 is "EL1 RW, EL0 forbidden" -- not "EL0 accessible read-only".
-// Use PTE_USER_RW when both user + writable is requested.
-const PTE_USER_RW: u64 = PTE_AP_USER | PTE_AP_RO;  // 0b11 = AP[2:1]=0b11 = EL0 RW, EL1 RW
-const PTE_USER_RO: u64 = PTE_AP_RO;               // AP[2:1]=0b10 = EL0 RO, EL1 RW
-const PTE_KERNEL_RW: u64 = 0;                     // AP[2:1]=0b00 = no access
-const PTE_KERNEL_RO: u64 = PTE_AP_RO;             // BUG: same as USER_RO -- only used when user=false
+// Standard ARMv8 AP[2:1] Access Permissions:
+// AP[2:1] = 0b00 => EL1 Read/Write, EL0 No Access (Kernel Private RW)
+// AP[2:1] = 0b01 => EL1 Read/Write, EL0 Read/Write (User RW)
+// AP[2:1] = 0b10 => EL1 Read-Only,  EL0 No Access (Kernel Private RO)
+// AP[2:1] = 0b11 => EL1 Read-Only,  EL0 Read-Only (User RO)
+const PTE_USER_RW: u64 = PTE_AP_USER;                  // AP[2:1]=0b01 => EL0 RW, EL1 RW
+const PTE_USER_RO: u64 = PTE_AP_USER | PTE_AP_RO;      // AP[2:1]=0b11 => EL0 RO, EL1 RO
+const PTE_KERNEL_RW: u64 = 0;                          // AP[2:1]=0b00 => EL1 RW, EL0 None
+const PTE_KERNEL_RO: u64 = PTE_AP_RO;                  // AP[2:1]=0b10 => EL1 RO, EL0 None
 const PTE_XN: u64 = 1 << 54;          // never-execute for now
 const PTE_UXN: u64 = 1 << 53;        // unprivileged execute-never
 
@@ -57,7 +58,7 @@ fn va_l3_index(va: usize) -> usize { (va >> 12) & 0x1FF }
 #[inline(always)]
 fn pa_to_pte_addr(pa: usize) -> u64 { (pa as u64) & 0x0000_FFFF_FFFF_F000 }
 
-unsafe fn zero_page(page_pa: usize) {
+pub unsafe fn zero_page(page_pa: usize) {
     crate::log_info!("MMU", "zero_page start: page_pa={:#x}", page_pa);
     // Pre-MMU: PA is a valid VA (bootloader left us with VA==PA and
     // the kernel still in low memory).  Post-MMU: PA access through
@@ -527,6 +528,89 @@ pub fn map_page(va: usize, pa: usize, flags: MapFlags) -> Result<()> {
     Ok(())
 }
 
+/// Map a single 4 KiB page into a specific L0 root (bypassing TTBR0).
+/// Used during process launch: kernel L0 stays in TTBR1 while user mappings
+/// are installed into the per-process user L0 via this function.
+pub fn map_page_under_l0(l0_pa: usize, va: usize, pa: usize, flags: MapFlags) -> Result<()> {
+    if va & 0xFFF != 0 || pa & 0xFFF != 0 {
+        return Err(shared::status::Status::InvalidArgs);
+    }
+
+    unsafe {
+        let l0_idx = va_l0_index(va);
+        let l0e = read_pte(l0_pa, l0_idx);
+        let l1_pa = if l0e & PTE_VALID != 0 && l0e & 0b10 != 0 {
+            (l0e & 0x0000_FFFF_FFFF_F000) as usize
+        } else if l0e & PTE_VALID != 0 {
+            return Err(shared::status::Status::NotAllowed);
+        } else {
+            let new_l1 = phys::alloc_page()?.as_usize();
+            zero_page(new_l1);
+            flush_table_page(new_l1);
+            let entry = pa_to_pte_addr(new_l1) | PTE_VALID | PTE_TYPE_TABLE;
+            let clean_entry = entry & 0x07FF_FFFF_FFFF_FFFFu64;
+            write_pte(l0_pa, l0_idx, clean_entry);
+            new_l1
+        };
+
+        let l1_idx = va_l1_index(va);
+        let l1e = read_pte(l1_pa, l1_idx);
+        let l2_pa = if l1e & PTE_VALID != 0 && l1e & 0b10 != 0 {
+            (l1e & 0x0000_FFFF_FFFF_F000) as usize
+        } else if l1e & PTE_VALID != 0 {
+            shatter_l1_block(l1_pa, l1_idx, l1e)?
+        } else {
+            let new_l2 = phys::alloc_page()?.as_usize();
+            zero_page(new_l2);
+            flush_table_page(new_l2);
+            let entry = pa_to_pte_addr(new_l2) | PTE_VALID | PTE_TYPE_TABLE;
+            let clean_entry = entry & 0x07FF_FFFF_FFFF_FFFFu64;
+            write_pte(l1_pa, l1_idx, clean_entry);
+            new_l2
+        };
+
+        let l2_idx = va_l2_index(va);
+        let l2e = read_pte(l2_pa, l2_idx);
+        let l3_pa = if l2e & PTE_VALID != 0 && l2e & 0b10 != 0 {
+            (l2e & 0x0000_FFFF_FFFF_F000) as usize
+        } else if l2e & PTE_VALID != 0 {
+            shatter_l2_block(l2_pa, l2_idx, l2e)?
+        } else {
+            let new_l3 = phys::alloc_page()?.as_usize();
+            zero_page(new_l3);
+            flush_table_page(new_l3);
+            let entry = pa_to_pte_addr(new_l3) | PTE_VALID | PTE_TYPE_TABLE;
+            let clean_entry = entry & 0x07FF_FFFF_FFFF_FFFFu64;
+            write_pte(l2_pa, l2_idx, clean_entry);
+            new_l3
+        };
+
+        let l3_idx = va_l3_index(va);
+        let entry = pa_to_pte_addr(pa)
+                  | PTE_VALID
+                  | PTE_TYPE_PAGE
+                  | pte_attr_bits(flags);
+        write_pte(l3_pa, l3_idx, entry);
+        if crate::mm::phys::mmu_is_active() {
+            let line_va = pa_to_kernel_va(l3_pa) + l3_idx * 8;
+            unsafe {
+                core::arch::asm!("dc civac, {0}", in(reg) line_va, options(nomem, nostack));
+                core::arch::asm!("dsb ish", options(nomem, nostack));
+            }
+        }
+
+        asm!(
+            "dsb ishst",
+            "tlbi vaae1, {0}",
+            "dsb ish",
+            "isb",
+            in(reg) (va >> 12),
+            options(nomem, nostack)
+        );
+    }
+    Ok(())
+}
+
 /// Unmap a single 4 KiB page.  Just clears the L3 PTE; the intermediate
 /// tables are left in place (they will be reused for further mappings).
 pub fn unmap_page(va: usize) -> Result<()> {
@@ -573,8 +657,7 @@ pub fn set_ttbr0_el1(l0_pa: usize) {
     unsafe {
         core::arch::asm!("msr ttbr0_el1, {0}", in(reg) l0_pa as u64, options(nomem, nostack));
         core::arch::asm!("dsb ish", options(nomem, nostack));
-        core::arch::asm!("tlbi vmalle1is", options(nomem, nostack));
-        core::arch::asm!("dsb ish", options(nomem, nostack));
+        core::arch::asm!("dsb sy", options(nomem, nostack));
         core::arch::asm!("isb", options(nomem, nostack));
     }
 }
@@ -645,6 +728,17 @@ pub fn enable_inner(ram_base: usize, ram_size: usize, _uart_base: usize) -> Resu
         sctlr &= !(1u64 << 1);  // Disable strict memory alignment checks (A)
         asm!("msr sctlr_el1, {0}", in(reg) sctlr, options(nomem, nostack));
         asm!("isb", options(nomem, nostack));
+
+        // Re-route VBAR_EL1 to use high-half virtual address (using 0xFFFF800000000000 base)
+        // so that even when TTBR0_EL1 contains user page tables without kernel physical mappings,
+        // any interrupt or exception taking to EL1 is able to successfully fetch instructions
+        // through TTBR1_EL1 high-half mapping safely.
+        let mut vbar: u64;
+        asm!("mrs {0}, vbar_el1", out(reg) vbar, options(nomem, nostack));
+        let high_vbar = vbar | 0xFFFF_8000_0000_0000u64;
+        asm!("msr vbar_el1, {0}", in(reg) high_vbar, options(nomem, nostack));
+        asm!("isb", options(nomem, nostack));
+
         // Invalidate all TLB entries.
         asm!("tlbi vmalle1", options(nomem, nostack));
         asm!("dsb sy", options(nomem, nostack));

@@ -26,7 +26,7 @@ impl Default for Priority {
     }
 }
 
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ThreadContext {
     pub x: [u64; 19],   // x0..x18 caller-saved (persisted across context switches)
@@ -35,14 +35,19 @@ pub struct ThreadContext {
     pub user_sp: u64,   // user SP (sp_el0)
     pub elr: u64,       // user PC to eret to on resume
     pub spsr: u64,      // saved PSTATE (saved copy of user SPSR on trap)
+    pub process_id: u64, // the PID of the process this thread belongs to, for loading TTBR0_EL1 in assembly
+    pub l0_user_pa: u64, // the physical address of L0 page directory of the process
 }
 
 const _ASSERT_LAYOUT: () = {
     if core::mem::size_of::<[u64; 19]>() != 152 { panic!("x size mismatch"); }
     if core::mem::size_of::<[u64; 12]>() != 96 { panic!("r size mismatch"); }
+    if core::mem::offset_of!(ThreadContext, sp) != 248 { panic!("sp offset mismatch"); }
     if core::mem::offset_of!(ThreadContext, user_sp) != 256 { panic!("user_sp offset mismatch"); }
     if core::mem::offset_of!(ThreadContext, elr) != 264 { panic!("elr offset mismatch"); }
     if core::mem::offset_of!(ThreadContext, spsr) != 272 { panic!("spsr offset mismatch"); }
+    if core::mem::offset_of!(ThreadContext, process_id) != 280 { panic!("process_id offset mismatch"); }
+    if core::mem::offset_of!(ThreadContext, l0_user_pa) != 288 { panic!("l0_user_pa offset mismatch"); }
 };
 
 #[derive(Debug)]
@@ -160,7 +165,13 @@ impl Thread {
         let kernel_stack_top = kernel_stack_va + KERNEL_STACK_SIZE;
 
         let mut ctx = ThreadContext::default();
-        ctx.sp = kernel_stack_top as u64; // Kernel stack for interrupts
+        // Force high-half mapping virtual address for kernel stack (sp_el1)
+        let high_kernel_stack_top = if kernel_stack_top < 0xffff_8000_0000_0000usize {
+            kernel_stack_top | 0xffff_8000_0000_0000usize
+        } else {
+            kernel_stack_top
+        };
+        ctx.sp = high_kernel_stack_top as u64; // Kernel stack for interrupts
         ctx.user_sp = stack_top as u64; // initial user-mode SP (sp_el0)
         ctx.elr = entry as u64; // user entry point - first switch will eret to here
         // SPSR M[3:0] = 0b0000 (EL0t) so eret drops into AArch64 user mode.
@@ -251,7 +262,13 @@ impl Thread {
         let kernel_stack_top = kernel_stack_va + KERNEL_STACK_SIZE;
 
         let mut ctx = ThreadContext::default();
-        ctx.sp = kernel_stack_top as u64;
+        // Force high-half mapping virtual address for kernel stack (sp_el1)
+        let high_kernel_stack_top = if kernel_stack_top < 0xffff_8000_0000_0000usize {
+            kernel_stack_top | 0xffff_8000_0000_0000usize
+        } else {
+            kernel_stack_top
+        };
+        ctx.sp = high_kernel_stack_top as u64;
         ctx.user_sp = stack_top as u64;
         ctx.elr = entry as u64;
         ctx.spsr = 0x000;
@@ -316,11 +333,44 @@ core::arch::global_asm!(
 .section .text
 .global user_eret_stub
 user_eret_stub:
+    // Atomic Shield: Mask interrupts at the CPU level (set PSTATE.I)
+    // to shield the context loading and page-table transition from preemption.
+    // The eret to EL0 will automatically and atomically unmask IRQs via SPSR.
+    msr     daifset, #2
+
     // Save the ThreadContext pointer (was in x1) into a callee-saved reg
-    // because the upcoming ldp instructions clobber x1 with next.x[1].
     mov x9,  x1
 
-    // Restore x0..x18 from ThreadContext.x.
+    // First: Load user-state bits and page table to EL0 system registers BEFORE clobbering x0-x18.
+    ldr x2, [x9, #256]    // user_sp
+    msr sp_el0, x2
+    ldr x3, [x9, #264]    // elr
+    msr elr_el1, x3
+    ldr x4, [x9, #272]    // spsr
+    msr spsr_el1, x4
+
+    // Crucial Step 1: Pre-load the kernel stack pointer (sp_el1) from ThreadContext.sp (offset 248)
+    // so that any exception, timer interrupt or syscall taking us back from EL0 to EL1 has
+    // a valid, clean, dedicated per-thread kernel stack to save TrapFrame on!
+    ldr x5, [x9, #248]    // sp (kernel SP)
+    mov sp, x5
+
+    // Crucial Step 2: Load the process page table (TTBR0_EL1)
+    // inside the trampoline, just before the eret boundary.
+    ldr x5, [x9, #288]    // l0_user_pa
+    cbz x5, 1f            // if zero, skip TTBR0 load (kernel threads)
+    msr ttbr0_el1, x5
+    dsb sy
+1:
+    // Invalidate icache at the user entry VA so any stale icache lines
+    // from a previous address space mapping are discarded before eret.
+    // On QEMU-TCG this prevents VIPT aliasing issues where the same VA
+    // in a different process's context could cause wrong instruction bytes.
+    ic ivau, x3
+    dsb sy
+    isb
+
+    // Second: Now restore x0..x18 from ThreadContext.x.
     ldp x0,  x1,  [x9, #0]
     ldp x2,  x3,  [x9, #16]
     ldp x4,  x5,  [x9, #32]
@@ -333,14 +383,6 @@ user_eret_stub:
     // x8 was clobbered in the stp above; load it explicitly.
     ldr x8,       [x9, #64]
 
-    // Load user-state bits and eret to EL0.
-    ldr x2, [x9, #256]    // user_sp
-    msr sp_el0, x2
-    ldr x3, [x9, #264]    // elr
-    msr elr_el1, x3
-    ldr x4, [x9, #272]    // spsr
-    msr spsr_el1, x4
-    isb
     eret
 "#
 );

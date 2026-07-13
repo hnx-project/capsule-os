@@ -63,16 +63,13 @@ pub const LEVEL_PAD_DEBUG: &str = "DEBUG\x1b[0m | ";
 #[macro_export]
 macro_rules! log_info {
     ($target:expr, $($arg:tt)*) => {
-        #[cfg(debug_assertions)]
-        {
-            if $crate::kcore::logging::get_log_level() >= 2 {
-                $crate::kprint!(
-                    "\x1b[1;32m{}\x1b[36m{:<14}\x1b[0m | ",
-                    $crate::kcore::logging::LEVEL_PAD_INFO,
-                    $target
-                );
-                $crate::kprintln!($($arg)*);
-            }
+        if $crate::kcore::logging::get_log_level() >= 2 {
+            $crate::kprint!(
+                "\x1b[1;32m{}\x1b[36m{:<14}\x1b[0m | ",
+                $crate::kcore::logging::LEVEL_PAD_INFO,
+                $target
+            );
+            $crate::kprintln!($($arg)*);
         }
     };
 }

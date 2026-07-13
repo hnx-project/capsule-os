@@ -1,0 +1,14 @@
+[package]
+name = "hnx-testloader"
+version = "1.0.0-beta"
+edition = "2021"
+
+[[bin]]
+name = "testloader"
+path = "src/main.rs"
+
+[dependencies]
+hnxlibc.workspace = true
+
+[features]
+capsule = []

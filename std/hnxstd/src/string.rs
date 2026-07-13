@@ -33,9 +33,7 @@ impl String {
     }
 
     pub fn as_str(&self) -> &str {
-        unsafe {
-            core::str::from_utf8_unchecked(self.buf.as_slice())
-        }
+        unsafe { core::str::from_utf8_unchecked(self.buf.as_slice()) }
     }
 
     pub fn as_bytes(&self) -> &[u8] {

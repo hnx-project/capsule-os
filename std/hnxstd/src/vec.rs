@@ -42,20 +42,10 @@ impl<T: Copy> Vec<T> {
     }
 
     pub fn as_slice(&self) -> &[T] {
-        unsafe {
-            core::slice::from_raw_parts(
-                self.buf.as_ptr() as *const T,
-                self.len,
-            )
-        }
+        unsafe { core::slice::from_raw_parts(self.buf.as_ptr() as *const T, self.len) }
     }
 
     pub fn as_mut_slice(&mut self) -> &mut [T] {
-        unsafe {
-            core::slice::from_raw_parts_mut(
-                self.buf.as_mut_ptr() as *mut T,
-                self.len,
-            )
-        }
+        unsafe { core::slice::from_raw_parts_mut(self.buf.as_mut_ptr() as *mut T, self.len) }
     }
 }

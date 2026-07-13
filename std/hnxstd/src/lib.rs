@@ -16,8 +16,8 @@
 
 #![no_std]
 
+pub mod fmt;
 pub mod io;
 pub mod string;
 pub mod thread;
 pub mod vec;
-pub mod fmt;

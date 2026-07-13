@@ -410,15 +410,7 @@ pub fn sigaction(
     mask: usize,
     flags: usize,
 ) -> Result<usize, Status> {
-    let ret = syscall!(
-        SYSCALL_SIGACTION,
-        sig,
-        sa_handler,
-        mask,
-        flags,
-        0,
-        0
-    );
+    let ret = syscall!(SYSCALL_SIGACTION, sig, sa_handler, mask, flags, 0, 0);
     if (ret as isize) < 0 {
         let s = Status::from_raw(ret as i32);
         return Err(s);
@@ -472,15 +464,7 @@ pub fn pause() -> Result<(), Status> {
 /// kernel fills them with `[read_fd, write_fd]`.  Returns Ok(())
 /// on success.
 pub fn pipe(ufds_ptr: *mut i32) -> Result<(), Status> {
-    let ret = syscall!(
-        SYSCALL_PIPE,
-        ufds_ptr as usize,
-        0,
-        0,
-        0,
-        0,
-        0
-    );
+    let ret = syscall!(SYSCALL_PIPE, ufds_ptr as usize, 0, 0, 0, 0, 0);
     if (ret as isize) < 0 {
         let s = Status::from_raw(ret as i32);
         return Err(s);
@@ -498,15 +482,7 @@ pub fn pipe_pair(ufds: &mut [i32; 2]) -> Result<(), Status> {
 /// POSIX `dup2(oldfd, newfd)` - duplicate `oldfd` into
 /// `newfd`.  Returns the new fd on success.
 pub fn dup2(oldfd: i32, newfd: i32) -> Result<i32, Status> {
-    let ret = syscall!(
-        SYSCALL_DUP2,
-        oldfd as usize,
-        newfd as usize,
-        0,
-        0,
-        0,
-        0
-    );
+    let ret = syscall!(SYSCALL_DUP2, oldfd as usize, newfd as usize, 0, 0, 0, 0);
     if (ret as i64) < 0 {
         let s = Status::from_raw(ret as i32);
         return Err(s);

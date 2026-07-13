@@ -32,7 +32,6 @@ session-*.md
 # QEMU
 qemu_pids/
 *.img
-*.dtb
 *.ohc
 *.ohlib
 kernel/files/

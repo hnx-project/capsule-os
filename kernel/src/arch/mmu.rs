@@ -14,7 +14,7 @@ mod inner {
     pub use crate::arch::aarch64::mmu::{
         AArch64AddressSpace, AArch64Mmu, AArch64PageFlags, AArch64PageTable,
     };
-    pub use crate::arch::aarch64::mmu::{MapFlags, map_page, unmap_page};
+    pub use crate::arch::aarch64::mmu::{MapFlags, map_page, unmap_page, map_page_under_l0};
     pub use crate::mm::mmu::pa_to_kernel_va;
     pub fn build_and_enable(ram_base: usize, ram_size: usize, uart_base: usize) -> Result<()> {
         crate::arch::aarch64::mmu::enable_inner(ram_base, ram_size, uart_base)
