@@ -138,6 +138,23 @@ impl HandleTable {
         Err(Status::NoMemory)
     }
 
+    /// Add a pre-allocated object with a specific raw HandleValue into the table.
+    /// Used for initial handoff objects like BootFS during initialization.
+    pub fn add_raw_handle(&self, raw_val: u32, object: KernelObject, rights: u32) -> Result<()> {
+        let hv = HandleValue::new(raw_val);
+        acquire_lock();
+        let slots = self.slots_mut();
+        for slot in slots.slots.iter_mut() {
+            if slot.is_none() {
+                *slot = Some(Slot { value: hv, rights, object });
+                release_lock();
+                return Ok(());
+            }
+        }
+        release_lock();
+        Err(Status::NoMemory)
+    }
+
     pub fn with<R>(&self, hv: HandleValue, required_rights: u32,
                    f: impl FnOnce(&mut KernelObject) -> Result<R>) -> Result<R> {
         acquire_lock();

@@ -236,31 +236,10 @@ impl Scheduler {
                 crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
             }
 
-            // Direct hardware-level bootstrap jump into user_eret_stub for aarch64
-            // to safely bypass switch_to's dummy_ctx stack frame collapse and prevent any hang.
-            #[cfg(target_arch = "aarch64")]
-            {
-                let next_ctx_ptr = unsafe {
-                    &self.threads[idx].as_ref().unwrap().context as *const _
-                };
-                self.unlock();
-                unsafe {
-                    core::arch::asm!(
-                        "mov x1, {0}",
-                        "b user_eret_stub",
-                        in(reg) next_ctx_ptr,
-                        options(noreturn)
-                    );
-                }
-            }
-
-            #[cfg(not(target_arch = "aarch64"))]
-            {
-                let mut dummy_ctx = crate::task::thread::ThreadContext::default();
-                self.unlock();
-                unsafe {
-                    switch_to(&mut dummy_ctx, &mut self.threads[idx].as_mut().unwrap().context);
-                }
+            let mut dummy_ctx = crate::task::thread::ThreadContext::default();
+            self.unlock();
+            unsafe {
+                switch_to(&mut dummy_ctx, &mut self.threads[idx].as_mut().unwrap().context);
             }
         }
 

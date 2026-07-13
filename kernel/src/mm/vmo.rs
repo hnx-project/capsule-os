@@ -31,7 +31,7 @@ const VMO_MAGIC: u64 = 0x564D_4F4D_4147_4341; // "VMOMAGCA" (visible in hex dump
 const VMO_VERSION: u64 = 1;
 const PAGE_SIZE: usize = 4096;
 /// Maximum number of pages a single VMO can address.
-pub const VMO_MAX_PAGES: usize = 512;
+pub const VMO_MAX_PAGES: usize = 2048;
 
 static VMO_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
@@ -168,6 +168,53 @@ impl Vmo {
         })
     }
 
+    /// Slice/slice-clone a sub-region of an existing VMO, creating a child VMO with offset/size boundaries
+    /// that points to the parent's exact physical page list range without copying actual page payloads.
+    pub fn create_child_slice(&self, new_id: u64, offset: usize, size: usize) -> Result<Self> {
+        if offset & (PAGE_SIZE - 1) != 0 || size & (PAGE_SIZE - 1) != 0 {
+            return Err(Status::InvalidArgs);
+        }
+        if offset + size > self.size {
+            return Err(Status::InvalidArgs);
+        }
+        let meta_pa = phys::alloc_page()?;
+        let pages = size / PAGE_SIZE;
+        let start_page_idx = offset / PAGE_SIZE;
+
+        unsafe {
+            let base = pa_to_kernel_va(meta_pa.as_usize()) as *mut u8;
+            for i in 0..PAGE_SIZE {
+                core::ptr::write_volatile(base.add(i), 0);
+            }
+
+            let new_header = pa_to_kernel_va(meta_pa.as_usize()) as *mut VmoHeader;
+            (*new_header).magic = VMO_MAGIC;
+            (*new_header).version = VMO_VERSION;
+            (*new_header).capacity_pages = pages as u64;
+            (*new_header).committed = pages as u64; // slices are committed since pages are borrowed
+            (*new_header).size_bytes = size as u64;
+
+            for i in 0..pages {
+                let old_slot = self.page_slot(start_page_idx + i);
+                let new_slot = {
+                    let base = pa_to_kernel_va(meta_pa.as_usize()) as *mut u8;
+                    let offset_meta = core::mem::size_of::<VmoHeader>()
+                        + i * core::mem::size_of::<Option<PhysAddr>>();
+                    base.add(offset_meta) as *mut Option<PhysAddr>
+                };
+                (*new_slot) = (*old_slot);
+            }
+        }
+
+        Ok(Vmo {
+            id: new_id,
+            meta_pa,
+            size,
+            is_cow: false,
+            parent_id: Some(self.id),
+        })
+    }
+
     pub fn make_cow(&mut self) {
         self.is_cow = true;
     }
@@ -273,7 +320,7 @@ impl Vmo {
 
     /// Return a `*mut Option<PhysAddr>` for the slot that holds the
     /// physical page backing `page_idx`.
-    fn page_slot(&self, page_idx: usize) -> *mut Option<PhysAddr> {
+    pub fn page_slot(&self, page_idx: usize) -> *mut Option<PhysAddr> {
         debug_assert!(page_idx < VMO_MAX_PAGES);
         unsafe {
             let base = pa_to_kernel_va(self.meta_pa.as_usize()) as *mut u8;

@@ -73,21 +73,23 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
             }
         }
 
+        SYSCALL_VMO_CREATE_CHILD => {
+            let parent_handle = arg0 as u32;
+            let offset = arg1;
+            let size = arg2;
+            match handlers::memory::sys_vmo_create_child(table, parent_handle, offset, size) {
+                Ok(hv) => hv.get() as usize,
+                Err(e) => e.to_raw(),
+            }
+        }
+
         SYSCALL_VMO_READ => {
             let handle = arg0 as u32;
             let offset = arg1;
-            let dst = arg2 as *mut u8;
-            let len = core::cmp::min(arg3, 64);
-            if dst.is_null() || len == 0 {
-                return Status::InvalidArgs.to_raw();
-            }
-            let mut buf = [0u8; 64];
-            let slice = &mut buf[..len];
-            match handlers::memory::sys_vmo_read(table, handle, offset, slice) {
-                Ok(n) => {
-                    unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), dst, n); }
-                    n
-                }
+            let dst_user_va = arg2;
+            let len = arg3;
+            match handlers::memory::sys_vmo_read(table, handle, offset, dst_user_va, len) {
+                Ok(n) => n,
                 Err(e) => e.to_raw(),
             }
         }
@@ -95,14 +97,9 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
         SYSCALL_VMO_WRITE => {
             let handle = arg0 as u32;
             let offset = arg1;
-            let src = arg2 as *const u8;
-            let len = core::cmp::min(arg3, 64);
-            let buf = if !src.is_null() && len > 0 {
-                unsafe { core::slice::from_raw_parts(src, len) }
-            } else {
-                &[]
-            };
-            match handlers::memory::sys_vmo_write(table, handle, offset, buf) {
+            let src_user_va = arg2;
+            let len = arg3;
+            match handlers::memory::sys_vmo_write(table, handle, offset, src_user_va, len) {
                 Ok(n) => n,
                 Err(e) => e.to_raw(),
             }

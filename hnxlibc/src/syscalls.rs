@@ -248,6 +248,15 @@ pub fn vmo_create(size: usize) -> Result<usize, Status> {
     }
 }
 
+pub fn vmo_create_child(parent_handle: usize, offset: usize, size: usize) -> Result<usize, Status> {
+    let ret = syscall!(SYSCALL_VMO_CREATE_CHILD, parent_handle, offset, size, 0, 0, 0);
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret)
+    }
+}
+
 pub fn vmo_read(handle: usize, offset: usize, buf: &mut [u8]) -> Result<usize, Status> {
     let ret = syscall!(
         SYSCALL_VMO_READ,
@@ -297,6 +306,23 @@ pub fn close(handle: usize) -> Result<(), Status> {
         Err(Status::from_raw(ret as i32))
     } else {
         Ok(())
+    }
+}
+
+pub fn process_create(name: &str) -> Result<usize, Status> {
+    let ret = syscall!(
+        SYSCALL_PROCESS_CREATE,
+        name.as_ptr() as usize,
+        name.len(),
+        0,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret)
     }
 }
 

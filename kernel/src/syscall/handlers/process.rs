@@ -12,7 +12,7 @@ use shared::types::HandleValue;
 /// materialise into a kernel scratch buffer.  CapsuleOS user programs
 /// are typically under 32 KiB; we cap at 128 KiB to leave headroom while
 /// still fitting comfortably in the .bss of the kernel image.
-const LOAD_BINARY_SCRATCH_SIZE: usize = 128 * 1024;
+const LOAD_BINARY_SCRATCH_SIZE: usize = 1024 * 1024;
 static mut LOAD_BINARY_SCRATCH: [u8; LOAD_BINARY_SCRATCH_SIZE] =
     [0u8; LOAD_BINARY_SCRATCH_SIZE];
 
@@ -378,12 +378,27 @@ pub fn sys_spawn(
 
     let mut path_buf = [0u8; 256];
     let copy_path_len = core::cmp::min(path_len, path_buf.len());
-    crate::syscall::handlers::ipc::safe_copy_from_user(
+    
+    // Hardening translation verification for direct map access to eliminate TLB/Cache mismatch EL1 Data Aborts
+    if let Some(resolved_pa) = crate::arch::aarch64::mmu::translate_user_va(caller_l0_pa, path_ptr) {
+        let kva = crate::mm::mmu::pa_to_kernel_va(resolved_pa);
+        // Evict/Clean user rodata page to Point of Coherency (PoC) to make sure main memory has correct values
+        unsafe {
+            core::arch::asm!("dc civac, {0}", in(reg) kva, options(nomem, nostack));
+            core::arch::asm!("dsb ish", options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack));
+        }
+    }
+
+    if let Err(e) = crate::syscall::handlers::ipc::safe_copy_from_user(
         caller_l0_pa,
         path_ptr,
         copy_path_len,
         &mut path_buf[..copy_path_len],
-    )?;
+    ) {
+        crate::kprintln!("[SPAWN ERROR] sys_spawn safe_copy_from_user of path failed: {:?}", e);
+        return Err(e);
+    }
     let program_name = core::str::from_utf8(&path_buf[..copy_path_len])
         .map_err(|_| Status::InvalidArgs)?;
 
@@ -391,39 +406,47 @@ pub fn sys_spawn(
     let mut arg_lens: [usize; EXECVE_MAX_ARGS] = [0usize; EXECVE_MAX_ARGS];
     let mut total_bytes: usize = 0;
 
-    if argv_count > 0 && argv_ptr == 0 {
-        return Err(Status::InvalidArgs);
-    }
-    for i in 0..argv_count {
-        let mut pair = [0u8; 16];
-        let pair_off = argv_ptr + i * 16;
-        crate::syscall::handlers::ipc::safe_copy_from_user(
-            caller_l0_pa,
-            pair_off,
-            16,
-            &mut pair,
-        )?;
-        let s_ptr = u64::from_le_bytes([
-            pair[0], pair[1], pair[2], pair[3],
-            pair[4], pair[5], pair[6], pair[7],
-        ]) as usize;
-        let s_len = u64::from_le_bytes([
-            pair[8], pair[9], pair[10], pair[11],
-            pair[12], pair[13], pair[14], pair[15],
-        ]) as usize;
-        if s_len > arg_bufs[i].len() {
+    if argv_count > 0 {
+        if argv_ptr == 0 {
             return Err(Status::InvalidArgs);
         }
-        if s_len > 0 {
-            crate::syscall::handlers::ipc::safe_copy_from_user(
+        for i in 0..argv_count {
+            let mut pair = [0u8; 16];
+            let pair_off = argv_ptr + i * 16;
+            if let Err(e) = crate::syscall::handlers::ipc::safe_copy_from_user(
                 caller_l0_pa,
-                s_ptr,
-                s_len,
-                &mut arg_bufs[i][..s_len],
-            )?;
+                pair_off,
+                16,
+                &mut pair,
+            ) {
+                crate::kprintln!("[SPAWN ERROR] failed to copy argv pair at {:#x}: {:?}", pair_off, e);
+                return Err(e);
+            }
+            let s_ptr = u64::from_le_bytes([
+                pair[0], pair[1], pair[2], pair[3],
+                pair[4], pair[5], pair[6], pair[7],
+            ]) as usize;
+            let s_len = u64::from_le_bytes([
+                pair[8], pair[9], pair[10], pair[11],
+                pair[12], pair[13], pair[14], pair[15],
+            ]) as usize;
+            if s_len > arg_bufs[i].len() {
+                return Err(Status::InvalidArgs);
+            }
+            if s_len > 0 {
+                if let Err(e) = crate::syscall::handlers::ipc::safe_copy_from_user(
+                    caller_l0_pa,
+                    s_ptr,
+                    s_len,
+                    &mut arg_bufs[i][..s_len],
+                ) {
+                    crate::kprintln!("[SPAWN ERROR] failed to copy argv string at {:#x}: {:?}", s_ptr, e);
+                    return Err(e);
+                }
+            }
+            arg_lens[i] = s_len;
+            total_bytes = total_bytes.saturating_add(s_len);
         }
-        arg_lens[i] = s_len;
-        total_bytes = total_bytes.saturating_add(s_len);
     }
     if total_bytes + argv_count * 8 > EXECVE_ARG_TOTAL {
         return Err(Status::InvalidArgs);

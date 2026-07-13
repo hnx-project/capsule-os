@@ -1,3 +1,6 @@
+pub mod vmo;
+pub mod process;
+
 pub fn println(s: &str) {
     use hnxlibc::write;
     write(1, s.as_ptr(), s.len());

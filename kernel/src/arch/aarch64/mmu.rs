@@ -816,8 +816,8 @@ pub fn sync_instruction_cache(va: usize, size: usize) {
 
         let mut cur = start & !(d_step - 1);
         while cur < end {
-            // Clean data cache to PoU
-            core::arch::asm!("dc cvau, {0}", in(reg) cur, options(nomem, nostack));
+            // Clean data cache to PoV/PoU (use civac to force dirty lines out to main memory)
+            core::arch::asm!("dc civac, {0}", in(reg) cur, options(nomem, nostack));
             cur += d_step;
         }
         core::arch::asm!("dsb ish", options(nomem, nostack));
@@ -847,8 +847,11 @@ pub fn translate_user_va(l0_pa: usize, va: usize) -> Option<usize> {
         if l1e & 1 == 0 {
             return None;
         }
+        // Check if this is a 1 GiB Block descriptor
         if l1e & 0b10 == 0 {
-            return None;
+            let block_pa = (l1e & 0x0000_FFFF_C000_0000) as usize;
+            let offset = va & 0x3FFF_FFFF;
+            return Some(block_pa + offset);
         }
 
         let l2_pa = (l1e & 0x0000_FFFF_FFFF_F000) as usize;
@@ -857,8 +860,11 @@ pub fn translate_user_va(l0_pa: usize, va: usize) -> Option<usize> {
         if l2e & 1 == 0 {
             return None;
         }
+        // Check if this is a 2 MiB Block descriptor
         if l2e & 0b10 == 0 {
-            return None;
+            let block_pa = (l2e & 0x0000_FFFF_FFE0_0000) as usize;
+            let offset = va & 0x1F_FFFF;
+            return Some(block_pa + offset);
         }
 
         let l3_pa = (l2e & 0x0000_FFFF_FFFF_F000) as usize;

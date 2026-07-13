@@ -12,7 +12,6 @@ const BOLD_CYAN: &str = "\x1b[1;36m";
 const RESET: &str = "\x1b[0m";
 
 const USERCRATE_S: &[(&str, &str)] = &[
-    ("hnx-init", "init"),
     ("hnx-devmgr", "devmgr"),
     ("hnx-fileagent", "fileagent"),
     ("hnx-loader", "loader"),

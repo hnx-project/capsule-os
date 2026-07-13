@@ -9,6 +9,8 @@ path = "src/main.rs"
 
 [dependencies]
 hnxlibc.workspace = true
+hnxstd.workspace = true
+shared = { path = "../../../kernel/shared" }
 
 # [build]
 # rustflags = ["-C", "link-arg=-Tloader.ld"]

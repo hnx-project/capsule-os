@@ -236,6 +236,13 @@ impl Vmar {
                 );
             }
             arch_mmu::map_page(va, pa.as_usize(), arch_flags)?;
+
+            // Maintain Cache Coherency inside map() on AArch64 for newly loaded code
+            #[cfg(target_arch = "aarch64")]
+            {
+                let kva = arch_mmu::pa_to_kernel_va(pa.as_usize());
+                crate::arch::aarch64::mmu::sync_instruction_cache(kva, PAGE_SIZE);
+            }
         }
 
         // Record the mapping.

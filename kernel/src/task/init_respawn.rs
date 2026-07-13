@@ -63,11 +63,11 @@ static RESPAWN_CONSUMED: AtomicBool = AtomicBool::new(false);
 /// Path of the init binary to launch when the anchor dies.  Match
 /// the path the boot loader uses during normal boot (see
 /// `kernel_main` in `lib.rs`).
-const INIT_BIN_PATH: &str = "system/bin/init";
+const INIT_BIN_PATH: &str = "system/bin/osh";
 
 /// Name we register the respawned process under.  Distinct from
 /// the original anchor's name so the log can tell them apart.
-const INIT_BIN_NAME: &str = "init-respawn";
+const INIT_BIN_NAME: &str = "osh-respawn";
 
 /// If the caller is the boot anchor (pid 1) and the system has
 /// not already used its respawn budget, attempt to launch

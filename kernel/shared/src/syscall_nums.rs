@@ -49,6 +49,7 @@ pub const SYSCALL_VMO_READ: u32 = 31;
 pub const SYSCALL_VMO_WRITE: u32 = 32;
 pub const SYSCALL_VMO_GET_SIZE: u32 = 33;
 pub const SYSCALL_VMO_SET_SIZE: u32 = 34;
+pub const SYSCALL_VMO_CREATE_CHILD: u32 = 35;
 
 pub const SYSCALL_VMAR_MAP: u32 = 40;
 pub const SYSCALL_VMAR_UNMAP: u32 = 41;

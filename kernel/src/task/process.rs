@@ -178,6 +178,10 @@ impl Process {
         let mut old_ttbr0: usize = 0;
         #[cfg(target_arch = "aarch64")]
         unsafe {
+            let mut ttbr0_reg: u64;
+            core::arch::asm!("mrs {0}, ttbr0_el1", out(reg) ttbr0_reg, options(nomem, nostack));
+            old_ttbr0 = (ttbr0_reg & 0x0000_FFFF_FFFF_F000) as usize;
+
             crate::arch::aarch64::mmu::zero_page(l0_user_pa);
             crate::arch::aarch64::mmu::flush_table_page_pub(l0_user_pa);
             crate::arch::aarch64::mmu::zero_page(user_l1_pa);
@@ -201,9 +205,27 @@ impl Process {
                 crate::kprintln!("WARNING: Failed to map UART under user L0: {:?}", e);
             }
 
-            let mut ttbr0_reg: u64;
-            core::arch::asm!("mrs {0}, ttbr0_el1", out(reg) ttbr0_reg, options(nomem, nostack));
-            old_ttbr0 = (ttbr0_reg & 0x0000_FFFF_FFFF_F000) as usize;
+            // High Half Kernel Space Page Table Copy:
+            // Since the newly created process has a fresh and empty L0 page directory, we MUST copy the
+            // high-half kernel entries (entries 256..512) from the boot kernel L0 page directory into this
+            // new directory. This ensures that when the CPU switches to the process's page table via TTBR0_EL1,
+            // standard high-half kernel address translations (0xffff800000000000 and above) continue to walk and
+            // translate flawlessly, avoiding Translation Faults on kernel traps or interrupt events.
+            let active_l0_pa = (ttbr0_reg & 0x0000_FFFF_FFFF_F000) as usize;
+            if active_l0_pa != 0 {
+                let active_l0_kva = crate::mm::mmu::pa_to_kernel_va(active_l0_pa) as *const u64;
+                let new_l0_kva = crate::mm::mmu::pa_to_kernel_va(l0_user_pa) as *mut u64;
+                for idx in 256..512 {
+                    let entry = core::ptr::read_volatile(active_l0_kva.add(idx));
+                    if entry != 0 {
+                        core::ptr::write_volatile(new_l0_kva.add(idx), entry);
+                    }
+                }
+                // Flush the cache lines of the modified L0 page directory to main memory
+                core::arch::asm!("dc cvac, {0}", in(reg) new_l0_kva as usize, options(nomem, nostack));
+                core::arch::asm!("dsb ish", options(nomem, nostack));
+                core::arch::asm!("isb", options(nomem, nostack));
+            }
         }
         for &b in b"LAUNCHER OK fresh L0\n" {
             crate::arch::console_putchar(b);
@@ -296,7 +318,19 @@ impl Process {
                 crate::arch::console_putchar(b);
             }
             #[cfg(target_arch = "aarch64")]
-            crate::arch::aarch64::mmu::sync_instruction_cache(target_va, aligned_size);
+            {
+                // To maintain full cache coherency, we must clean D-cache and invalidate I-cache
+                // of each allocated physical page using the kernel's high-half direct-map alias virtual addresses (KVA),
+                // since the active page table context at this point doesn't map target_va.
+                let page_count = aligned_size / 4096;
+                for i in 0..page_count {
+                    let vmo_off = i * 4096;
+                    if let Some(pa) = vmo.get_page_phys(vmo_off) {
+                        let kva = crate::mm::mmu::pa_to_kernel_va(pa.as_usize());
+                        crate::arch::aarch64::mmu::sync_instruction_cache(kva, 4096);
+                    }
+                }
+            }
         }
         for &b in b"[DIAG] segment loop done\n" {
             crate::arch::console_putchar(b);
@@ -452,6 +486,13 @@ impl Process {
         thread.process_id = pid;
         thread.context.process_id = pid;
         thread.context.l0_user_pa = l0_user_pa as u64;
+        
+        // Strict SPSR Lock: enforce EL0t privilege level with IRQs fully unmasked (spsr=0x000)
+        // to prevent timer preempt or exception handler from corrupting the register context
+        #[cfg(target_arch = "aarch64")]
+        {
+            thread.context.spsr = 0x000;
+        }
         thread.handle_table = &proc.handle_table;
         thread.state = ThreadState::Ready;
 
