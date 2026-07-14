@@ -501,6 +501,7 @@ pub fn sys_spawn(
         pid,
         path_str
     );
+
     Ok(pid)
 }
 

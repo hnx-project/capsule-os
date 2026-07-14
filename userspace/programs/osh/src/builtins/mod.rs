@@ -45,6 +45,10 @@ pub fn execute_builtin<E: Environment>(env: &E, cmd: &Command) -> bool {
             exit::run(env, cmd);
             true
         }
+        "clear" => {
+            env.write_stdout(b"\x1b[2J\x1b[H");
+            true
+        }
         _ => false,
     }
 }

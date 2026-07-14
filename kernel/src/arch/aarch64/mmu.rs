@@ -59,7 +59,7 @@ fn va_l3_index(va: usize) -> usize { (va >> 12) & 0x1FF }
 fn pa_to_pte_addr(pa: usize) -> u64 { (pa as u64) & 0x0000_FFFF_FFFF_F000 }
 
 pub unsafe fn zero_page(page_pa: usize) {
-    crate::log_info!("MMU", "zero_page start: page_pa={:#x}", page_pa);
+    // crate::log_info!("MMU", "zero_page start: page_pa={:#x}", page_pa);
     // Pre-MMU: PA is a valid VA (bootloader left us with VA==PA and
     // the kernel still in low memory).  Post-MMU: PA access through
     // `pa_to_kernel_va` works because we built a high-half mirror.
@@ -71,7 +71,7 @@ pub unsafe fn zero_page(page_pa: usize) {
     for i in 0..PAGE_SIZE {
         core::ptr::write_volatile(ptr.add(i), 0);
     }
-    crate::log_info!("MMU", "zero_page end: page_pa={:#x}", page_pa);
+    // crate::log_info!("MMU", "zero_page end: page_pa={:#x}", page_pa);
 }
 
 unsafe fn write_l1_block(table_pa: usize, idx: usize, pa: usize, attr: MemAttr) {
@@ -884,7 +884,56 @@ pub fn translate_user_va(l0_pa: usize, va: usize) -> Option<usize> {
         }
 
         let page_pa = (l3e & 0x0000_FFFF_FFFF_F000) as usize;
-        let offset = va & 0xFFF;
+        let offset = va & (PAGE_SIZE - 1);
         Some(page_pa + offset)
+    }
+}
+
+pub fn dump_va_page_table_pub(tag: &str, l0_pa: usize, va: usize) {
+    unsafe {
+        let l0_idx = va_l0_index(va);
+        let l0e = read_pte(l0_pa, l0_idx);
+        crate::log_info!("PTE_DUMP", "[{}] VA={:#x} l0_pa={:#x} l0_idx={} -> l0_entry={:#x}", tag, va, l0_pa, l0_idx, l0e);
+        if l0e & 1 == 0 {
+            crate::log_info!("PTE_DUMP", "  -> L0 invalid");
+            return;
+        }
+
+        let l1_pa = (l0e & 0x0000_FFFF_FFFF_F000) as usize;
+        let l1_idx = va_l1_index(va);
+        let l1e = read_pte(l1_pa, l1_idx);
+        crate::log_info!("PTE_DUMP", "  L1: l1_pa={:#x} l1_idx={} -> l1_entry={:#x}", l1_pa, l1_idx, l1e);
+        if l1e & 1 == 0 {
+            crate::log_info!("PTE_DUMP", "  -> L1 invalid");
+            return;
+        }
+        if l1e & 0b10 == 0 {
+            crate::log_info!("PTE_DUMP", "  -> L1 1G Block mapping");
+            return;
+        }
+
+        let l2_pa = (l1e & 0x0000_FFFF_FFFF_F000) as usize;
+        let l2_idx = va_l2_index(va);
+        let l2e = read_pte(l2_pa, l2_idx);
+        crate::log_info!("PTE_DUMP", "  L2: l2_pa={:#x} l2_idx={} -> l2_entry={:#x}", l2_pa, l2_idx, l2e);
+        if l2e & 1 == 0 {
+            crate::log_info!("PTE_DUMP", "  -> L2 invalid");
+            return;
+        }
+        if l2e & 0b10 == 0 {
+            crate::log_info!("PTE_DUMP", "  -> L2 2M Block mapping");
+            return;
+        }
+
+        let l3_pa = (l2e & 0x0000_FFFF_FFFF_F000) as usize;
+        let l3_idx = va_l3_index(va);
+        let l3e = read_pte(l3_pa, l3_idx);
+        crate::log_info!("PTE_DUMP", "  L3: l3_pa={:#x} l3_idx={} -> l3_entry={:#x}", l3_pa, l3_idx, l3e);
+        if l3e & 1 == 0 {
+            crate::log_info!("PTE_DUMP", "  -> L3 invalid");
+            return;
+        }
+        let page_pa = (l3e & 0x0000_FFFF_FFFF_F000) as usize;
+        crate::log_info!("PTE_DUMP", "  -> Success Page_PA={:#x}", page_pa);
     }
 }

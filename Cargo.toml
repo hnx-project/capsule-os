@@ -35,8 +35,7 @@ members = [
     "userspace/services/devmgr",
     "userspace/services/fileagent",
     "userspace/services/loader",
-    "userspace/services/init",
-    "userspace/programs/shell",
+    # "userspace/services/init",
     "userspace/programs/osh",
     "userspace/programs/ls",
     "userspace/programs/cat",
@@ -47,7 +46,7 @@ members = [
     "userspace/programs/ps",
     "userspace/programs/kill",
     # testloader — 调试期间专用
-    "userspace/programs/testloader",
+    # "userspace/programs/testloader",
 ]
 
 resolver = "2"

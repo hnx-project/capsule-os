@@ -6,7 +6,7 @@ edition.workspace = true
 [features]
 default = ["host"]
 host = []
-capsule = []
+capsule = ["dep:hnxstd"]
 
 [[bin]]
 name = "osh"
@@ -14,10 +14,4 @@ path = "src/main.rs"
 
 [dependencies]
 hnxlibc.workspace = true
-
-[profile.release]
-panic = "abort"
-
-[profile.dev]
-panic = "abort"
-
+hnxstd = { workspace = true, optional = true }

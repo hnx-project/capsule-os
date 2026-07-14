@@ -24,7 +24,7 @@ const USERCRATE_S: &[(&str, &str)] = &[
     ("hnx-rmdir", "rmdir"),
     ("hnx-ps", "ps"),
     ("hnx-kill", "kill"),
-    ("hnx-testloader", "testloader"),
+    // ("hnx-testloader", "testloader"),
 ];
 
 pub fn build(plat: &Platform) -> Result<(), String> {

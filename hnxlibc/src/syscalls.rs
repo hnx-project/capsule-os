@@ -15,26 +15,28 @@ macro_rules! syscall {
         unsafe {
             core::arch::asm!(
                 "svc #0",
-                inout("x0") r0_in => ret_val,
+                in("x0") r0_in,
                 in("x1") r1,
                 in("x2") r2,
                 in("x3") r3,
                 in("x4") r4,
                 in("x5") r5,
                 in("x16") $num,
+                lateout("x0") ret_val,
             );
         }
         #[cfg(target_arch = "riscv64")]
         unsafe {
             core::arch::asm!(
                 "ecall",
-                inout("a0") r0_in => ret_val,
+                in("a0") r0_in,
                 in("a1") r1,
                 in("a2") r2,
                 in("a3") r3,
                 in("a4") r4,
                 in("a5") r5,
                 in("a7") $num,
+                lateout("a0") ret_val,
             );
         }
         ret_val

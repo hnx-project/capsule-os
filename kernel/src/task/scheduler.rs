@@ -326,7 +326,7 @@ impl Scheduler {
             // current kernel stack frame and resume the interrupted
             // syscall / IRQ handler's epilogue.
             if prev_idx == next_idx && prev_state != ThreadState::Dead {
-                crate::log_info!("SCHED-SAME", "prev_idx == next_idx == {} (skip switch_to hijack)", prev_idx);
+                // crate::log_info!("SCHED-SAME", "prev_idx == next_idx == {} (skip switch_to hijack)", prev_idx);
                 self.unlock();
                 // Use a volatile write to ensure the compiler doesn't elide
                 // our early return: the dummy `static mut` sink prevents the
@@ -384,6 +384,44 @@ impl Scheduler {
             {
                 use crate::mm::mmu::ArchMmu;
                 crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
+
+                // Restore TTBR0 to the original (now current) process's L0
+                // so the CPU can translate user VAs through the correct table
+                // when returning back to the user context!
+                if let Some(ref t) = self.threads[prev_idx] {
+                    let cur_l0 = crate::task::process::find_process_l0_user_pa(t.process_id).unwrap_or(0);
+                    if cur_l0 != 0 {
+                        crate::arch::aarch64::mmu::set_ttbr0_el1(cur_l0);
+                        // Zircon-aligned Hardware Barrier: Invalidate TLBs and insert barrier to force
+                        // the instruction fetcher and page walker to use the newly restored TTBR0 table!
+                        unsafe {
+                            core::arch::asm!(
+                                "tlbi vmalle1",
+                                "dsb sy",
+                                "isb",
+                                options(nomem, nostack)
+                            );
+                        }
+                    }
+                }
+
+                // Zircon-aligned Cache Hardening: Invalidate instruction pre-fetch pipeline
+                // at the thread's user-mode entry PC (elr) to prevent QEMU TCG decoding translation
+                // faults on the very first instruction fetch after eret!
+                if let Some(ref mut t) = self.threads[prev_idx] {
+                    let user_pc = t.context.elr;
+                    if user_pc != 0 {
+                        unsafe {
+                            core::arch::asm!(
+                                "ic ivau, {0}",
+                                "dsb sy",
+                                "isb",
+                                in(reg) user_pc,
+                                options(nomem, nostack)
+                            );
+                        }
+                    }
+                }
             }
         } else {
             let all_dead = self.threads.iter().all(|t| match t {

@@ -43,6 +43,7 @@ pub trait Environment {
     fn yield_cpu(&self);
     fn open(&self, path: &str, flags: i32) -> Result<i32, ShellError>;
     fn read(&self, fd: i32, buf: &mut [u8]) -> Result<usize, ShellError>;
+    fn write(&self, fd: i32, data: &[u8]) -> Result<usize, ShellError>;
 
     // 读文件（供脚本解析使用）
     fn read_file(&self, path: &str, buf: &mut [u8]) -> Result<usize, ShellError>;

@@ -14,9 +14,3 @@ path = "src/main.rs"
 
 [dependencies]
 hnxlibc.workspace = true
-
-[profile.release]
-panic = "abort"
-
-[profile.dev]
-panic = "abort"

@@ -276,14 +276,19 @@ fn handle_command(cmd: FileAgentCmd, channel: usize, handles: &[u32]) {
 
 fn do_open(path: &str, _flags: u32) -> i32 {
     unsafe {
-        if let Some(ref mut fs) = RAM_FS {
-            // 剔除前导斜杠
-            let clean_path = if path.starts_with('/') {
-                &path[1..]
-            } else {
-                path
-            };
+        // 剔除前导斜杠
+        let clean_path = if path.starts_with('/') {
+            &path[1..]
+        } else {
+            path
+        };
 
+        // 特化路由：检测到打开控制终端伪设备时，返回特化虚拟句柄 100
+        if clean_path == "dev/tty" {
+            return 100;
+        }
+
+        if let Some(ref mut fs) = RAM_FS {
             // 查找名为 welcome.txt 的文件或匹配其全路径
             // 这里为了简单性我们进行精确匹配，也可以自定义查找
             let mut node_idx_opt = None;
@@ -320,6 +325,9 @@ fn do_open(path: &str, _flags: u32) -> i32 {
 
 fn do_close(fd: u32) -> i32 {
     unsafe {
+        if fd == 100 {
+            return 0;
+        }
         if fd < 16 {
             OPEN_FILES[fd as usize] = None;
             return 0;
@@ -330,6 +338,16 @@ fn do_close(fd: u32) -> i32 {
 
 fn do_read(fd: u32, len: usize) -> (i32, &'static [u8]) {
     unsafe {
+        if fd == 100 {
+            static mut TTY_BUF: [u8; 1024] = [0u8; 1024];
+            let read_bytes = hnxlibc::read(0, TTY_BUF.as_mut_ptr(), len.min(1024));
+            if read_bytes >= 0 {
+                let static_data =
+                    core::slice::from_raw_parts(TTY_BUF.as_ptr(), read_bytes as usize);
+                return (read_bytes as i32, static_data);
+            }
+            return (0, &[]);
+        }
         if fd < 16 {
             if let Some(ref mut of) = OPEN_FILES[fd as usize] {
                 if let Some(ref fs) = RAM_FS {
@@ -355,6 +373,10 @@ fn do_read(fd: u32, len: usize) -> (i32, &'static [u8]) {
 
 fn do_write(fd: u32, data: &[u8]) -> i32 {
     unsafe {
+        if fd == 100 {
+            let written = hnxlibc::write(1, data.as_ptr(), data.len());
+            return written as i32;
+        }
         if fd < 16 {
             if let Some(ref mut of) = OPEN_FILES[fd as usize] {
                 if let Some(ref mut fs) = RAM_FS {

@@ -35,14 +35,16 @@ pub fn execute_pipeline<E: Environment>(env: &E, line: &str) {
         return;
     }
     if pipeline.stage_count == 1 {
-        // Single-command fast path: skip the pipe plumbing.
+        // Single-command path: run in a spawned child process so the shell survives
         let cmd = &pipeline.stages[0];
         if execute_builtin(env, cmd) {
             return;
         }
         let run_args = stage_args(cmd);
-        match env.execute(cmd.name, run_args) {
-            Ok(_) => {}
+        match env.spawn(cmd.name, run_args) {
+            Ok(pid) => {
+                let _ = env.wait(pid);
+            }
             Err(_) => {
                 env.write_stderr(b"osh: command not found: ");
                 env.write_stderr(cmd.name.as_bytes());
@@ -147,6 +149,13 @@ pub fn execute_single_line<E: Environment>(env: &E, line: &str) {
 }
 
 pub fn run_shell<E: Environment>(env: &E) {
+    // 启动静默清屏：通过 VFS 打开统一路由的 /dev/tty 设备并写入 ANSI 清屏复位转义字符
+    if let Ok(tty_fd) = env.open("/dev/tty", 0) {
+        let _ = env.write(tty_fd, b"\x1b[2J\x1b[H");
+        #[cfg(not(feature = "host"))]
+        let _ = hnxlibc::close(tty_fd);
+    }
+
     let mut input_buf = [0u8; 256];
     loop {
         env.write_stdout(b"osh$ ");

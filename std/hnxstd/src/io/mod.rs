@@ -11,3 +11,7 @@ pub fn print(s: &str) {
     use hnxlibc::write;
     write(1, s.as_ptr(), s.len());
 }
+
+pub fn read_line(buf: &mut [u8]) -> isize {
+    hnxlibc::read(0, buf.as_mut_ptr(), buf.len())
+}

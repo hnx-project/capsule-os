@@ -360,7 +360,9 @@ user_eret_stub:
     ldr x5, [x9, #288]    // l0_user_pa
     cbz x5, 1f            // if zero, skip TTBR0 load (kernel threads)
     msr ttbr0_el1, x5
+    tlbi vmalle1          // Zircon-style TLB & ASID Flash Barrier!
     dsb sy
+    isb
 1:
     // Invalidate icache at the user entry VA so any stale icache lines
     // from a previous address space mapping are discarded before eret.

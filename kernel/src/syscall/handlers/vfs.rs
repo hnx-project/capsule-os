@@ -41,13 +41,47 @@ pub fn sys_read(fd: u32, buf_ptr: usize, buf_len: usize) -> Result<usize> {
             // it ever returns `None` we leave the line as-is and let the
             // caller decide (the UART driver has no real EOF concept in
             // QEMU, so in practice this only happens on hardware fault).
-            let byte = match crate::drivers::uart::getchar() {
+            let mut byte = match crate::drivers::uart::getchar() {
                 Some(b) => b,
                 None => return if total == 0 { Ok(0) } else { Ok(total) },
             };
+
+            // 1. Handle Backspace / Delete keys (DEL = 0x7f, BS = 0x08)
+            if byte == 0x7f || byte == 0x08 {
+                if total > 0 {
+                    total -= 1;
+                    // Visual terminal backspace erase sequence
+                    crate::drivers::uart::putchar(0x08);
+                    crate::drivers::uart::putchar(b' ');
+                    crate::drivers::uart::putchar(0x08);
+                }
+                continue;
+            }
+
+            // 2. Handle Ctrl+C (0x03) keypress to terminate the blocked caller thread
+            if byte == 0x03 {
+                crate::drivers::uart::putchar(b'^');
+                crate::drivers::uart::putchar(b'C');
+                crate::drivers::uart::putchar(b'\n');
+                // Execution jump straight out: terminate this thread immediately!
+                crate::syscall::handlers::process::sys_exit(-1);
+            }
+
+            // 3. Filter garbage/null control characters
+            if byte == 0 {
+                continue;
+            }
+
+            if byte == b'\r' {
+                byte = b'\n';
+            }
+
+            // 3. Kernel-level Auto Echo: Make typed characters immediately visible
+            crate::drivers::uart::putchar(byte);
+
             slice[total] = byte;
             total += 1;
-            if byte == b'\n' || byte == b'\r' {
+            if byte == b'\n' {
                 break;
             }
         }

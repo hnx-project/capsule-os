@@ -1,30 +1,50 @@
 use super::{Environment, ShellError};
 
 extern crate hnxlibc;
+extern crate hnxstd;
 
 pub struct CapsuleEnv;
 
 /// Capsule OS 下的 PAL 实现.
 ///
-/// 该实现把 osh 的 Environment trait 直接桥接到 `hnxlibc`：
-/// - 标准 I/O 走 EL0 直接 syscall (PL011 UART)
+/// 该实现把 osh 的 Environment trait 直接桥接到 `hnxlibc` 与 `hnxstd`：
+/// - 标准 I/O 调用 hnxstd 统一提供的底层标准接口
 /// - 外部进程执行走 SYSCALL_EXEC
 /// - 当前目录、环境变量、文件读取等还未在 CapsuleOS 中实现的子系统
 ///   一律返回占位 Ok/Err，这样 osh 至少能进入 REPL 并执行内置命令，
 ///   后续在内核补齐 SYSCALL_GETCWD / SYSCALL_CHDIR 后只需修改本文件。
 impl Environment for CapsuleEnv {
     fn write_stdout(&self, data: &[u8]) {
-        let _ = hnxlibc::write(1, data.as_ptr(), data.len());
+        if let Ok(s) = core::str::from_utf8(data) {
+            hnxstd::io::print(s);
+        }
     }
 
     fn write_stderr(&self, data: &[u8]) {
-        let _ = hnxlibc::write(2, data.as_ptr(), data.len());
+        if let Ok(s) = core::str::from_utf8(data) {
+            hnxstd::io::print(s);
+        }
     }
 
     fn read_line(&self, buf: &mut [u8]) -> Result<usize, ShellError> {
-        // fd = 0 标准输入。kernel sys_read 在 fd=0 时阻塞读 PL011/NS16550
-        // UART 直到换行 (见 kernel/src/syscall/handlers/vfs.rs)。
-        let res = hnxlibc::read(0, buf.as_mut_ptr(), buf.len());
+        // Clean buffer first to prevent dirty remnants
+        for i in 0..buf.len() {
+            buf[i] = 0;
+        }
+
+        let mut res = hnxlibc::read(0, buf.as_mut_ptr(), buf.len());
+
+        // Adaptively reconstruct actual read length if return value is clobbered to 0
+        if res == 0 {
+            let mut count = 0;
+            while count < buf.len() && buf[count] != 0 && buf[count] != b'\n' {
+                count += 1;
+            }
+            if count < buf.len() && buf[count] == b'\n' {
+                res = (count + 1) as isize;
+            }
+        }
+
         if res >= 0 {
             Ok(res as usize)
         } else {
@@ -124,9 +144,16 @@ impl Environment for CapsuleEnv {
 
     fn wait(&self, pid: u64) -> Result<i32, ShellError> {
         let mut status: i32 = 0;
-        match hnxlibc::wait4(pid as i64, &mut status, 0) {
-            Ok((_, _)) => Ok(status),
-            Err(_) => Err(ShellError::IoError),
+        loop {
+            // Restore status pointer back to &mut status to safely return wait codes
+            match hnxlibc::wait4(pid as i64, &mut status, 0) {
+                Ok((_, _)) => return Ok(status),
+                Err(hnxlibc::Status::TryAgain) => {
+                    // Child is still running, yield our remaining quantum
+                    hnxlibc::yield_cpu();
+                }
+                Err(_) => return Err(ShellError::IoError),
+            }
         }
     }
 
@@ -143,6 +170,15 @@ impl Environment for CapsuleEnv {
 
     fn read(&self, fd: i32, buf: &mut [u8]) -> Result<usize, ShellError> {
         let n = hnxlibc::read(fd, buf.as_mut_ptr(), buf.len());
+        if n >= 0 {
+            Ok(n as usize)
+        } else {
+            Err(ShellError::IoError)
+        }
+    }
+
+    fn write(&self, fd: i32, data: &[u8]) -> Result<usize, ShellError> {
+        let n = hnxlibc::write(fd, data.as_ptr(), data.len());
         if n >= 0 {
             Ok(n as usize)
         } else {

@@ -152,6 +152,9 @@ impl Environment for HostEnv {
     fn read(&self, _fd: i32, _buf: &mut [u8]) -> Result<usize, ShellError> {
         Ok(0)
     }
+    fn write(&self, _fd: i32, _data: &[u8]) -> Result<usize, ShellError> {
+        Ok(0)
+    }
 
     fn read_file(&self, path: &str, buf: &mut [u8]) -> Result<usize, ShellError> {
         match std::fs::File::open(path) {
