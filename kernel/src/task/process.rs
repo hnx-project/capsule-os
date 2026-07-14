@@ -80,6 +80,11 @@ pub struct Process {
     /// `syscall_dispatch`'s way out (with the process's previous
     /// IRQ state held) or immediately at `raise(2)` time.
     pub pending_signals: u32,
+    /// AArch64 ASID bound to this process.  Encoded into `TTBR0_EL1`
+    /// bits [55:48] by `set_ttbr0_el1` so the TLB can be invalidated
+    /// per-process instead of globally.  `ASID_KERNEL` (= 0) while the
+    /// slot has not yet been initialised by `init_in_place`.
+    pub asid: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +113,10 @@ impl Process {
             pending_signals: 0u32,
             fd_table: [const { None }; FD_TABLE_SIZE],
             next_fd: USER_FD_BASE,
+            #[cfg(target_arch = "aarch64")]
+            asid: crate::arch::aarch64::asid::ASID_KERNEL,
+            #[cfg(not(target_arch = "aarch64"))]
+            asid: 0,
         }
     }
 
@@ -142,6 +151,21 @@ impl Process {
         self.pending_signals = 0u32;
         self.fd_table = [const { None }; FD_TABLE_SIZE];
         self.next_fd = USER_FD_BASE;
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            // Allocate an ASID for this process.  The allocator
+            // returns an ID from the 8-bit space (1..=255) and bumps
+            // its internal counter on wrap, but the actual TLB flush
+            // is the caller's responsibility at the next
+            // `set_ttbr0_el1` boundary.
+            self.asid = crate::arch::aarch64::asid::alloc()
+                .unwrap_or(crate::arch::aarch64::asid::ASID_KERNEL);
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            self.asid = 0;
+        }
 
         Ok(())
     }
@@ -264,10 +288,6 @@ impl Process {
                 core::arch::asm!("isb", options(nomem, nostack));
             }
         }
-        for &b in b"LAUNCHER OK fresh L0\n" {
-            crate::arch::console_putchar(b);
-        }
-
         let mut lowest_vaddr: usize = usize::MAX;
 
         for idx in 0..header.header_count {
@@ -777,38 +797,34 @@ impl Process {
             if old_ttbr0 != 0 {
                 use crate::mm::mmu::ArchMmu;
                 crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
-                crate::arch::aarch64::mmu::set_ttbr0_el1(old_ttbr0);
+                // `old_ttbr0` is the raw register value we read with
+                // `mrs ttbr0_el1` earlier -- it already carries the
+                // kernel-side ASID in bits [55:48].  Re-write the
+                // register verbatim (with the same packed barrier
+                // sequence as `set_ttbr0_el1`) so we don't accidentally
+                // strip the ASID half and downgrade to a "no-ASID"
+                // translation regime on the way back out.
+                core::arch::asm!(
+                    "msr ttbr0_el1, {val}",
+                    "isb",
+                    "tlbi vmalle1is",
+                    "dsb ish",
+                    "isb",
+                    val = in(reg) old_ttbr0 as u64,
+                    options(nomem, nostack)
+                );
             } else {
-                crate::arch::aarch64::mmu::set_ttbr0_el1(l0_user_pa);
+                // Loader bootstrap: there is no prior TTBR0 to restore
+                // to.  Install the *new* process's TTBR0 with its
+                // freshly-allocated ASID so the very first `eret` into
+                // the loader's entry point walks under the correct
+                // translation regime.
+                let new_asid = proc.asid;
+                crate::arch::aarch64::mmu::set_ttbr0_el1(l0_user_pa, new_asid);
             }
         }
 
-        for &b in b"[KERN] launch_user_program_with_argv: OK, name=" {
-            crate::arch::console_putchar(b);
-        }
-        for &b in name.as_bytes() {
-            crate::arch::console_putchar(b);
-        }
-        for &b in b" entry=0x" {
-            crate::arch::console_putchar(b);
-        }
-        let mut val = user_entry;
-        if val == 0 {
-            crate::arch::console_putchar(b'0');
-        } else {
-            let mut buf = [0u8; 16];
-            let mut i = 0;
-            while val > 0 {
-                let digit = (val & 0xf) as u8;
-                buf[i] = if digit < 10 { b'0' + digit } else { b'a' + (digit - 10) };
-                val >>= 4;
-                i += 1;
-            }
-            for idx in (0..i).rev() {
-                crate::arch::console_putchar(buf[idx]);
-            }
-        }
-        crate::arch::console_putchar(b'\n');
+
 
         Ok(())
     }
@@ -858,19 +874,21 @@ pub fn find_process_mut(id: u64) -> Option<&'static mut Process> {
 }
 
 /// Read-only variant of `find_process_mut` that just returns the
-/// process's user L0 page PA (or `None` if the process slot is
-/// empty / the L0 hasn't been allocated yet).
+/// process's user L0 page PA and ASID (or `None` if the process slot
+/// is empty / the L0 hasn't been allocated yet).
 ///
-/// Used by the scheduler to swap TTBR0_EL1 when it context-switches
+/// Used by the scheduler to swap `TTBR0_EL1` when it context-switches
 /// between threads in different processes.  Returning a value rather
-/// than a `&mut` keeps the call site lock-free — the L0 PA is
-/// immutable for the lifetime of the process.
-pub fn find_process_l0_user_pa(id: u64) -> Option<usize> {
+/// than a `&mut` keeps the call site lock-free — the L0 PA and ASID
+/// are immutable for the lifetime of the process (the ASID is
+/// allocated once at `init_in_place` time and never recycled under
+/// single-core bring-up).
+pub fn find_process_l0_user_pa(id: u64) -> Option<(usize, u16)> {
     unsafe {
         for slot in PROCESSES.iter() {
             if let Some(p) = slot {
                 if p.id == id && p.l0_user_pa != 0 {
-                    return Some(p.l0_user_pa);
+                    return Some((p.l0_user_pa, p.asid));
                 }
             }
         }

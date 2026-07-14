@@ -325,8 +325,51 @@ impl Scheduler {
             // of `schedule()` is the correct semantic: we stay on the
             // current kernel stack frame and resume the interrupted
             // syscall / IRQ handler's epilogue.
+            //
+            // **Phase 3 hardening (prev==next return path)**: even
+            // when we skip the actual `switch_to`, the previous
+            // (pre-fix) implementation never reloaded `TTBR0_EL1`.
+            // That left the CPU's translation regime pointed at
+            // whatever process last ran `set_ttbr0_el1` -- typically
+            // a now-dead child like `ls`.  When the parent (`osh`)
+            // then resumed on this same kernel stack, the very next
+            // user-side instruction fetch could Translation-fault on
+            // a perfectly valid VA in `osh`'s own L0.  We now reload
+            // `TTBR0_EL1` from the *current* process's L0 + ASID on
+            // every resumption, regardless of whether we hit the
+            // short-circuit or the full switch path.  This is the
+            // explicit fix for the KERNEL_HEALTH A2 follow-on
+            // (EL0-FAULT EC=0x24 after `ls` exit).
             if prev_idx == next_idx && prev_state != ThreadState::Dead {
-                // crate::log_info!("SCHED-SAME", "prev_idx == next_idx == {} (skip switch_to hijack)", prev_idx);
+                // When the scheduler selects the same thread (common
+                // during IRQ nesting), reload TTBR0_EL1 + flush the
+                // icache at the thread's user PC so the upcoming eret
+                // uses the correct translation regime.  This is the
+                // same pair of operations the full switch path does
+                // before/after switch_to, but without the switch itself.
+                #[cfg(target_arch = "aarch64")]
+                {
+                    let cur_pid = self.threads[prev_idx].as_ref().unwrap().process_id;
+                    if let Some((cur_l0_pa, cur_asid)) =
+                        crate::task::process::find_process_l0_user_pa(cur_pid)
+                    {
+                        crate::arch::aarch64::mmu::set_ttbr0_el1(cur_l0_pa, cur_asid);
+                    }
+                    if let Some(ref t) = self.threads[prev_idx] {
+                        let user_pc = t.context.elr;
+                        if user_pc != 0 {
+                            unsafe {
+                                core::arch::asm!(
+                                    "ic ivau, {0}",
+                                    "dsb sy",
+                                    "isb",
+                                    in(reg) user_pc,
+                                    options(nostack)
+                                );
+                            }
+                        }
+                    }
+                }
                 self.unlock();
                 // Use a volatile write to ensure the compiler doesn't elide
                 // our early return: the dummy `static mut` sink prevents the
@@ -356,10 +399,22 @@ impl Scheduler {
             // needs to find the old user stack during `eret`/signal
             // teardown.  Doing both in one place (this function) keeps
             // the policy in one spot.
+            //
+            // **Phase 3 (ASID)**: the L0 PA now travels with its
+            // owning process's 8-bit ASID.  `set_ttbr0_el1` packs
+            // both into a single MSR, and the inner barrier
+            // sequence (`tlbi vmalle1is` + `dsb ish` + `isb`)
+            // ensures the new translation regime is observable to
+            // the page-table walker before the first user-side
+            // fetch after `eret`.
             let next_pid = self.threads[next_idx].as_ref().unwrap().process_id;
             let prev_pid = self.threads[prev_idx].as_ref().unwrap().process_id;
-            let next_l0 = crate::task::process::find_process_l0_user_pa(next_pid);
-            let prev_l0 = crate::task::process::find_process_l0_user_pa(prev_pid);
+
+            let next_l0_asid = crate::task::process::find_process_l0_user_pa(next_pid);
+            #[cfg(target_arch = "aarch64")]
+            if let Some((next_l0_pa, next_asid)) = next_l0_asid {
+                crate::arch::aarch64::mmu::set_ttbr0_el1(next_l0_pa, next_asid);
+            }
             #[cfg(target_arch = "aarch64")]
             {
                 use crate::mm::mmu::ArchMmu;
@@ -389,19 +444,10 @@ impl Scheduler {
                 // so the CPU can translate user VAs through the correct table
                 // when returning back to the user context!
                 if let Some(ref t) = self.threads[prev_idx] {
-                    let cur_l0 = crate::task::process::find_process_l0_user_pa(t.process_id).unwrap_or(0);
-                    if cur_l0 != 0 {
-                        crate::arch::aarch64::mmu::set_ttbr0_el1(cur_l0);
-                        // Zircon-aligned Hardware Barrier: Invalidate TLBs and insert barrier to force
-                        // the instruction fetcher and page walker to use the newly restored TTBR0 table!
-                        unsafe {
-                            core::arch::asm!(
-                                "tlbi vmalle1",
-                                "dsb sy",
-                                "isb",
-                                options(nomem, nostack)
-                            );
-                        }
+                    if let Some((cur_l0_pa, cur_asid)) =
+                        crate::task::process::find_process_l0_user_pa(t.process_id)
+                    {
+                        crate::arch::aarch64::mmu::set_ttbr0_el1(cur_l0_pa, cur_asid);
                     }
                 }
 

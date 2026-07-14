@@ -42,9 +42,9 @@ pub fn main() -> i32 {
         let _ = syscalls::yield_cpu();
     }
 
-    // Stage 4: Transfer Control to User Interactive Shell
-    Logger::write("Loader: launching user shell osh\n");
-    let _ = hnxlibc::exec("osh");
+    // Stage 4: Transfer Control to User Interactive Shell (disabled until procmgr is ready)
+    // Logger::write("Loader: launching user shell osh\n");
+    // let _ = hnxlibc::exec("osh");
 
     0
 }

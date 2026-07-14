@@ -59,7 +59,6 @@ fn va_l3_index(va: usize) -> usize { (va >> 12) & 0x1FF }
 fn pa_to_pte_addr(pa: usize) -> u64 { (pa as u64) & 0x0000_FFFF_FFFF_F000 }
 
 pub unsafe fn zero_page(page_pa: usize) {
-    // crate::log_info!("MMU", "zero_page start: page_pa={:#x}", page_pa);
     // Pre-MMU: PA is a valid VA (bootloader left us with VA==PA and
     // the kernel still in low memory).  Post-MMU: PA access through
     // `pa_to_kernel_va` works because we built a high-half mirror.
@@ -71,7 +70,6 @@ pub unsafe fn zero_page(page_pa: usize) {
     for i in 0..PAGE_SIZE {
         core::ptr::write_volatile(ptr.add(i), 0);
     }
-    // crate::log_info!("MMU", "zero_page end: page_pa={:#x}", page_pa);
 }
 
 unsafe fn write_l1_block(table_pa: usize, idx: usize, pa: usize, attr: MemAttr) {
@@ -277,34 +275,6 @@ fn pte_attr_bits(flags: MapFlags) -> u64 {
         bits |= PTE_UXN; // User pages get Unprivileged Execute Never when not executable
     }
     bits
-}
-
-pub fn debug_walk_va(l0_pa: usize, va: usize) {
-    unsafe {
-        let l0_idx = va_l0_index(va);
-        let l0e = read_pte(l0_pa, l0_idx);
-        crate::log_info!("PTE_WALK", "VA={:#x} L0_PA={:#x} L0_IDX={} L0E={:#x}", va, l0_pa, l0_idx, l0e);
-        if l0e & 1 == 0 { return; }
-        
-        let l1_pa = (l0e & 0x0000_FFFF_FFFF_F000) as usize;
-        let l1_idx = va_l1_index(va);
-        let l1e = read_pte(l1_pa, l1_idx);
-        crate::log_info!("PTE_WALK", "  L1_PA={:#x} L1_IDX={} L1E={:#x}", l1_pa, l1_idx, l1e);
-        if l1e & 1 == 0 { return; }
-        if l1e & 0b10 == 0 { return; }
-        
-        let l2_pa = (l1e & 0x0000_FFFF_FFFF_F000) as usize;
-        let l2_idx = va_l2_index(va);
-        let l2e = read_pte(l2_pa, l2_idx);
-        crate::log_info!("PTE_WALK", "    L2_PA={:#x} L2_IDX={} L2E={:#x}", l2_pa, l2_idx, l2e);
-        if l2e & 1 == 0 { return; }
-        if l2e & 0b10 == 0 { return; }
-        
-        let l3_pa = (l2e & 0x0000_FFFF_FFFF_F000) as usize;
-        let l3_idx = va_l3_index(va);
-        let l3e = read_pte(l3_pa, l3_idx);
-        crate::log_info!("PTE_WALK", "      L3_PA={:#x} L3_IDX={} L3E={:#x}", l3_pa, l3_idx, l3e);
-    }
 }
 
 /// Read TTBR1_EL1 (kernel page table root).
@@ -662,12 +632,92 @@ pub fn unmap_page(va: usize) -> Result<()> {
 }
 
 #[inline(always)]
-pub fn set_ttbr0_el1(l0_pa: usize) {
+pub fn set_ttbr0_el1(l0_pa: usize, asid: u16) {
+    let packed = crate::arch::aarch64::asid::pack_ttbr(l0_pa as u64, asid);
     unsafe {
-        core::arch::asm!("msr ttbr0_el1, {0}", in(reg) l0_pa as u64, options(nomem, nostack));
-        core::arch::asm!("dsb ish", options(nomem, nostack));
-        core::arch::asm!("dsb sy", options(nomem, nostack));
-        core::arch::asm!("isb", options(nomem, nostack));
+        // CRITICAL: Before switching TTBR0_EL1 we MUST flush the L0
+        // page and all dependent page-table pages from the data
+        // cache so the MMU walker sees the freshly-written PTEs
+        // rather than stale cache lines.  QEMU-TCG does not
+        // architecturally auto-coalesce dcache writes with the
+        // page-table walks that follow, so a stale dcache line
+        // survives the `msr TTBR0_EL1` and the walker returns a
+        // zero PTE -> Translation Fault.  We flush the L0 page
+        // (the only one we know statically) and rely on the
+        // write_pte path's per-entry `dc civac + dsb ish` to have
+        // already evicted the L1/L2/L3 pages.
+        //
+        // CRITICAL: the `dc civac` loop and the `msr ttbr0_el1` are
+        // intentionally kept in the SAME asm block (with no `nomem`)
+        // so the compiler cannot reorder the dcache flush past the
+        // TTBR0 write.  Two separate `nomem` asm blocks are free to
+        // be reordered by LLVM, making the TLBI sequence a no-op.
+        let l0_kva = crate::mm::mmu::pa_to_kernel_va(l0_pa);
+        let mut ctr: u64;
+        core::arch::asm!("mrs {0}, ctr_el0", out(reg) ctr, options(nomem, nostack));
+        let dlog2 = (ctr >> 16) & 0xf;
+        let d_step = 4usize << dlog2;
+        let mut cur = l0_kva & !(d_step - 1);
+        let end = l0_kva + 4096;
+        while cur < end {
+            core::arch::asm!("dc civac, {0}", in(reg) cur, options(nostack));
+            cur += d_step;
+        }
+        core::arch::asm!("dsb ish", options(nostack));
+
+        core::arch::asm!(
+            "msr ttbr0_el1, {val}",
+            "isb",
+            "tlbi vmalle1",
+            "dsb sy",
+            "isb",
+            val = in(reg) packed,
+            options(nostack)
+        );
+    }
+}
+
+/// Debug-only: read TTBR0_EL1 and walk the user page table for `va`,
+/// printing each level's PTE. Intended for diagnosing EL0 translation faults.
+#[cfg(debug_assertions)]
+pub fn dump_pte_walk(va: usize) {
+    unsafe {
+        let ttbr0: u64;
+        core::arch::asm!("mrs {0}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
+        let l0_pa = (ttbr0 & 0x0000_FFFF_FFFF_F000) as usize;
+
+        let l0e = *(pa_to_kernel_va(l0_pa) as *const u64).add(va_l0_index(va));
+        if l0e & 1 == 0 || l0e & 2 == 0 {
+            crate::log_info!("PTE-WALK", "L0[{}]=0x{:016x} (INV) ttbr0={:#x}",
+                va_l0_index(va), l0e, ttbr0);
+            return;
+        }
+        let l1_pa = (l0e & 0x0000_FFFF_FFFF_F000) as usize;
+        let l1e = *(pa_to_kernel_va(l1_pa) as *const u64).add(va_l1_index(va));
+        if l1e & 1 == 0 || l1e & 2 == 0 {
+            crate::log_info!("PTE-WALK", "L1[{}]=0x{:016x} (INV)", va_l1_index(va), l1e);
+            return;
+        }
+        let l2_pa = (l1e & 0x0000_FFFF_FFFF_F000) as usize;
+        let l2e = *(pa_to_kernel_va(l2_pa) as *const u64).add(va_l2_index(va));
+        if l2e & 1 == 0 {
+            crate::log_info!("PTE-WALK", "L2[{}]=0x{:016x} (INV)", va_l2_index(va), l2e);
+            return;
+        }
+        if l2e & 2 == 0 {
+            crate::log_info!("PTE-WALK", "L2[{}]=0x{:016x} (BLK)", va_l2_index(va), l2e);
+            return;
+        }
+        let l3_pa = (l2e & 0x0000_FFFF_FFFF_F000) as usize;
+        let l3e = *(pa_to_kernel_va(l3_pa) as *const u64).add(va_l3_index(va));
+        let l3_tag = if l3e & 1 == 0 { "INV" } else { "PAGE" };
+        crate::log_info!("PTE-WALK",
+            "TTBR0={:#018x} L0[{}]=0x{:016x} L1[{}]=0x{:016x} L2[{}]=0x{:016x} L3[{}]=0x{:016x} ({})",
+            ttbr0,
+            va_l0_index(va), l0e,
+            va_l1_index(va), l1e,
+            va_l2_index(va), l2e,
+            va_l3_index(va), l3e, l3_tag);
     }
 }
 
@@ -889,51 +939,4 @@ pub fn translate_user_va(l0_pa: usize, va: usize) -> Option<usize> {
     }
 }
 
-pub fn dump_va_page_table_pub(tag: &str, l0_pa: usize, va: usize) {
-    unsafe {
-        let l0_idx = va_l0_index(va);
-        let l0e = read_pte(l0_pa, l0_idx);
-        crate::log_info!("PTE_DUMP", "[{}] VA={:#x} l0_pa={:#x} l0_idx={} -> l0_entry={:#x}", tag, va, l0_pa, l0_idx, l0e);
-        if l0e & 1 == 0 {
-            crate::log_info!("PTE_DUMP", "  -> L0 invalid");
-            return;
-        }
 
-        let l1_pa = (l0e & 0x0000_FFFF_FFFF_F000) as usize;
-        let l1_idx = va_l1_index(va);
-        let l1e = read_pte(l1_pa, l1_idx);
-        crate::log_info!("PTE_DUMP", "  L1: l1_pa={:#x} l1_idx={} -> l1_entry={:#x}", l1_pa, l1_idx, l1e);
-        if l1e & 1 == 0 {
-            crate::log_info!("PTE_DUMP", "  -> L1 invalid");
-            return;
-        }
-        if l1e & 0b10 == 0 {
-            crate::log_info!("PTE_DUMP", "  -> L1 1G Block mapping");
-            return;
-        }
-
-        let l2_pa = (l1e & 0x0000_FFFF_FFFF_F000) as usize;
-        let l2_idx = va_l2_index(va);
-        let l2e = read_pte(l2_pa, l2_idx);
-        crate::log_info!("PTE_DUMP", "  L2: l2_pa={:#x} l2_idx={} -> l2_entry={:#x}", l2_pa, l2_idx, l2e);
-        if l2e & 1 == 0 {
-            crate::log_info!("PTE_DUMP", "  -> L2 invalid");
-            return;
-        }
-        if l2e & 0b10 == 0 {
-            crate::log_info!("PTE_DUMP", "  -> L2 2M Block mapping");
-            return;
-        }
-
-        let l3_pa = (l2e & 0x0000_FFFF_FFFF_F000) as usize;
-        let l3_idx = va_l3_index(va);
-        let l3e = read_pte(l3_pa, l3_idx);
-        crate::log_info!("PTE_DUMP", "  L3: l3_pa={:#x} l3_idx={} -> l3_entry={:#x}", l3_pa, l3_idx, l3e);
-        if l3e & 1 == 0 {
-            crate::log_info!("PTE_DUMP", "  -> L3 invalid");
-            return;
-        }
-        let page_pa = (l3e & 0x0000_FFFF_FFFF_F000) as usize;
-        crate::log_info!("PTE_DUMP", "  -> Success Page_PA={:#x}", page_pa);
-    }
-}

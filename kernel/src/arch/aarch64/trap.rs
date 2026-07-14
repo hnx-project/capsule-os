@@ -160,6 +160,24 @@ pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
             if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
                 unsafe { (*t).context.elr = (*frame).elr; }
             }
+
+            // Reload TTBR0_EL1 before the eret that returns to EL0.
+            // Some syscall paths (spawn, exit) can trigger a context
+            // switch that re-uses the same thread index; the scheduler
+            // sets TTBR0 on the switch path, but a compiler reordering
+            // of the cache-maintenance asm blocks can defeat it.
+            // This reload ensures the translation regime is correct
+            // regardless of what happened in the syscall.
+            {
+                let saved_x19_2: u64;
+                core::arch::asm!("mov {0}, x19", out(reg) saved_x19_2, options(nomem, preserves_flags));
+                let _x19_guard2 = X19Guard { saved: saved_x19_2 };
+                if let Some(t_svc) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
+                    if let Some((l0_pa_svc, asid_svc)) = crate::task::process::find_process_l0_user_pa(unsafe { (*t_svc).process_id }) {
+                        crate::arch::aarch64::mmu::set_ttbr0_el1(l0_pa_svc, asid_svc);
+                    }
+                }
+            }
         }
     } else {
         // Non-SVC EL0 exception (data abort, instruction abort, etc.)

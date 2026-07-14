@@ -187,8 +187,25 @@ pub fn handle_tick_from_irq(frame: *mut crate::arch::aarch64::trap::TrapFrame) {
             }
         }
 
-        // Trigger the preemptive scheduler
-        crate::task::scheduler::SCHEDULER.schedule();
+    // Trigger the preemptive scheduler
+    crate::task::scheduler::SCHEDULER.schedule();
+
+        // TTBR0 hardening: after schedule() returns (possibly on a
+        // different thread's stack), reload TTBR0_EL1 from the now-
+        // current process's L0 so the IRQ eret finds the correct
+        // page table.  The scheduler's own set_ttbr0_el1() should
+        // have already done this, but a compiler reordering of the
+        // nomem dcache-flush asm blocks relative to the msr
+        // ttbr0_el1 inside that function can nullify the switch.
+        // This reload is the safety net.
+        if from_el0 {
+            if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
+                let pid = unsafe { (*t).process_id };
+                if let Some((l0_pa, asid)) = crate::task::process::find_process_l0_user_pa(pid) {
+                    crate::arch::aarch64::mmu::set_ttbr0_el1(l0_pa, asid);
+                }
+            }
+        }
 
         // Tick log disabled: it drowned out user-space I/O during
         // osh REPL sessions and made argv / cwd debugging painful.

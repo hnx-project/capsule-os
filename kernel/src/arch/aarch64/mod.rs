@@ -2,6 +2,7 @@ use core::arch::global_asm;
 
 global_asm!(include_str!("boot_asm.S"));
 
+pub mod asid;
 pub mod mmu;
 pub mod trap;
 
