@@ -16,6 +16,62 @@ pub fn sys_vmo_create_child(
     offset: usize,
     size: usize,
 ) -> Result<HandleValue> {
+    for &b in b"[KERN] sys_vmo_create_child: parent=" {
+        crate::arch::console_putchar(b);
+    }
+    let mut tmp = parent_vmo_handle_raw as usize;
+    if tmp == 0 {
+        crate::arch::console_putchar(b'0');
+    } else {
+        let mut buf = [0u8; 16];
+        let mut i = 0;
+        while tmp > 0 {
+            buf[i] = b'0' + (tmp % 10) as u8;
+            tmp /= 10;
+            i += 1;
+        }
+        for idx in (0..i).rev() {
+            crate::arch::console_putchar(buf[idx]);
+        }
+    }
+    for &b in b" off=" {
+        crate::arch::console_putchar(b);
+    }
+    let mut tmp_off = offset;
+    if tmp_off == 0 {
+        crate::arch::console_putchar(b'0');
+    } else {
+        let mut buf = [0u8; 16];
+        let mut i = 0;
+        while tmp_off > 0 {
+            buf[i] = b'0' + (tmp_off % 10) as u8;
+            tmp_off /= 10;
+            i += 1;
+        }
+        for idx in (0..i).rev() {
+            crate::arch::console_putchar(buf[idx]);
+        }
+    }
+    for &b in b" size=" {
+        crate::arch::console_putchar(b);
+    }
+    let mut tmp_sz = size;
+    if tmp_sz == 0 {
+        crate::arch::console_putchar(b'0');
+    } else {
+        let mut buf = [0u8; 16];
+        let mut i = 0;
+        while tmp_sz > 0 {
+            buf[i] = b'0' + (tmp_sz % 10) as u8;
+            tmp_sz /= 10;
+            i += 1;
+        }
+        for idx in (0..i).rev() {
+            crate::arch::console_putchar(buf[idx]);
+        }
+    }
+    crate::arch::console_putchar(b'\n');
+
     let parent_hv = HandleValue::new(parent_vmo_handle_raw);
     let child_vmo = table.with_vmo(parent_hv, Rights::READ.bits(), |parent| {
         // We generate a fresh randomized/counter-aligned VMO ID inside
@@ -23,7 +79,45 @@ pub fn sys_vmo_create_child(
         parent.create_child_slice(new_id, offset, size)
     })??;
     let rights = Rights::READ.bits() | Rights::WRITE.bits();
-    table.add(KernelObject::Vmo(child_vmo), rights)
+    let res = table.add(KernelObject::Vmo(child_vmo), rights);
+    
+    for &b in b"[KERN] sys_vmo_create_child: table.add ret=" {
+        crate::arch::console_putchar(b);
+    }
+    match &res {
+        Ok(hv) => {
+            let mut val = hv.get() as usize;
+            let mut buf = [0u8; 16];
+            let mut i = 0;
+            while val > 0 {
+                buf[i] = b'0' + (val % 10) as u8;
+                val /= 10;
+                i += 1;
+            }
+            for idx in (0..i).rev() {
+                crate::arch::console_putchar(buf[idx]);
+            }
+        }
+        Err(e) => {
+            for &b in b"Err(" {
+                crate::arch::console_putchar(b);
+            }
+            let mut val = e.to_raw();
+            let mut buf = [0u8; 16];
+            let mut i = 0;
+            while val > 0 {
+                buf[i] = b'0' + (val % 10) as u8;
+                val /= 10;
+                i += 1;
+            }
+            for idx in (0..i).rev() {
+                crate::arch::console_putchar(buf[idx]);
+            }
+            crate::arch::console_putchar(b')');
+        }
+    }
+    crate::arch::console_putchar(b'\n');
+    res
 }
 
 pub fn sys_vmo_read(

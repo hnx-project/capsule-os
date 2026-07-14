@@ -13,10 +13,7 @@ pub fn launch_loader() -> Result<()> {
     // To support absolute zero-copy loading on compliant microkernel guidelines, 
     // we allocate a dedicated physical VMO wrapping the entire rootfs memory blob.
     // We then register and transfer its handle right into the newly-spawned 'loader''s process handle table.
-    let rootfs_image = crate::rootfs::ROOTFS_IMAGE;
-    let mut rootfs_vmo = Vmo::create_with_size(rootfs_image.len())?;
-    rootfs_vmo.commit_all()?;
-    rootfs_vmo.write(0, rootfs_image)?;
+    let rootfs_vmo = unsafe { Vmo::create_physical(crate::BOOTFS_PHYS_ADDR, crate::BOOTFS_PHYS_SIZE)? };
 
     // Locate the loader process we just initialized (which gets PID 1)
     if let Some(proc) = crate::task::process::find_process_mut(1) {

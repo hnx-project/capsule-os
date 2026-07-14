@@ -106,6 +106,7 @@ fn launch_qemu(plat: &Platform, gdb: bool) {
             "-device", &format!("loader,file=build/target/{}/release/capsule-bootloader.bin,addr={},cpu-num=0,force-raw=on", plat.rust_target, plat.boot_addr),
             "-device", &format!("loader,file=build/dist/kernel/hnxcore,addr={},force-raw=on", plat.ohc_addr),
             "-device", &format!("loader,file=build/dist/qemu.dtb,addr={},force-raw=on", plat.dtb_addr),
+            "-device", "loader,file=kernel/files/rootfs.img,addr=0x46000000,force-raw=on",
         ]);
     } else {
         qemu.args([
@@ -131,6 +132,8 @@ fn launch_qemu(plat: &Platform, gdb: bool) {
                 "loader,file=build/dist/qemu.dtb,addr={},force-raw=on",
                 plat.dtb_addr
             ),
+            "-device",
+            "loader,file=kernel/files/rootfs.img,addr=0x86000000,force-raw=on",
         ]);
     }
     for arg in &plat.qemu_extra {

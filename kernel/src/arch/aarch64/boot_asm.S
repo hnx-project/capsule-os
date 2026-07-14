@@ -23,8 +23,10 @@ _start:
     eret
 0:
     // _start_el1: we are now at EL1
-    // 1. Save DTB pointer (passed in x0) in x19 (callee-saved).
+    // 1. Save DTB pointer (passed in x0), BootFS PA (x1), BootFS Size (x2) in callee-saved registers.
     mov     x19, x0
+    mov     x20, x1
+    mov     x21, x2
 
     // 2. Use SP_EL1 for the kernel's stack.  The kernel always runs
     //    with SP_ELx (so the trap stubs' IRQ-EL1-SP_ELx slot fires).
@@ -56,8 +58,10 @@ bss_zero_loop:
     b bss_zero_loop
 bss_zero_done:
 
-    // 7. Hand off to Rust with DTB pointer in x0.
+    // 7. Hand off to Rust with DTB pointer in x0, BootFS PA in x1, BootFS Size in x2.
     mov x0, x19
+    mov x1, x20
+    mov x2, x21
     bl kernel_main
 
 halt:

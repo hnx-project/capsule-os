@@ -6,9 +6,9 @@ use crate::mm::vmar::Vmar;
 use crate::ipc::channel::Channel;
 use crate::ipc::port::Port;
 
-static HANDLE_VALUE_COUNTER: AtomicU32 = AtomicU32::new(1);
+static HANDLE_VALUE_COUNTER: AtomicU32 = AtomicU32::new(1000);
 
-pub const MAX_HANDLES: usize = 8;
+pub const MAX_HANDLES: usize = 12;
 const PAGE_SIZE: usize = 4096;
 
 #[derive(Debug)]

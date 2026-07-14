@@ -122,6 +122,64 @@ impl Vmo {
         self.size
     }
 
+    /// Create a VMO wrapping an already-allocated physical range (zero-copy bootfs helper).
+    pub fn create_physical(phys_addr: usize, size: usize) -> Result<Self> {
+        if size == 0 {
+            return Err(Status::InvalidArgs);
+        }
+        let pages = round_up_to_pages(size);
+        if pages > VMO_MAX_PAGES {
+            return Err(Status::InvalidArgs);
+        }
+
+        let hs = header_size();
+        let mpn = meta_pages_needed(pages);
+
+        // Allocate the first metadata page and write the header.
+        let meta_pa = phys::alloc_page()?;
+        unsafe {
+            let base = pa_to_kernel_va(meta_pa.as_usize()) as *mut u8;
+            for i in 0..PAGE_SIZE {
+                core::ptr::write_volatile(base.add(i), 0);
+            }
+            let header = base as *mut VmoHeader;
+            (*header).magic = VMO_MAGIC;
+            (*header).version = VMO_VERSION;
+            (*header).capacity_pages = pages as u64;
+            (*header).committed = pages as u64; // already committed to the provided physical space
+            (*header).size_bytes = (pages * PAGE_SIZE) as u64;
+            (*header).meta_page_count = mpn as u64;
+
+            // Allocate remaining metadata pages and record their PAs
+            for i in 1..mpn {
+                let extra_pa = phys::alloc_page()?;
+                let table_off = PA_TABLE_BASE + (i - 1) * 8;
+                core::ptr::write_volatile(
+                    base.add(table_off) as *mut u64,
+                    extra_pa.as_usize() as u64,
+                );
+                let eb = pa_to_kernel_va(extra_pa.as_usize()) as *mut u8;
+                for j in 0..PAGE_SIZE {
+                    core::ptr::write_volatile(eb.add(j), 0);
+                }
+            }
+
+            // Fill all slots directly with the linearly-mapped target physical addresses!
+            for i in 0..pages {
+                let cur_pa = PhysAddr::new(phys_addr + i * PAGE_SIZE);
+                *slot_ptr(meta_pa.as_usize(), mpn, i) = Some(cur_pa);
+            }
+        }
+
+        Ok(Vmo {
+            id: VMO_ID_COUNTER.fetch_add(1, Ordering::Relaxed) as u64,
+            meta_pa,
+            size: pages * PAGE_SIZE,
+            is_cow: false,
+            parent_id: None,
+        })
+    }
+
     /// Create a VMO with `size` bytes capacity.  No physical pages are
     /// committed yet; callers must call `commit_page(offset)` (or
     /// `commit_all()`) before reading/writing.

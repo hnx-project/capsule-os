@@ -83,11 +83,15 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 }
 
 pub static mut DTB_POINTER: *const u8 = core::ptr::null();
+pub static mut BOOTFS_PHYS_ADDR: usize = 0;
+pub static mut BOOTFS_PHYS_SIZE: usize = 0;
 
 #[no_mangle]
-pub extern "C" fn kernel_main(dtb_ptr: *const u8) {
+pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size: usize) {
     unsafe {
         DTB_POINTER = dtb_ptr;
+        BOOTFS_PHYS_ADDR = bootfs_pa;
+        BOOTFS_PHYS_SIZE = bootfs_size;
     }
 
     match fdt::parse(dtb_ptr) {

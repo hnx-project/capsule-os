@@ -103,9 +103,53 @@ extern "C" fn rust_main(dtb_ptr: *const u8) -> ! {
     }
 
     log_info!("BOOT", "Jumping to HNX Kernel...");
+
+    let bootfs_pa = platform::BOOTFS_BASE;
+    let mut bootfs_size = 0usize;
+
     unsafe {
-        let kernel_entry: extern "C" fn(dtb: *const u8) -> ! = core::mem::transmute(payload_dst);
-        kernel_entry(dtb_to_use);
+        let base = bootfs_pa as *const u8;
+        if core::slice::from_raw_parts(base, 8) == b"HNXF_VFS" {
+            let count_bytes = core::slice::from_raw_parts(base.add(8), 8);
+            let mut count_arr = [0u8; 8];
+            count_arr.copy_from_slice(count_bytes);
+            let count = u64::from_le_bytes(count_arr) as usize;
+
+            let mut max_end = 16;
+            for i in 0..count {
+                let entry_offset = 16 + i * 144;
+                let path_end = entry_offset + 128;
+
+                let mut off_bytes = [0u8; 8];
+                let src_off = core::slice::from_raw_parts(base.add(path_end), 8);
+                off_bytes.copy_from_slice(src_off);
+                let file_offset = u64::from_le_bytes(off_bytes) as usize;
+
+                let mut sz_bytes = [0u8; 8];
+                let src_sz = core::slice::from_raw_parts(base.add(path_end + 8), 8);
+                sz_bytes.copy_from_slice(src_sz);
+                let file_size = u64::from_le_bytes(sz_bytes) as usize;
+
+                let end = file_offset + file_size;
+                if end > max_end {
+                    max_end = end;
+                }
+            }
+            bootfs_size = max_end;
+        }
+    }
+
+    log_info!(
+        "BOOT",
+        "=> BootFS : PA=0x{:x}, Size={} bytes",
+        bootfs_pa,
+        bootfs_size
+    );
+
+    unsafe {
+        let kernel_entry: extern "C" fn(dtb: *const u8, bootfs_pa: usize, bootfs_size: usize) -> ! =
+            core::mem::transmute(payload_dst);
+        kernel_entry(dtb_to_use, bootfs_pa, bootfs_size);
     }
 }
 

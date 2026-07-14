@@ -4,17 +4,18 @@ pub use shared::syscall_nums::*;
 #[macro_export]
 macro_rules! syscall {
     ($num:expr, $a0:expr, $a1:expr, $a2:expr, $a3:expr, $a4:expr, $a5:expr) => {{
-        let mut r0 = $a0 as usize;
+        let r0_in = $a0 as usize;
         let r1 = $a1 as usize;
         let r2 = $a2 as usize;
         let r3 = $a3 as usize;
         let r4 = $a4 as usize;
         let r5 = $a5 as usize;
+        let mut ret_val: usize = 0;
         #[cfg(target_arch = "aarch64")]
         unsafe {
             core::arch::asm!(
                 "svc #0",
-                inout("x0") r0,
+                inout("x0") r0_in => ret_val,
                 in("x1") r1,
                 in("x2") r2,
                 in("x3") r3,
@@ -27,7 +28,7 @@ macro_rules! syscall {
         unsafe {
             core::arch::asm!(
                 "ecall",
-                inout("a0") r0,
+                inout("a0") r0_in => ret_val,
                 in("a1") r1,
                 in("a2") r2,
                 in("a3") r3,
@@ -36,7 +37,7 @@ macro_rules! syscall {
                 in("a7") $num,
             );
         }
-        r0
+        ret_val
     }};
 }
 
