@@ -535,15 +535,116 @@ irq_el1_spx:
 // ── Diagnostic for traps we don't expect yet ──────────────────────
 // Marked .global so the linker keeps it; called from the placeholder
 // stubs above.
+.macro PRINT_HEX reg
+    mov x10, \reg
+    mov x11, #16
+1:
+    ror x10, x10, #60
+    and x12, x10, #0xf
+    cmp x12, #10
+    blt 2f
+    add x12, x12, #('a' - 10)
+    b 3f
+2:
+    add x12, x12, #'0'
+3:
+    movz x13, #0x0000
+    movk x13, #0x0900, lsl #16
+    strb w12, [x13]
+    sub x11, x11, #1
+    cbnz x11, 1b
+.endm
+
 .global diag_trap_class
 diag_trap_class:
-    // a0 holds the tag (low byte is the ascii class letter).
-    // Print "<tag>!" to UART 0x0900_0000 and return.
+    // Print "[EL1 TRAP] "
     movz x1, #0x0000
     movk x1, #0x0900, lsl #16
-    uxtb w0, w0
+    mov w0, #'['
     strb w0, [x1]
-    mov w0, #'!'
+    mov w0, #'E'
+    strb w0, [x1]
+    mov w0, #'L'
+    strb w0, [x1]
+    mov w0, #'1'
+    strb w0, [x1]
+    mov w0, #' '
+    strb w0, [x1]
+    mov w0, #'T'
+    strb w0, [x1]
+    mov w0, #'R'
+    strb w0, [x1]
+    mov w0, #'A'
+    strb w0, [x1]
+    mov w0, #'P'
+    strb w0, [x1]
+    mov w0, #']'
+    strb w0, [x1]
+    mov w0, #' '
+    strb w0, [x1]
+
+    // Print "SP=" and SP
+    mov w0, #'S'
+    strb w0, [x1]
+    mov w0, #'P'
+    strb w0, [x1]
+    mov w0, #'='
+    strb w0, [x1]
+    mov x2, sp
+    PRINT_HEX x2
+
+    // Print " FAR=" and FAR_EL1
+    movz x1, #0x0000
+    movk x1, #0x0900, lsl #16
+    mov w0, #' '
+    strb w0, [x1]
+    mov w0, #'F'
+    strb w0, [x1]
+    mov w0, #'A'
+    strb w0, [x1]
+    mov w0, #'R'
+    strb w0, [x1]
+    mov w0, #'='
+    strb w0, [x1]
+    mrs x3, far_el1
+    PRINT_HEX x3
+
+    // Print " ELR=" and ELR_EL1
+    movz x1, #0x0000
+    movk x1, #0x0900, lsl #16
+    mov w0, #' '
+    strb w0, [x1]
+    mov w0, #'E'
+    strb w0, [x1]
+    mov w0, #'L'
+    strb w0, [x1]
+    mov w0, #'R'
+    strb w0, [x1]
+    mov w0, #'='
+    strb w0, [x1]
+    mrs x4, elr_el1
+    PRINT_HEX x4
+
+    // Print " ESR=" and ESR_EL1
+    movz x1, #0x0000
+    movk x1, #0x0900, lsl #16
+    mov w0, #' '
+    strb w0, [x1]
+    mov w0, #'E'
+    strb w0, [x1]
+    mov w0, #'S'
+    strb w0, [x1]
+    mov w0, #'R'
+    strb w0, [x1]
+    mov w0, #'='
+    strb w0, [x1]
+    mrs x5, esr_el1
+    PRINT_HEX x5
+
+    // Print \n
+    movz x1, #0x0000
+    movk x1, #0x0900, lsl #16
+    mov w0, #'\n'
     strb w0, [x1]
     ret
 

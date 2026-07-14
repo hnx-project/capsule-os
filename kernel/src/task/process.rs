@@ -91,7 +91,27 @@ pub enum ProcessState {
 }
 
 impl Process {
-    pub fn new(name: &'static str) -> Result<Self> {
+    pub const fn new_dummy() -> Self {
+        Process {
+            id: 0,
+            name: "",
+            state: ProcessState::Initial,
+            root_vmar: Vmar::new_dummy(),
+            handle_table: HandleTable::new_dummy(),
+            thread_count: 0,
+            l0_user_pa: 0,
+            cwd: [0u8; CWD_MAX],
+            cwd_len: 0,
+            exit_status: None,
+            parent_pid: 0,
+            sig_handlers: [0u8; 32],
+            pending_signals: 0u32,
+            fd_table: [const { None }; FD_TABLE_SIZE],
+            next_fd: USER_FD_BASE,
+        }
+    }
+
+    pub fn init_in_place(&mut self, name: &'static str) -> Result<()> {
         let slot = VMAR_BASE_SLOT.fetch_add(1, Ordering::Relaxed);
 
         #[cfg(target_arch = "aarch64")]
@@ -106,23 +126,24 @@ impl Process {
         let cwd_bytes = INITIAL_CWD.as_bytes();
         let cwd_len = core::cmp::min(cwd_bytes.len(), CWD_MAX);
         cwd[..cwd_len].copy_from_slice(&cwd_bytes[..cwd_len]);
-        Ok(Process {
-            id: PROCESS_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
-            name,
-            state: ProcessState::Initial,
-            root_vmar,
-            handle_table,
-            thread_count: 0,
-            l0_user_pa: 0,
-            cwd,
-            cwd_len,
-            exit_status: None,
-            parent_pid: 0,
-            sig_handlers: [0u8; 32],
-            pending_signals: 0u32,
-            fd_table: [const { None }; FD_TABLE_SIZE],
-            next_fd: USER_FD_BASE,
-        })
+
+        self.id = PROCESS_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+        self.name = name;
+        self.state = ProcessState::Initial;
+        self.root_vmar = root_vmar;
+        self.handle_table = handle_table;
+        self.thread_count = 0;
+        self.l0_user_pa = 0;
+        self.cwd = cwd;
+        self.cwd_len = cwd_len;
+        self.exit_status = None;
+        self.parent_pid = 0;
+        self.sig_handlers = [0u8; 32];
+        self.pending_signals = 0u32;
+        self.fd_table = [const { None }; FD_TABLE_SIZE];
+        self.next_fd = USER_FD_BASE;
+
+        Ok(())
     }
 
     pub fn add_thread(&mut self) {
@@ -217,6 +238,14 @@ impl Process {
                     if entry != 0 {
                         core::ptr::write_volatile(new_l0_kva.add(idx), entry);
                     }
+                }
+                // Crucial Bugfix: Also copy the index 0 entry which identity-maps the low-half
+                // kernel code/data segments. Since our kernel is linked at the physical address (0x40080000),
+                // accessing any global static variables or virtual functions (e.g. ConsoleWriter/Logger)
+                // relies on accessing physical address pages under TTBR0_EL1.
+                let entry_0 = core::ptr::read_volatile(active_l0_kva.add(0));
+                if entry_0 != 0 {
+                    core::ptr::write_volatile(new_l0_kva.add(0), entry_0);
                 }
                 // Flush the cache lines of the modified L0 page directory to main memory
                 core::arch::asm!("dc cvac, {0}", in(reg) new_l0_kva as usize, options(nomem, nostack));
@@ -410,7 +439,15 @@ impl Process {
         {
             thread.context.spsr = 0x000;
         }
-        thread.handle_table = &proc.handle_table;
+        // Ensure the thread's handle_table pointer points to high-half KVA
+        // instead of raw physical/identity address, so it survives TTBR0 page-table switches!
+        let ht_raw = &proc.handle_table as *const HandleTable as usize;
+        let ht_kva = if ht_raw < crate::mm::mmu::KERNEL_OFFSET {
+            crate::mm::mmu::pa_to_kernel_va(ht_raw)
+        } else {
+            ht_raw
+        };
+        thread.handle_table = ht_kva as *const HandleTable;
         thread.state = ThreadState::Ready;
 
         // Always normalise x0/x1 to argc/argv_ptr semantics at
@@ -735,8 +772,32 @@ impl Process {
             }
         }
 
-        crate::log_info!("LAUNCHER", "Successfully launched program '{}' at EL0 (entry={:#x}, pid={}, argc={})",
-            name, user_entry, pid, argc);
+        for &b in b"[KERN] launch_user_program_with_argv: OK, name=" {
+            crate::arch::console_putchar(b);
+        }
+        for &b in name.as_bytes() {
+            crate::arch::console_putchar(b);
+        }
+        for &b in b" entry=0x" {
+            crate::arch::console_putchar(b);
+        }
+        let mut val = user_entry;
+        if val == 0 {
+            crate::arch::console_putchar(b'0');
+        } else {
+            let mut buf = [0u8; 16];
+            let mut i = 0;
+            while val > 0 {
+                let digit = (val & 0xf) as u8;
+                buf[i] = if digit < 10 { b'0' + digit } else { b'a' + (digit - 10) };
+                val >>= 4;
+                i += 1;
+            }
+            for idx in (0..i).rev() {
+                crate::arch::console_putchar(buf[idx]);
+            }
+        }
+        crate::arch::console_putchar(b'\n');
 
         Ok(())
     }
@@ -762,9 +823,10 @@ pub fn allocate_process(name: &'static str) -> Result<&'static mut Process> {
     unsafe {
         for slot in PROCESSES.iter_mut() {
             if slot.is_none() {
-                let proc = Process::new(name)?;
-                *slot = Some(proc);
-                return Ok(slot.as_mut().unwrap());
+                *slot = Some(Process::new_dummy());
+                let proc_ref = slot.as_mut().unwrap();
+                proc_ref.init_in_place(name)?;
+                return Ok(proc_ref);
             }
         }
     }

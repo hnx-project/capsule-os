@@ -106,6 +106,14 @@ const STORAGE_FITS: () = assert!(STORAGE_BYTES <= 4096, "VmarStorage > 4 KiB");
 fn storage_offset() -> usize { 0 }
 
 impl Vmar {
+    pub const fn new_dummy() -> Self {
+        Vmar {
+            base: 0,
+            size: 0,
+            meta_pa: PhysAddr::new(0),
+        }
+    }
+
     /// Create a root VMAR covering the user address range
     /// `[0x1_0000_0000, 0x1_1000_0000)` (256 MiB).  Convenience
     /// wrapper for boot-time smoke tests; prefer `create` for

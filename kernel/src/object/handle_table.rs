@@ -8,7 +8,7 @@ use crate::ipc::port::Port;
 
 static HANDLE_VALUE_COUNTER: AtomicU32 = AtomicU32::new(1);
 
-pub const MAX_HANDLES: usize = 32;
+pub const MAX_HANDLES: usize = 8;
 const PAGE_SIZE: usize = 4096;
 
 #[derive(Debug)]
@@ -77,6 +77,12 @@ struct HandleSlots {
 impl HandleSlots {
     /// Allocate phys pages and initialise every slot to `None`.
     fn new() -> *mut Self {
+        if core::mem::size_of::<HandleSlots>() > PAGE_SIZE {
+            for &b in b"[ERROR] HandleSlots exceeds PAGE_SIZE!\n" {
+                crate::arch::console_putchar(b);
+            }
+            panic!("HandleSlots exceeds PAGE_SIZE!");
+        }
         let slot_size = core::mem::size_of::<Option<Slot>>();
         let total = MAX_HANDLES * slot_size;
         let pages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -103,6 +109,12 @@ impl HandleSlots {
 }
 
 impl HandleTable {
+    pub const fn new_dummy() -> Self {
+        HandleTable {
+            inner: core::ptr::null_mut(),
+        }
+    }
+
     fn slots_mut(&self) -> &mut HandleSlots {
         unsafe { &mut *self.inner }
     }

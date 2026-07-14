@@ -47,7 +47,7 @@ pub fn sys_vmo_read(
         return Err(Status::InvalidArgs);
     };
 
-    table.with_vmo(hv, Rights::READ.bits(), |vmo| {
+    let res = table.with_vmo(hv, Rights::READ.bits(), |vmo| {
         if vmo_offset >= vmo.size() {
             return Ok(0);
         }
@@ -66,8 +66,9 @@ pub fn sys_vmo_read(
             let in_page = cur_vmo_off % 4096;
             
             let vmo_pa = if unsafe { (*vmo.page_slot(page_idx)).is_none() } {
-                vmo.commit_page(cur_vmo_off & !(4096 - 1))?
-                    .ok_or(Status::NoMemory)?
+                let p = vmo.commit_page(cur_vmo_off & !(4096 - 1))?
+                    .ok_or(Status::NoMemory)?;
+                p
             } else {
                 unsafe { (*vmo.page_slot(page_idx)).unwrap() }
             };
@@ -96,7 +97,8 @@ pub fn sys_vmo_read(
             copied += chunk;
         }
         Ok(copied)
-    })?
+    })?;
+    res
 }
 
 pub fn sys_vmo_write(

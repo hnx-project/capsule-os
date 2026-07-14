@@ -531,7 +531,14 @@ pub fn sys_thread_create(
 
     let mut thread = Thread::new_user("user-thread", entry, stack_top)?;
     thread.process_id = pid;
-    thread.handle_table = &proc.handle_table;
+    // Ensure the thread's handle_table pointer points to high-half KVA
+    let ht_raw = &proc.handle_table as *const HandleTable as usize;
+    let ht_kva = if ht_raw < crate::mm::mmu::KERNEL_OFFSET {
+        crate::mm::mmu::pa_to_kernel_va(ht_raw)
+    } else {
+        ht_raw
+    };
+    thread.handle_table = ht_kva as *const HandleTable;
 
     let tid = thread.id;
     unsafe {
@@ -603,39 +610,53 @@ pub fn sys_load_binary(
     }
 
     // Stream the source VMO bytes into a pre-allocated kernel .bss scratch
-    // buffer (LOAD_BINARY_SCRATCH, defined at module scope).  Reading in
-    // 4 KiB chunks keeps the kernel stack at a small, fixed footprint
-    // regardless of how large the user-space binary is.
+    // buffer (LOAD_BINARY_SCRATCH, defined at module scope).  Reading directly
+    // into the global scratch buffer slice completely avoids allocating large
+    // 4 KiB buffers on the small, limited 16 KiB kernel stack, preventing stack corruption.
     let copied_into_scratch: usize = table.with_vmo(vmo_hv, Rights::READ.bits(), |src_vmo| -> usize {
-        let mut tmp = [0u8; 4096];
         let mut total = 0usize;
         let scratch_cap = LOAD_BINARY_SCRATCH_SIZE;
         while total < src_vmo.size() && total < scratch_cap {
-            let want = core::cmp::min(tmp.len(), core::cmp::min(src_vmo.size(), scratch_cap) - total);
-            if src_vmo.read(total, &mut tmp[..want]).unwrap_or(0) == 0 {
-                break;
-            }
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    tmp.as_ptr(),
+            let want = core::cmp::min(4096, core::cmp::min(src_vmo.size(), scratch_cap) - total);
+            let dst_slice = unsafe {
+                core::slice::from_raw_parts_mut(
                     LOAD_BINARY_SCRATCH.as_mut_ptr().add(total),
-                    want,
-                );
+                    want
+                )
+            };
+            if src_vmo.read(total, dst_slice).unwrap_or(0) == 0 {
+                break;
             }
             total += want;
         }
         total
     })?;
 
-    crate::log_info!(
-        "LOAD_BINARY",
-        "loading program ({} bytes) from vmo_handle={}",
-        copied_into_scratch,
-        vmo_handle_raw
-    );
-
     let bytes_slice: &[u8] = unsafe { &LOAD_BINARY_SCRATCH[..copied_into_scratch] };
     let name_static: &'static str = "user-prog";
+
+    // Use extremely lightweight direct console putchar to bypass formatting problems
+    for &b in b"[KERN] sys_load_binary: loading program size=0x" {
+        crate::arch::console_putchar(b);
+    }
+    let mut val = copied_into_scratch;
+    if val == 0 {
+        crate::arch::console_putchar(b'0');
+    } else {
+        let mut buf = [0u8; 16];
+        let mut i = 0;
+        while val > 0 {
+            let digit = (val & 0xf) as u8;
+            buf[i] = if digit < 10 { b'0' + digit } else { b'a' + (digit - 10) };
+            val >>= 4;
+            i += 1;
+        }
+        for idx in (0..i).rev() {
+            crate::arch::console_putchar(buf[idx]);
+        }
+    }
+    crate::arch::console_putchar(b'\n');
+
     crate::task::process::Process::launch_user_program(name_static, bytes_slice)?;
 
     // Recover the pid that was assigned inside launch_user_program so
