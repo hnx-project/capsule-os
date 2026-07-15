@@ -180,8 +180,23 @@ impl Process {
         }
     }
 
-    pub fn launch_user_program(name: &'static str, binary_bytes: &[u8]) -> Result<()> {
-        Self::launch_user_program_with_argv(name, binary_bytes, &[], &[], 0, 0)
+    pub fn launch_user_program(name: &'static str, binary_bytes: &[u8]) -> Result<u64> {
+        let mut proc_id = 0;
+        Self::launch_user_program_with_argv_id(name, binary_bytes, &[], &[], 0, 0, &mut proc_id)?;
+        Ok(proc_id)
+    }
+
+    pub fn launch_user_program_with_argv(
+        name: &'static str,
+        binary_bytes: &[u8],
+        arg_strs: &[[u8; 256]],
+        arg_lens: &[usize],
+        argc: usize,
+        parent_pid: u64,
+    ) -> Result<u64> {
+        let mut proc_id = 0;
+        Self::launch_user_program_with_argv_id(name, binary_bytes, arg_strs, arg_lens, argc, parent_pid, &mut proc_id)?;
+        Ok(proc_id)
     }
 
     /// Launch a fresh EL0 program with `argc`/`argv` materialised onto its
@@ -191,13 +206,14 @@ impl Process {
     /// to the top of the freshly mapped 16 KiB user stack, followed by the
     /// argv pointer array (so the stack top points at argv[0]).  The new
     /// thread is then started with x0=argc and x1=argv_ptr.
-    pub fn launch_user_program_with_argv(
+    pub fn launch_user_program_with_argv_id(
         name: &'static str,
         binary_bytes: &[u8],
         arg_strs: &[[u8; 256]],
         arg_lens: &[usize],
         argc: usize,
         parent_pid: u64,
+        out_pid: &mut u64,
     ) -> Result<()> {
         use crate::mm::vmo::Vmo;
         use crate::mm::vmar::VmarFlags;
@@ -212,6 +228,7 @@ impl Process {
 
         let proc = allocate_process(name)?;
         let pid = proc.id;
+        *out_pid = pid;
         proc.parent_pid = parent_pid;
 
         let l0_user_pa = crate::mm::phys::alloc_page()?.as_usize();

@@ -104,7 +104,7 @@ pub fn respawn_init_if_anchor(current_pid: u64) {
     };
 
     match Process::launch_user_program(INIT_BIN_NAME, bytes) {
-        Ok(()) => {
+        Ok(_) => {
             RESPAWN_CONSUMED.store(true, Ordering::Release);
             crate::log_info!(
                 "RESPAWN",

@@ -139,7 +139,7 @@ pub fn sys_exec(table: &HandleTable, program_name: &str) -> Result<()> {
     })?;
 
     let name_static: &'static str = intern_name(program_name)?;
-    crate::task::process::Process::launch_user_program(name_static, bytes)?;
+    let _pid = crate::task::process::Process::launch_user_program(name_static, bytes)?;
 
     // Mark the calling thread (init) as Dead so the scheduler never
     // erets back into it.  Until per-process page tables exist, init
@@ -301,7 +301,7 @@ pub fn sys_execve(
     })?;
 
     let name_static: &'static str = intern_name(program_name)?;
-    crate::task::process::Process::launch_user_program_with_argv(
+    let _pid = crate::task::process::Process::launch_user_program_with_argv(
         name_static,
         bytes,
         &arg_bufs[..argv_count],
@@ -467,7 +467,7 @@ pub fn sys_spawn(
     })?;
 
     let name_static: &'static str = intern_name(program_name)?;
-    crate::task::process::Process::launch_user_program_with_argv(
+    let pid = crate::task::process::Process::launch_user_program_with_argv(
         name_static,
         bytes,
         &arg_bufs[..argv_count],
@@ -478,13 +478,6 @@ pub fn sys_spawn(
 
     // Recover the pid that was just assigned inside launch_user_program
     // so the caller can hold it if it wants to (and so we can return it).
-    let pid = unsafe {
-        crate::task::process::PROCESSES
-            .iter()
-            .rev()
-            .find_map(|slot| slot.as_ref().map(|p| p.id))
-            .unwrap_or(0)
-    };
 
     crate::log_info!(
         "SPAWN",
@@ -629,20 +622,7 @@ pub fn sys_load_binary(
     let bytes_slice: &[u8] = unsafe { &LOAD_BINARY_SCRATCH[..copied_into_scratch] };
     let name_static: &'static str = "user-prog";
 
-    let r = crate::task::process::Process::launch_user_program(name_static, bytes_slice);
-    if r.is_err() {
-        return Err(r.unwrap_err());
-    }
-
-    // Recover the pid that was assigned inside launch_user_program so
-    // the caller can hold a Process handle if it wants.
-    let pid = unsafe {
-        crate::task::process::PROCESSES
-            .iter()
-            .rev()
-            .find_map(|slot| slot.as_ref().map(|p| p.id))
-            .unwrap_or(0)
-    };
+    let pid = crate::task::process::Process::launch_user_program(name_static, bytes_slice)?;
 
     // Hand the caller a Process handle so it can later close, wait, etc.
     let rights = Rights::READ.bits() | Rights::WRITE.bits();
