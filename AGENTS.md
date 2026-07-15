@@ -9,7 +9,7 @@ This document outlines the strict engineering conventions, layout definitions, a
 * **Privileged Level**: HNX Microkernel (EL1 on AArch64, S-Mode on RISC-V 64).
 * **Target Platforms**: `aarch64-unknown-none` & `riscv64imac-unknown-none-elf` (soft-float ABI).
 * **User-Space Triples**: `aarch64-unknown-capsule` & `riscv64-unknown-capsule`.
-* **Standard Runtime**: Self-built `#![no_std]` `hnxstd` standard library bridged through `hnxlibc`.
+* **Standard Runtime**: Self-built `#![no_std]` `libstd` standard library bridged through `libc`.
 
 ---
 
@@ -44,9 +44,10 @@ AI Agents must respect that **all projects are now strictly integrated using Git
 │   ├── shared/            # Common shared kernel/userspace status and types
 │   ├── hal/               # Hardware Abstraction Layer
 │   └── src/               # Process/Thread context, VMAR, VMO, IPC Channels, Scheduler
-├── hnxlibc/               # 📂 Top-level OS runtime contract: C-ABI syscall wrappers
-├── std/                   # 📂 OS std tree (targets + std lib replacement)
-│   ├── hnxstd/            # 📂 Pure-Rust #![no_std] std lib skeleton (core/alloc/std split)
+├── libraries/             # 📂 Top-level OS libraries (libc, libstd, libcapsule)
+│   ├── libc/              # 🧬 Standard C system-call bridging library
+│   ├── libstd/            # 🦀 Self-built Rust standard library (Vec, String, Println)
+│   ├── libcapsule/        # 📂 System specialized helper library
 │   └── targets/           # 📜 CapsuleOS custom cross-compilation JSON targets
 ├── userspace/             # 📂 User-Space Sandbox Ecosystem (services + programs)
 │   └── services/          # Sandboxed system services (init, devmgr, loader, fileagent)
@@ -54,16 +55,16 @@ AI Agents must respect that **all projects are now strictly integrated using Git
 │   └── ohlink-cc/         # 📂 (Subtree) ohlink-format, rustc_codegen_ohlink, ohlink-linker
 ```
 
-The **`hnxlibc/` and `std/hnxstd/`** crates are top-level OS
+The **`libc/` and `libstd/`** crates are top-level OS
 runtime contract crates — they are **not** EL0 sandbox services.
-`hnxlibc` is the production C-ABI shim and lives at top-level
+`libc` is the production C-ABI shim and lives at top-level
 because every EL0 program in `userspace/` depends on it.
-`hnxstd` lives under `std/` next to the sysroot descriptors
+`libstd` lives under `libraries/` next to the sysroot descriptors
 because the stdlib and the sysroot are two faces of the same
 OS ABI contract.  Both are inherited by downstream manifests
 via `dep.workspace = true` (see `[workspace.dependencies]` in
 the root `Cargo.toml`); the import paths are
-`extern crate hnxlibc;` / `use hnxlibc::syscalls;` and are
+`extern crate libc;` / `use libc::syscalls;` and are
 unaffected by the directory layout.
 
 ---
@@ -72,12 +73,8 @@ unaffected by the directory layout.
 
 To ensure a seamless, non-breaking developer experience and zero merge conflicts, all AI Agents must adhere to the following workflow loop:
 
-### 1. 🔒 Local Git Identity Lock
-Before staging or committing any code, you **MUST** ensure the local repository identity is locked to the official CapsuleOS administrator:
-```bash
-git config --local user.name "TinchyChin"
-git config --local user.email "tinchychin97@gmail.com"
-```
+### 1. 🔒 Local Git Identity Check
+Before staging or committing any code, ensure the repository user.name and user.email are correctly set to your development identity. Do not commit with anonymous or placeholder emails to avoid merge blockages.
 
 ### 2. 💻 Use the `xtask` Command Suite Only
 Never invoke raw compilation or raw git pushes. Always route instructions through the self-built **`xtask` Dual-Star** toolchain.
@@ -133,7 +130,7 @@ when a specific line unlocks a specific question.
   default.
 * **Structured, not narrative.**  `log_info!("MMU", "free pages: {}/{}", free, total)` is fine.
   `log_info!("MMU", "we just allocated a page, the address is 0x..., the previous allocation was 0x..., the system is doing fine")` is not.
-* **EL0 prints are worse.**  `hnxlibc::write` is byte-by-byte
+* **EL0 prints are worse.**  `libc::write` is byte-by-byte
   and blocks the writer.  Default to `kprintln!` in the kernel
   and to a single `println!` per observable state in userspace.
   Never wrap a `tp!` tracepoint around every statement of a
