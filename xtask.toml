@@ -38,10 +38,10 @@ args = [
     "-cpu", "cortex-a72",
     "-m", "512M",
     "-nographic",
-    "-device", "loader,file=build/target/{rust_target}/release/capsule-bootloader.bin,addr={boot_addr},cpu-num=0,force-raw=on",
-    "-device", "loader,file=build/dist/kernel/hnxcore,addr={ohc_addr},force-raw=on",
-    "-device", "loader,file=build/dist/qemu.dtb,addr={dtb_addr},force-raw=on",
-    "-device", "loader,file=kernel/files/rootfs.img,addr={rootfs_addr},force-raw=on",
+    "-device", "loader,file={bootloader_bin},addr={boot_addr},cpu-num=0,force-raw=on",
+    "-device", "loader,file={kernel_bin},addr={ohc_addr},force-raw=on",
+    "-device", "loader,file={qemu_dtb},addr={dtb_addr},force-raw=on",
+    "-device", "loader,file={rootfs_img},addr={rootfs_addr},force-raw=on",
     "-semihosting"
 ]
 dtb_dump_args = [
@@ -70,10 +70,10 @@ args = [
     "-cpu", "rv64",
     "-m", "512M",
     "-nographic",
-    "-kernel", "build/target/{rust_target}/release/capsule-bootloader",
-    "-device", "loader,file=build/dist/kernel/hnxcore,addr={ohc_addr},force-raw=on",
-    "-device", "loader,file=build/dist/qemu.dtb,addr={dtb_addr},force-raw=on",
-    "-device", "loader,file=kernel/files/rootfs.img,addr={rootfs_addr},force-raw=on",
+    "-kernel", "{bootloader_bin_raw}",
+    "-device", "loader,file={kernel_bin},addr={ohc_addr},force-raw=on",
+    "-device", "loader,file={qemu_dtb},addr={dtb_addr},force-raw=on",
+    "-device", "loader,file={rootfs_img},addr={rootfs_addr},force-raw=on",
     "-bios", "default",
     "-semihosting"
 ]
