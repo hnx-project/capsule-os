@@ -257,14 +257,6 @@ sync_el0:
     dsb ish
     isb
 
-    // DEBUG: override x0 with 42 AFTER full TrapFrame restore
-    movz    x10, #0x0000
-    movk    x10, #0x0900, lsl #16
-    mov     w11, #'Z'
-    strb    w11, [x10]
-    mov     w11, #'\n'
-    strb    w11, [x10]
-
     # 8. Restore registers x0..x18 and x30 (LR) from the TrapFrame.
     ldp     x0,  x1,  [x19, #0]
     ldp     x2,  x3,  [x19, #16]
@@ -277,30 +269,6 @@ sync_el0:
     ldp     x16, x17, [x19, #128]
     ldr     x18,      [x19, #144]
     ldr     x30,      [x19, #184]
-
-    // Override x0 with test value AFTER full register restore
-    mov     x0,  #42
-
-    // Print x0 decimal right before eret
-    movz    x10, #0x0000
-    movk    x10, #0x0900, lsl #16
-    mov     w11, #'x'
-    strb    w11, [x10]
-    mov     x11, x0
-    mov     w12, #100
-    udiv    x13, x11, x12
-    add     w14, w13, #'0'
-    strb    w14, [x10]
-    msub    x11, x13, x12, x11
-    mov     w12, #10
-    udiv    x13, x11, x12
-    add     w14, w13, #'0'
-    strb    w14, [x10]
-    msub    x11, x13, x12, x11
-    add     w14, w11, #'0'
-    strb    w14, [x10]
-    mov     w11, #'\n'
-    strb    w11, [x10]
 
     # 9. Deallocate stack space and return via eret
     add     sp, sp, #208

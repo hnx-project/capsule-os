@@ -1,12 +1,12 @@
 #![no_std]
 #![no_main]
 
-extern crate hnxlibc;
+extern crate libstd;
 
-use hnxlibc::syscalls::{self, PROC_MGMT_CREATE, PROC_MGMT_EXIT, PROC_MGMT_RELEASE_PT};
+use libcapsule::syscalls::{self, PROC_MGMT_CREATE, PROC_MGMT_EXIT, PROC_MGMT_RELEASE_PT};
 
 fn print(s: &str) {
-    unsafe { hnxlibc::write(1, s.as_ptr(), s.len()); }
+    let _ = libc::write(1, s.as_ptr(), s.len());
 }
 
 fn println(s: &str) {
@@ -105,18 +105,31 @@ pub fn main() -> i32 {
                             let l0_pa = u64::from_le_bytes(buf[9..17].try_into().unwrap_or([0; 8]));
                             let name_len = (n - 17).min(31);
                             let name = core::str::from_utf8(&buf[17..17 + name_len]).unwrap_or("");
-                            match syscalls::proc_mgmt(PROC_MGMT_CREATE, ppid as usize, 0, l0_pa as usize) {
+                            match syscalls::proc_mgmt(
+                                PROC_MGMT_CREATE,
+                                ppid as usize,
+                                0,
+                                l0_pa as usize,
+                            ) {
                                 Ok(pid) => {
                                     add_entry(pid as u64, ppid, l0_pa, name);
                                     if handles.len() > 0 && handles[0] != 0 {
                                         let resp = pid.to_le_bytes();
-                                        let _ = syscalls::channel_write(handles[0] as usize, &resp, &[]);
+                                        let _ = syscalls::channel_write(
+                                            handles[0] as usize,
+                                            &resp,
+                                            &[],
+                                        );
                                     }
                                 }
                                 Err(e) => {
                                     if handles.len() > 0 && handles[0] != 0 {
                                         let resp = (e.to_raw() as u64).to_le_bytes();
-                                        let _ = syscalls::channel_write(handles[0] as usize, &resp, &[]);
+                                        let _ = syscalls::channel_write(
+                                            handles[0] as usize,
+                                            &resp,
+                                            &[],
+                                        );
                                     }
                                 }
                             }

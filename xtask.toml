@@ -93,6 +93,7 @@ crates = [
     { crate_name = "hnx-devmgr", out_name = "devmgr", entry = "65536" },
     { crate_name = "hnx-fileagent", out_name = "fileagent", entry = "65536" },
     { crate_name = "hnx-loader", out_name = "loader", entry = "65536" },
+    { crate_name = "hnx-procmgr", out_name = "procmgr", entry = "65536" },
     { crate_name = "hnx-osh", out_name = "osh", entry = "65536" },
     { crate_name = "hnx-ls", out_name = "ls", entry = "65536" },
     { crate_name = "hnx-cat", out_name = "cat", entry = "65536" },

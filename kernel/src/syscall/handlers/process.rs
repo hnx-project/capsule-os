@@ -577,20 +577,6 @@ pub fn sys_load_binary(
 ) -> Result<u64> {
     use crate::object::handle_table::KernelObject;
 
-    for &b in b"[Z]\n" { crate::arch::console_putchar(b); }
-
-    for &b in b"[HNDL=" { crate::arch::console_putchar(b); }
-    let mut v = vmo_handle_raw as u64;
-    let mut hex = [0u8; 8];
-    for i in (0..8).rev() {
-        let d = (v & 0xf) as u8;
-        hex[i] = if d < 10 { b'0' + d } else { b'a' + (d - 10) };
-        v >>= 4;
-    }
-    for &b in &hex { crate::arch::console_putchar(b); }
-    crate::arch::console_putchar(b']');
-    crate::arch::console_putchar(b'\n');
-
     let vmo_hv = HandleValue::new(vmo_handle_raw);
 
     // Read the full OHLINK image out of the source VMO into a heap-backed
@@ -599,15 +585,9 @@ pub fn sys_load_binary(
     // Instead we allocate a kernel VMO of the same size as the source
     // image, copy bytes into it via Vmo::read, then hand launch_user_program
     // a slice borrowed from the kernel heap mapping.
-    let source_size: usize = match table.with_vmo(vmo_hv, Rights::READ.bits(), |vmo| -> usize {
+    let source_size: usize = table.with_vmo(vmo_hv, Rights::READ.bits(), |vmo| -> usize {
         vmo.size()
-    }) {
-        Ok(sz) => sz,
-        Err(e) => {
-            for &b in b"[ERR:with_vmo1]\n" { crate::arch::console_putchar(b); }
-            return Err(e);
-        }
-    };
+    })?;
 
     // Bound the kernel scratch buffer by both the source VMO size and the
     // static scratch cap (128 KiB).  If the source is larger than the
@@ -649,38 +629,20 @@ pub fn sys_load_binary(
     let bytes_slice: &[u8] = unsafe { &LOAD_BINARY_SCRATCH[..copied_into_scratch] };
     let name_static: &'static str = "user-prog";
 
-    // Use extremely lightweight direct console putchar to bypass formatting problems
-    for &b in b"[KERN] sys_load_binary: loading program size=0x" {
-        crate::arch::console_putchar(b);
-    }
-    let mut val = copied_into_scratch;
-    if val == 0 {
-        crate::arch::console_putchar(b'0');
-    } else {
-        let mut buf = [0u8; 16];
-        let mut i = 0;
-        while val > 0 {
-            let digit = (val & 0xf) as u8;
-            buf[i] = if digit < 10 { b'0' + digit } else { b'a' + (digit - 10) };
-            val >>= 4;
-            i += 1;
-        }
-        for idx in (0..i).rev() {
-            crate::arch::console_putchar(buf[idx]);
-        }
-    }
-    crate::arch::console_putchar(b'\n');
-
     let r = crate::task::process::Process::launch_user_program(name_static, bytes_slice);
     if r.is_err() {
-        for &b in b"[LAUNCH FAILED]\n" { crate::arch::console_putchar(b); }
         return Err(r.unwrap_err());
     }
-    for &b in b"[LAUNCH OK]\n" { crate::arch::console_putchar(b); }
 
     // Recover the pid that was assigned inside launch_user_program so
     // the caller can hold a Process handle if it wants.
-    let pid: u64 = 0;
+    let pid = unsafe {
+        crate::task::process::PROCESSES
+            .iter()
+            .rev()
+            .find_map(|slot| slot.as_ref().map(|p| p.id))
+            .unwrap_or(0)
+    };
 
     // Hand the caller a Process handle so it can later close, wait, etc.
     let rights = Rights::READ.bits() | Rights::WRITE.bits();
@@ -1395,7 +1357,7 @@ pub fn sys_proc_mgmt(table: &HandleTable, cmd: u32, arg1: usize, arg2: usize, ar
             #[cfg(not(target_arch = "aarch64"))]
             {
                 let _ = (arg1, arg2, arg3);
-                Err(Status::NotSupported)
+                Err(Status::NotAllowed)
             }
         }
 

@@ -8,7 +8,9 @@ name = "procmgr"
 path = "src/main.rs"
 
 [dependencies]
-hnxlibc.workspace = true
+libstd = { workspace = true }
+libcapsule = { workspace = true }
+libc = { workspace = true }
 
 [features]
 capsule = []
