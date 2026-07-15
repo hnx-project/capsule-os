@@ -1,8 +1,8 @@
-use std::process::Command;
-
 use std::io;
 use std::path::Path;
+use std::process::Command;
 
+use crate::config::{Config, Subproject, UserCrate};
 use crate::output::run_silent;
 use crate::platform::Platform;
 use crate::toolchain::{find_objcopy, find_rust_lld};
@@ -11,104 +11,95 @@ const BOLD_GREEN: &str = "\x1b[1;32m";
 const BOLD_CYAN: &str = "\x1b[1;36m";
 const RESET: &str = "\x1b[0m";
 
-const USERCRATE_S: &[(&str, &str)] = &[
-    ("hnx-devmgr", "devmgr"),
-    ("hnx-fileagent", "fileagent"),
-    ("hnx-loader", "loader"),
-    ("hnx-osh", "osh"),
-    ("hnx-ls", "ls"),
-    ("hnx-cat", "cat"),
-    ("hnx-mkdir", "mkdir"),
-    ("hnx-touch", "touch"),
-    ("hnx-rm", "rm"),
-    ("hnx-rmdir", "rmdir"),
-    ("hnx-ps", "ps"),
-    ("hnx-kill", "kill"),
-    // ("hnx-testloader", "testloader"),
-];
-
-pub fn build(plat: &Platform) -> Result<(), String> {
+pub fn build(config: &Config, plat: &Platform) -> Result<(), String> {
     println!(
-        "{}    Building{} CapsuleOS Ecosystem ({})",
-        BOLD_CYAN, RESET, plat.arch
+        "{}    Building{} {} Ecosystem ({})",
+        BOLD_CYAN, RESET, config.project.name, plat.arch
     );
 
-    // Bootstrap self-built ohlink-toolchain tools on host first!
-    bootstrap_ohlink_tools()?;
+    // Bootstrap toolchain items
+    bootstrap_ohlink_tools(config)?;
 
-    for (crate_name, _out_name) in USERCRATE_S {
-        build_userspace_program(plat, crate_name)?;
+    // Iterate over configured subprojects and execute their actions
+    for sub in &config.subprojects {
+        match sub.subproject_type.as_str() {
+            "userspace" => {
+                if let Some(crates) = &sub.crates {
+                    for u_crate in crates {
+                        build_userspace_program(plat, u_crate)?;
+                    }
+                }
+                pack_user_programs(plat, sub)?;
+                if let (Some(src_etc), Some(dst_etc)) = (&sub.etc_source, &sub.etc_target) {
+                    stage_etc_files(src_etc, dst_etc).map_err(|e| e.to_string())?;
+                }
+            }
+            "kernel" => {
+                build_kernel(sub, plat)?;
+                link_kernel(sub, plat)?;
+                extract_kernel_raw(sub)?;
+                pack_kernel_ohc(config, sub, plat)?;
+            }
+            "bootloader" => {
+                build_bootloader(sub, plat)?;
+                extract_bootloader_bin(sub, plat)?;
+            }
+            _ => {
+                return Err(format!("Unknown subproject type: {}", sub.subproject_type));
+            }
+        }
     }
-    pack_user_programs(plat)?;
 
-    build_kernel(plat)?;
-    link_kernel(plat)?;
-    extract_kernel_raw()?;
-    pack_kernel_ohc(plat)?;
-    build_bootloader(plat)?;
-    extract_bootloader_bin(plat)?;
-    print_build_summary(plat);
-    generate_dist_image(plat)?;
-
-    // B8 (`KERNEL_HEALTH.md` B8): copy /etc/* files from
-    // `kernel/files/etc/` into the staging tree so the
-    // generated rootfs.img ships a real `/etc/hostname` and
-    // `/etc/os-release` for `cat /etc/hostname | grep .` and
-    // friends to print on the boot log.  The directory is
-    // optional; if absent the boot falls through cleanly.
-    stage_etc_files().map_err(|e| e.to_string())?;
+    print_build_summary(config, plat);
+    generate_dist_image(config, plat)?;
 
     println!(
-        "\n{}     Success{} CapsuleOS built successfully!\n",
-        BOLD_GREEN, RESET
+        "\n{}     Success{} {} built successfully!\n",
+        BOLD_GREEN, RESET, config.project.name
     );
     Ok(())
 }
 
-fn bootstrap_ohlink_tools() -> Result<(), String> {
-    print!(
-        "{}  Bootstrapping{} OHLINK Toolchain (Host)...",
-        BOLD_CYAN, RESET
-    );
-    let result = run_silent(
-        Command::new("cargo").args([
-            "build",
-            "--release",
-            "--manifest-path",
-            "tools/ohlink-toolchain/Cargo.toml",
-        ]),
-        || {
+fn bootstrap_ohlink_tools(config: &Config) -> Result<(), String> {
+    for tool in &config.toolchain.bootstrap {
+        print!(
+            "{}  Bootstrapping{} {} (Host)...",
+            BOLD_CYAN, RESET, tool.name
+        );
+        let mut args = vec!["build"];
+        if tool.release {
+            args.push("--release");
+        }
+        args.push("--manifest-path");
+        args.push(&tool.path);
+
+        let result = run_silent(Command::new("cargo").args(&args), || {
             println!(
-                "\r{}  Bootstrapping{} OHLINK Toolchain (Host)... Done",
-                BOLD_CYAN, RESET
+                "\r{}  Bootstrapping{} {} (Host)... Done",
+                BOLD_CYAN, RESET, tool.name
             );
-        },
-    );
-    if !result.success {
-        Err("failed to bootstrap OHLINK toolchain".to_string())
-    } else {
-        Ok(())
+        });
+        if !result.success {
+            return Err(format!("failed to bootstrap {}", tool.name));
+        }
     }
+    Ok(())
 }
 
-fn build_userspace_program(plat: &Platform, crate_name: &str) -> Result<(), String> {
-    print!("{}  Building{} {} (EL0)...", BOLD_GREEN, RESET, crate_name);
-    let userspace_target = format!("libraries/targets/{}-unknown-capsule.json", plat.arch);
-    // Always build the EL0 / "capsule" feature variant.  Some user
-    // programs (e.g. `osh`) default to a host stdlib build for local
-    // testing; `--no-default-features --features capsule` switches them
-    // over to the no_std / hnxlibc-only entry point used by the
-    // CapsuleOS user-space ecosystem.  Programs without a `capsule`
-    // feature simply ignore the flag.
+fn build_userspace_program(plat: &Platform, u_crate: &UserCrate) -> Result<(), String> {
+    print!(
+        "{}  Building{} {} (EL0)...",
+        BOLD_GREEN, RESET, u_crate.crate_name
+    );
     let result = run_silent(
         Command::new("cargo").args([
             "+nightly",
             "build",
             "--release",
             "-p",
-            crate_name,
+            &u_crate.crate_name,
             "--target",
-            &userspace_target,
+            &plat.userspace_target,
             "--no-default-features",
             "--features",
             "capsule",
@@ -120,30 +111,37 @@ fn build_userspace_program(plat: &Platform, crate_name: &str) -> Result<(), Stri
         || {
             println!(
                 "\r{}  Building{} {} (EL0)... Done",
-                BOLD_GREEN, RESET, crate_name
+                BOLD_GREEN, RESET, u_crate.crate_name
             );
         },
     );
     if !result.success {
-        Err(format!("failed to build {}", crate_name))
+        Err(format!("failed to build {}", u_crate.crate_name))
     } else {
         Ok(())
     }
 }
 
-fn pack_user_programs(plat: &Platform) -> Result<(), String> {
-    let staging_bin = "build/dist/staging_rootfs/system/bin";
+fn pack_user_programs(plat: &Platform, sub: &Subproject) -> Result<(), String> {
+    let staging_bin = sub
+        .staging_bin_dir
+        .as_ref()
+        .ok_or_else(|| "missing staging_bin_dir in userspace config".to_string())?;
     std::fs::create_dir_all(staging_bin).map_err(|e| e.to_string())?;
 
-    for (crate_name, out_name) in USERCRATE_S {
-        print!("{}  Packing{} {}...", BOLD_GREEN, RESET, out_name);
+    let crates = sub
+        .crates
+        .as_ref()
+        .ok_or_else(|| "missing crates in userspace config".to_string())?;
+
+    for u_crate in crates {
+        print!("{}  Packing{} {}...", BOLD_GREEN, RESET, u_crate.out_name);
         let elf = format!(
             "build/target/{}-unknown-capsule/release/{}",
             plat.arch,
-            crate_name.replace("hnx-", "")
+            u_crate.crate_name.replace("hnx-", "")
         );
-        let output = format!("{}/{}", staging_bin, out_name);
-        let entry = if *out_name == "init" { "4096" } else { "65536" };
+        let output = format!("{}/{}", staging_bin, u_crate.out_name);
         let result = run_silent(
             Command::new("cargo").args([
                 "run",
@@ -157,90 +155,108 @@ fn pack_user_programs(plat: &Platform) -> Result<(), String> {
                 "--output",
                 &output,
                 "--entry",
-                entry,
+                &u_crate.entry,
             ]),
             || {
-                println!("\r{}  Packing{} {}... Done", BOLD_GREEN, RESET, out_name);
+                println!(
+                    "\r{}  Packing{} {}... Done",
+                    BOLD_GREEN, RESET, u_crate.out_name
+                );
             },
         );
         if !result.success {
-            return Err(format!("failed to pack {}", out_name));
+            return Err(format!("failed to pack {}", u_crate.out_name));
         }
     }
 
-    // Pack the entire staging_rootfs to a unified rootfs.img inside kernel/files
-    print!("{}  Archiving{} rootfs.img...", BOLD_GREEN, RESET);
-    std::fs::create_dir_all("kernel/files").map_err(|e| e.to_string())?;
-    crate::pack::pack_rootfs("build/dist/staging_rootfs", "kernel/files/rootfs.img")
-        .map_err(|e| format!("Failed to archive rootfs: {}", e))?;
-    println!("\r{}  Archiving{} rootfs.img... Done", BOLD_GREEN, RESET);
+    if let Some(rootfs_out) = &sub.rootfs_output {
+        print!("{}  Archiving{} rootfs.img...", BOLD_GREEN, RESET);
+        if let Some(parent) = Path::new(rootfs_out).parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        crate::pack::pack_rootfs("build/dist/staging_rootfs", rootfs_out)
+            .map_err(|e| format!("Failed to archive rootfs: {}", e))?;
+        println!("\r{}  Archiving{} rootfs.img... Done", BOLD_GREEN, RESET);
+    }
 
     Ok(())
 }
 
-fn build_kernel(plat: &Platform) -> Result<(), String> {
-    // Force cargo clean on the kernel crate to prevent incremental cache retaining stale include_bytes! from previous runs.
+fn build_kernel(sub: &Subproject, plat: &Platform) -> Result<(), String> {
+    let path = sub
+        .path
+        .as_ref()
+        .ok_or_else(|| "missing path in kernel config".to_string())?;
+    let package = sub
+        .package
+        .as_ref()
+        .ok_or_else(|| "missing package in kernel config".to_string())?;
+
+    // Clean kernel to prevent caching issues
     let _ = Command::new("cargo")
         .args(["clean"])
-        .current_dir("kernel")
+        .current_dir(path)
         .output();
 
-    print!("{}  Building{} hnx-core (kernel)...", BOLD_GREEN, RESET);
+    print!("{}  Building{} {} (kernel)...", BOLD_GREEN, RESET, package);
     let result = run_silent(
         Command::new("cargo")
             .args([
                 "build",
                 "--target",
-                plat.rust_target,
+                &plat.rust_target,
                 "-p",
-                "kernel",
+                package,
                 "--release",
             ])
-            .current_dir("kernel"),
+            .current_dir(path),
         || {
             println!(
-                "\r{}  Building{} hnx-core (kernel)... Done",
-                BOLD_GREEN, RESET
+                "\r{}  Building{} {} (kernel)... Done",
+                BOLD_GREEN, RESET, package
             );
         },
     );
     if !result.success {
-        Err("failed to build kernel".to_string())
+        Err(format!("failed to build kernel {}", package))
     } else {
         Ok(())
     }
 }
 
-fn link_kernel(plat: &Platform) -> Result<(), String> {
-    std::fs::create_dir_all("build/dist/kernel").map_err(|e| e.to_string())?;
-    print!(
-        "{}  Linking{} build/dist/kernel/kernel.elf...",
-        BOLD_GREEN, RESET
-    );
+fn link_kernel(sub: &Subproject, plat: &Platform) -> Result<(), String> {
+    let link_output = sub
+        .link_output
+        .as_ref()
+        .and_then(|o| o.as_ref())
+        .ok_or_else(|| "missing link_output in kernel config".to_string())?;
+
+    if let Some(parent) = Path::new(link_output).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    print!("{}  Linking{} {}...", BOLD_GREEN, RESET, link_output);
     let lld = find_rust_lld();
     let result = run_silent(
         Command::new(&lld).args([
             "-flavor",
             "gnu",
             "-m",
-            plat.ld_emulation,
+            &plat.ld_emulation,
             "--gc-sections",
             "--whole-archive",
             "-T",
-            plat.linker_script,
+            &plat.linker_script,
             &format!(
                 "kernel/build/target/{}/release/libkernel.a",
                 plat.rust_target
             ),
             "--no-whole-archive",
             "-o",
-            "build/dist/kernel/kernel.elf",
+            link_output,
         ]),
         || {
-            println!(
-                "\r{}  Linking{} build/dist/kernel/kernel.elf... Done",
-                BOLD_GREEN, RESET
-            );
+            println!("\r{}  Linking{} {}... Done", BOLD_GREEN, RESET, link_output);
         },
     );
     if !result.success {
@@ -250,26 +266,30 @@ fn link_kernel(plat: &Platform) -> Result<(), String> {
     }
 }
 
-fn extract_kernel_raw() -> Result<(), String> {
-    print!(
-        "{}  Extracting{} build/dist/kernel/kernel.raw...",
-        BOLD_GREEN, RESET
-    );
+fn extract_kernel_raw(sub: &Subproject) -> Result<(), String> {
+    let link_output = sub
+        .link_output
+        .as_ref()
+        .and_then(|o| o.as_ref())
+        .ok_or_else(|| "missing link_output in kernel config".to_string())?;
+    let raw_output = sub
+        .raw_output
+        .as_ref()
+        .and_then(|o| o.as_ref())
+        .ok_or_else(|| "missing raw_output in kernel config".to_string())?;
+
+    print!("{}  Extracting{} {}...", BOLD_GREEN, RESET, raw_output);
     let objcopy = find_objcopy();
     let result = run_silent(
-        Command::new(&objcopy).args([
-            "-O",
-            "binary",
-            "build/dist/kernel/kernel.elf",
-            "build/dist/kernel/kernel.raw",
-        ]),
+        Command::new(&objcopy).args(["-O", "binary", link_output, raw_output]),
         || {
             println!(
-                "\r{}  Extracting{} build/dist/kernel/kernel.raw... Done",
-                BOLD_GREEN, RESET
+                "\r{}  Extracting{} {}... Done",
+                BOLD_GREEN, RESET, raw_output
             );
         },
     );
+
     if !result.success {
         Err("failed to extract raw binary".to_string())
     } else {
@@ -277,11 +297,19 @@ fn extract_kernel_raw() -> Result<(), String> {
     }
 }
 
-fn pack_kernel_ohc(plat: &Platform) -> Result<(), String> {
-    print!(
-        "{}  Packing{} build/dist/kernel/hnxcore...",
-        BOLD_GREEN, RESET
-    );
+fn pack_kernel_ohc(config: &Config, sub: &Subproject, plat: &Platform) -> Result<(), String> {
+    let raw_output = sub
+        .raw_output
+        .as_ref()
+        .and_then(|o| o.as_ref())
+        .ok_or_else(|| "missing raw_output in kernel config".to_string())?;
+    let ohc_output = sub
+        .ohc_output
+        .as_ref()
+        .and_then(|o| o.as_ref())
+        .ok_or_else(|| "missing ohc_output in kernel config".to_string())?;
+
+    print!("{}  Packing{} {}...", BOLD_GREEN, RESET, ohc_output);
     let decimal_entry = if plat.kernel_entry.starts_with("0x") {
         u64::from_str_radix(plat.kernel_entry.trim_start_matches("0x"), 16)
             .map(|v| v.to_string())
@@ -293,22 +321,19 @@ fn pack_kernel_ohc(plat: &Platform) -> Result<(), String> {
         Command::new("cargo").args([
             "run",
             "--manifest-path",
-            "tools/ohlink-toolchain/Cargo.toml",
+            &config.toolchain.linker.path,
             "-p",
-            "ohlink-linker",
+            &config.toolchain.linker.package,
             "--",
             "--input",
-            "build/dist/kernel/kernel.raw",
+            raw_output,
             "--output",
-            "build/dist/kernel/hnxcore",
+            ohc_output,
             "--entry",
             &decimal_entry,
         ]),
         || {
-            println!(
-                "\r{}  Packing{} build/dist/kernel/hnxcore... Done",
-                BOLD_GREEN, RESET
-            );
+            println!("\r{}  Packing{} {}... Done", BOLD_GREEN, RESET, ohc_output);
         },
     );
     if !result.success {
@@ -318,48 +343,61 @@ fn pack_kernel_ohc(plat: &Platform) -> Result<(), String> {
     }
 }
 
-fn build_bootloader(plat: &Platform) -> Result<(), String> {
-    print!("{}  Building{} capsule-bootloader...", BOLD_GREEN, RESET);
+fn build_bootloader(sub: &Subproject, plat: &Platform) -> Result<(), String> {
+    let package = sub
+        .package
+        .as_ref()
+        .ok_or_else(|| "missing package in bootloader config".to_string())?;
+
+    print!("{}  Building{} {}...", BOLD_GREEN, RESET, package);
     let result = run_silent(
         Command::new("cargo").args([
             "build",
             "--release",
             "-p",
-            "capsule-bootloader",
+            package,
             "--target",
-            plat.rust_target,
+            &plat.rust_target,
         ]),
         || {
-            println!(
-                "\r{}  Building{} capsule-bootloader... Done",
-                BOLD_GREEN, RESET
-            );
+            println!("\r{}  Building{} {}... Done", BOLD_GREEN, RESET, package);
         },
     );
     if !result.success {
-        Err("failed to build bootloader".to_string())
+        Err(format!("failed to build bootloader {}", package))
     } else {
         Ok(())
     }
 }
 
-fn extract_bootloader_bin(plat: &Platform) -> Result<(), String> {
+fn extract_bootloader_bin(sub: &Subproject, plat: &Platform) -> Result<(), String> {
+    let package = sub
+        .package
+        .as_ref()
+        .ok_or_else(|| "missing package in bootloader config".to_string())?;
+    let bin_output = sub
+        .bin_output
+        .as_ref()
+        .and_then(|o| o.as_ref())
+        .ok_or_else(|| "missing bin_output in bootloader config".to_string())?;
+
+    let resolved_bin = bin_output.replace("{rust_target}", &plat.rust_target);
+
+    if let Some(parent) = Path::new(&resolved_bin).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
     let objcopy = find_objcopy();
     let result = run_silent(
         Command::new(&objcopy).args([
             "-O",
             "binary",
-            &format!(
-                "build/target/{}/release/capsule-bootloader",
-                plat.rust_target
-            ),
-            &format!(
-                "build/target/{}/release/capsule-bootloader.bin",
-                plat.rust_target
-            ),
+            &format!("build/target/{}/release/{}", plat.rust_target, package),
+            &resolved_bin,
         ]),
         || {},
     );
+
     if !result.success {
         Err("failed to extract bootloader".to_string())
     } else {
@@ -367,47 +405,57 @@ fn extract_bootloader_bin(plat: &Platform) -> Result<(), String> {
     }
 }
 
-fn print_build_summary(plat: &Platform) {
+fn print_build_summary(config: &Config, plat: &Platform) {
     let print_size = |label: &str, path: &str| {
         if let Ok(meta) = std::fs::metadata(path) {
             let size_kb = meta.len() as f64 / 1024.0;
             println!("  {}: [{:.1} KB]", label, size_kb);
         }
     };
-    print_size("hnxcore", "build/dist/kernel/hnxcore");
-    print_size(
-        "capsule-bootloader.bin",
-        &format!(
-            "build/target/{}/release/capsule-bootloader.bin",
-            plat.rust_target
-        ),
-    );
-    print_size("rootfs.img", "kernel/files/rootfs.img");
+
+    // Print size for any kernel/bootloader/userspace outputs we find
+    for sub in &config.subprojects {
+        match sub.subproject_type.as_str() {
+            "kernel" => {
+                if let Some(Some(ohc_out)) = &sub.ohc_output {
+                    print_size("hnxcore", ohc_out);
+                }
+            }
+            "bootloader" => {
+                if let Some(Some(bin_out)) = &sub.bin_output {
+                    let resolved_bin = bin_out.replace("{rust_target}", &plat.rust_target);
+                    print_size("capsule-bootloader.bin", &resolved_bin);
+                }
+            }
+            "userspace" => {
+                if let Some(rootfs_out) = &sub.rootfs_output {
+                    print_size("rootfs.img", rootfs_out);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
-fn generate_dist_image(plat: &Platform) -> Result<(), String> {
-    // 1. Get version from Cargo.toml
-    let cargo_toml = std::fs::read_to_string("Cargo.toml").map_err(|e| e.to_string())?;
-    let version = cargo_toml
-        .lines()
-        .find(|line| line.starts_with("version ="))
-        .and_then(|line| line.split('"').nth(1))
-        .unwrap_or("0.1.0");
-
-    // 2. Get current date in YYYYMMDD format
+fn generate_dist_image(config: &Config, plat: &Platform) -> Result<(), String> {
     let date_output = Command::new("date")
         .arg("+%Y%m%d")
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|_| "20260709".to_string());
+        .unwrap_or_else(|_| "20260715".to_string());
 
-    let img_name = format!(
-        "capsuleos-pangu-{}-{}-{}.img",
-        version, plat.arch, date_output
-    );
-    let img_path = format!("build/dist/distribution/{}", img_name);
+    let img_name = config
+        .distribution
+        .image_name_template
+        .replace("{project_name}", &config.project.name)
+        .replace("{codename}", &config.project.codename)
+        .replace("{version}", &config.project.version)
+        .replace("{arch}", &plat.arch)
+        .replace("{date}", &date_output);
 
-    std::fs::create_dir_all("build/dist/distribution")
+    let img_path = format!("{}/{}", config.distribution.output_dir, img_name);
+
+    std::fs::create_dir_all(&config.distribution.output_dir)
         .map_err(|e| format!("Failed to create distribution directory: {}", e))?;
 
     println!(
@@ -415,75 +463,69 @@ fn generate_dist_image(plat: &Platform) -> Result<(), String> {
         BOLD_CYAN, RESET, img_name
     );
 
-    // 3. Combine bootloader.bin and hnxcore into a single .img file
-    let bootloader_path = format!(
-        "build/target/{}/release/capsule-bootloader.bin",
-        plat.rust_target
-    );
-    let hnxcore_path = "build/dist/kernel/hnxcore";
+    // Concatenate / Pad configured stages
+    let mut final_img_data = Vec::new();
 
-    let mut bootloader_data =
-        std::fs::read(&bootloader_path).map_err(|e| format!("Failed to read bootloader: {}", e))?;
-    let hnxcore_data =
-        std::fs::read(hnxcore_path).map_err(|e| format!("Failed to read kernel: {}", e))?;
+    for stage in &config.distribution.stages {
+        let resolved_input = stage.input.replace("{rust_target}", &plat.rust_target);
+        let mut data = std::fs::read(&resolved_input).map_err(|e| {
+            format!(
+                "Failed to read distribution stage: {} ({})",
+                resolved_input, e
+            )
+        })?;
 
-    // We pad the bootloader to exactly 64KB (65536 bytes) so that the kernel begins at a precise, aligned offset!
-    let target_bootloader_size = 65536;
-    if bootloader_data.len() > target_bootloader_size {
-        return Err(format!(
-            "Bootloader size ({} bytes) exceeds maximum padding boundary (64KB)",
-            bootloader_data.len()
-        ));
+        if let Some(pad_to) = stage.pad_to {
+            if data.len() > pad_to as usize {
+                return Err(format!(
+                    "Stage size ({} bytes) exceeds maximum padding boundary ({} bytes) for {}",
+                    data.len(),
+                    pad_to,
+                    resolved_input
+                ));
+            }
+            data.resize(pad_to as usize, 0);
+        }
+        final_img_data.extend_from_slice(&data);
     }
-    bootloader_data.resize(target_bootloader_size, 0);
 
-    // Combine them
-    let mut final_img_data = bootloader_data;
-    final_img_data.extend_from_slice(&hnxcore_data);
-
-    // Write distribution image
     std::fs::write(&img_path, final_img_data)
         .map_err(|e| format!("Failed to write distribution image: {}", e))?;
 
     if let Ok(meta) = std::fs::metadata(&img_path) {
         let size_kb = meta.len() as f64 / 1024.0;
         println!(
-            "  {}Generated{} build/dist/distribution/{} [{:.1} KB]",
-            BOLD_GREEN, RESET, img_name, size_kb
+            "  {}Generated{} {} [{:.1} KB]",
+            BOLD_GREEN, RESET, img_path, size_kb
         );
     }
 
     Ok(())
 }
 
-/// B8: walk `kernel/files/etc/` recursively and copy each file
-/// into the staging tree under `build/dist/staging_rootfs/etc/`.
-/// File modes are preserved (we treat the source as authoritative).
-fn stage_etc_files() -> io::Result<()> {
-    use std::fs;
-    let src = Path::new("kernel/files/etc");
-    if !src.exists() {
+fn stage_etc_files(src: &str, dst: &str) -> io::Result<()> {
+    let src_path = Path::new(src);
+    if !src_path.exists() {
         return Ok(());
     }
-    let dst_root = Path::new("build/dist/staging_rootfs/etc");
-    fs::create_dir_all(dst_root)?;
-    copy_recursive(src, dst_root)?;
+    let dst_path = Path::new(dst);
+    std::fs::create_dir_all(dst_path)?;
+    copy_recursive(src_path, dst_path)?;
     Ok(())
 }
 
 fn copy_recursive(src: &Path, dst: &Path) -> io::Result<()> {
-    use std::fs;
     if src.is_dir() {
-        fs::create_dir_all(dst)?;
-        for entry in fs::read_dir(src)? {
+        std::fs::create_dir_all(dst)?;
+        for entry in std::fs::read_dir(src)? {
             let entry = entry?;
             let child_src = entry.path();
             let child_dst = dst.join(entry.file_name());
             copy_recursive(&child_src, &child_dst)?;
         }
     } else {
-        let bytes = fs::read(src)?;
-        fs::write(dst, &bytes)?;
+        let bytes = std::fs::read(src)?;
+        std::fs::write(dst, &bytes)?;
     }
     Ok(())
 }

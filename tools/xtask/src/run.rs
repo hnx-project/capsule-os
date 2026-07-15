@@ -1,5 +1,6 @@
 use std::process::Command;
 
+use crate::config::Config;
 use crate::output::run_silent;
 use crate::platform::Platform;
 
@@ -8,14 +9,13 @@ const BOLD_GREEN: &str = "\x1b[1;32m";
 const GRAY: &str = "\x1b[90m";
 const RESET: &str = "\x1b[0m";
 
-pub fn run(plat: &Platform, gdb: bool) -> Result<(), String> {
+pub fn run(config: &Config, plat: &Platform, gdb: bool) -> Result<(), String> {
     println!(
-        "{}    Booting{} Launching CapsuleOS in QEMU Emulator...",
-        BOLD_BLUE, RESET
+        "{}    Booting{} Launching {} in QEMU Emulator...",
+        BOLD_BLUE, RESET, config.project.name
     );
-    let _ = Command::new("killall")
-        .arg(format!("qemu-system-{}", plat.qemu_arch))
-        .status();
+    let _ = Command::new("killall").arg(&plat.qemu_bin).status();
+
     generate_qemu_dtb(plat)?;
     launch_qemu(plat, gdb);
     Ok(())
@@ -26,27 +26,14 @@ fn generate_qemu_dtb(plat: &Platform) -> Result<(), String> {
         "{}  Generate{} QEMU Device Tree Blob (DTB)...",
         BOLD_BLUE, RESET
     );
-    let machine = if plat.qemu_arch == "aarch64" {
-        "virt,secure=off"
-    } else {
-        "virt"
-    };
-    let mut dump_cmd = Command::new(format!("qemu-system-{}", plat.qemu_arch));
-    dump_cmd.args([
-        "-M",
-        machine,
-        "-cpu",
-        plat.qemu_cpu,
-        "-m",
-        plat.qemu_mem,
-        "-machine",
-        "dumpdtb=/tmp/qemu_raw.dtb",
-        "-display",
-        "none",
-    ]);
-    for arg in &plat.qemu_extra {
-        dump_cmd.arg(arg);
+
+    let mut dump_cmd = Command::new(&plat.qemu_bin);
+    // Render dtb_dump_args
+    for arg in &plat.qemu_dtb_dump_args {
+        let rendered_arg = render_variables(arg, plat);
+        dump_cmd.arg(rendered_arg);
     }
+
     let result = run_silent(&mut dump_cmd, || {});
     if !result.success {
         return Err("failed to dump dtb".to_string());
@@ -94,52 +81,13 @@ fn launch_qemu(plat: &Platform, gdb: bool) {
         "{}  Running{} QEMU virtual machine. {}[Ctrl+A, X to exit]{}",
         BOLD_GREEN, RESET, GRAY, RESET
     );
-    let machine = if plat.qemu_arch == "aarch64" {
-        "virt,secure=off"
-    } else {
-        "virt"
-    };
-    let mut qemu = Command::new(format!("qemu-system-{}", plat.qemu_arch));
-    if plat.qemu_arch == "aarch64" {
-        qemu.args([
-            "-M", machine, "-cpu", plat.qemu_cpu, "-m", plat.qemu_mem, "-nographic",
-            "-device", &format!("loader,file=build/target/{}/release/capsule-bootloader.bin,addr={},cpu-num=0,force-raw=on", plat.rust_target, plat.boot_addr),
-            "-device", &format!("loader,file=build/dist/kernel/hnxcore,addr={},force-raw=on", plat.ohc_addr),
-            "-device", &format!("loader,file=build/dist/qemu.dtb,addr={},force-raw=on", plat.dtb_addr),
-            "-device", "loader,file=kernel/files/rootfs.img,addr=0x46000000,force-raw=on",
-        ]);
-    } else {
-        qemu.args([
-            "-M",
-            machine,
-            "-cpu",
-            plat.qemu_cpu,
-            "-m",
-            plat.qemu_mem,
-            "-nographic",
-            "-kernel",
-            &format!(
-                "build/target/{}/release/capsule-bootloader",
-                plat.rust_target
-            ),
-            "-device",
-            &format!(
-                "loader,file=build/dist/kernel/hnxcore,addr={},force-raw=on",
-                plat.ohc_addr
-            ),
-            "-device",
-            &format!(
-                "loader,file=build/dist/qemu.dtb,addr={},force-raw=on",
-                plat.dtb_addr
-            ),
-            "-device",
-            "loader,file=kernel/files/rootfs.img,addr=0x86000000,force-raw=on",
-        ]);
+
+    let mut qemu = Command::new(&plat.qemu_bin);
+    for arg in &plat.qemu_args {
+        let rendered_arg = render_variables(arg, plat);
+        qemu.arg(rendered_arg);
     }
-    for arg in &plat.qemu_extra {
-        qemu.arg(arg);
-    }
-    qemu.arg("-semihosting");
+
     if gdb {
         qemu.args(["-s", "-S"]);
         println!(
@@ -150,26 +98,11 @@ fn launch_qemu(plat: &Platform, gdb: bool) {
     let _ = qemu.status();
 }
 
-#[allow(dead_code)]
-fn get_latest_dist_image(arch: &str) -> Result<String, String> {
-    let cargo_toml = std::fs::read_to_string("Cargo.toml").map_err(|e| e.to_string())?;
-    let version = cargo_toml
-        .lines()
-        .find(|line| line.starts_with("version ="))
-        .and_then(|line| line.split('"').nth(1))
-        .unwrap_or("0.1.0");
-
-    let date_output = Command::new("date")
-        .arg("+%Y%m%d")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|_| "20260709".to_string());
-
-    let img_name = format!("capsuleos-pangu-{}-{}-{}.img", version, arch, date_output);
-    let img_path = format!("build/dist/distribution/{}", img_name);
-    if std::path::Path::new(&img_path).exists() {
-        Ok(img_path)
-    } else {
-        Err(format!("Distribution image not found at {}", img_path))
-    }
+fn render_variables(template: &str, plat: &Platform) -> String {
+    template
+        .replace("{rust_target}", &plat.rust_target)
+        .replace("{boot_addr}", &plat.boot_addr)
+        .replace("{ohc_addr}", &plat.ohc_addr)
+        .replace("{dtb_addr}", &plat.dtb_addr)
+        .replace("{rootfs_addr}", &plat.rootfs_addr)
 }

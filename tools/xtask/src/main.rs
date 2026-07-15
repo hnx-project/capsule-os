@@ -1,6 +1,7 @@
 mod build;
 mod clean;
 mod cli;
+mod config;
 mod output;
 mod pack;
 mod platform;
@@ -10,10 +11,20 @@ mod toolchain;
 
 use clap::Parser;
 use cli::{Cli, CodeSubcommands, Commands};
+use config::Config;
 use platform::Platform;
 
 fn main() {
     let cli = Cli::parse();
+
+    let config = match Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Configuration load failed: {}", e);
+            std::process::exit(1);
+        }
+    };
+
     match &cli.command {
         Commands::Clean => {
             if let Err(e) = clean::clean() {
@@ -36,31 +47,31 @@ fn main() {
                 }
             }
             CodeSubcommands::Build { arch } => {
-                let plat = match Platform::for_arch(arch) {
+                let plat = match Platform::from_config(arch, &config) {
                     Some(p) => p,
                     None => {
                         eprintln!("Unsupported architecture: {}", arch);
                         std::process::exit(1);
                     }
                 };
-                if let Err(e) = build::build(&plat) {
+                if let Err(e) = build::build(&config, &plat) {
                     eprintln!("Build failed: {}", e);
                     std::process::exit(1);
                 }
             }
             CodeSubcommands::Run { arch, gdb } => {
-                let plat = match Platform::for_arch(arch) {
+                let plat = match Platform::from_config(arch, &config) {
                     Some(p) => p,
                     None => {
                         eprintln!("Unsupported architecture: {}", arch);
                         std::process::exit(1);
                     }
                 };
-                if let Err(e) = build::build(&plat) {
+                if let Err(e) = build::build(&config, &plat) {
                     eprintln!("Build failed: {}", e);
                     std::process::exit(1);
                 }
-                if let Err(e) = run::run(&plat, *gdb) {
+                if let Err(e) = run::run(&config, &plat, *gdb) {
                     eprintln!("Run failed: {}", e);
                     std::process::exit(1);
                 }
