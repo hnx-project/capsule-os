@@ -288,7 +288,6 @@ impl Scheduler {
                 t.reset_time_slice();
             }
 
-            print_switch(prev_name, next_name);
             self.current_idx = Some(next_idx);
 
             // The SCHED-SAME short-circuit only applies when `prev`

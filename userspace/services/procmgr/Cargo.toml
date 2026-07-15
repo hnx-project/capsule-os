@@ -1,0 +1,14 @@
+[package]
+name = "hnx-procmgr"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "procmgr"
+path = "src/main.rs"
+
+[dependencies]
+hnxlibc.workspace = true
+
+[features]
+capsule = []

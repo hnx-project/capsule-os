@@ -20,7 +20,7 @@ impl Vmo {
     pub fn create_child(&self, offset: usize, size: usize) -> Result<Self, Status> {
         let child_handle = libcapsule::syscalls::vmo_create_child(self.handle, offset, size)?;
         Ok(Self {
-            handle: child_handle,
+            handle: child_handle as usize,
         })
     }
 

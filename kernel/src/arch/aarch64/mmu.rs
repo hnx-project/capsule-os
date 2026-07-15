@@ -72,6 +72,41 @@ pub unsafe fn zero_page(page_pa: usize) {
     }
 }
 
+/// Free the entire per-process user page-table tree rooted at `l0_pa`.
+///
+/// Walks only the user-space half of L0 (indices 0..256) to avoid
+/// touching shared kernel entries copied from the boot page table.
+/// For each table descriptor found, it recursively descends L1→L2→L3
+/// and frees every page-table page.  Block descriptors (1 GiB at L1,
+/// 2 MiB at L2) are skipped because they are shared boot mappings.
+pub fn free_page_table_tree(l0_pa: usize) {
+    use crate::mm::phys::{PhysAddr, free_page};
+    // Only walk user-space half (L0 indices 0..256).
+    // Indices 256..511 are shared kernel entries copied from boot.
+    for l0_idx in 0..256 {
+        let l0e = unsafe { read_pte(l0_pa, l0_idx) };
+        if l0e & 1 == 0 { continue; }
+        if l0e & 2 == 0 { continue; }
+        let l1_pa = (l0e & 0x0000_FFFF_FFFF_F000) as usize;
+        for l1_idx in 0..512 {
+            let l1e = unsafe { read_pte(l1_pa, l1_idx) };
+            if l1e & 1 == 0 { continue; }
+            if l1e & 2 == 0 { continue; }
+            let l2_pa = (l1e & 0x0000_FFFF_FFFF_F000) as usize;
+            for l2_idx in 0..512 {
+                let l2e = unsafe { read_pte(l2_pa, l2_idx) };
+                if l2e & 1 == 0 { continue; }
+                if l2e & 2 == 0 { continue; }
+                let l3_pa = (l2e & 0x0000_FFFF_FFFF_F000) as usize;
+                free_page(PhysAddr::new(l3_pa));
+            }
+            free_page(PhysAddr::new(l2_pa));
+        }
+        free_page(PhysAddr::new(l1_pa));
+    }
+    free_page(PhysAddr::new(l0_pa));
+}
+
 unsafe fn write_l1_block(table_pa: usize, idx: usize, pa: usize, attr: MemAttr) {
     let entry = pa_to_pte_addr(pa)
         | PTE_VALID

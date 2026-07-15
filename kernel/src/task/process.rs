@@ -263,21 +263,32 @@ impl Process {
                         core::ptr::write_volatile(new_l0_kva.add(idx), entry);
                     }
                 }
-                // Crucial Fine-grained Isolation: Do NOT overwrite the entire L0 index 0 entry!
-                // Overwriting the whole entry causes parent and child processes to share the same L1 directory tree,
-                // which results in memory page corruption under TTBR0_EL1 during multi-process switches.
-                // We preserve the child's independent L1 page table (user_l1_pa) and copy ONLY the first 3 entries
-                // (index 0, 1, 2) from parent's L1 page table (managing 0-3 GiB: kernel code identity map + PL011/GIC MMIO).
-                let entry_0 = core::ptr::read_volatile(active_l0_kva.add(0));
-                if entry_0 != 0 {
-                    let parent_l1_pa = (entry_0 & 0x0000_FFFF_FFFF_F000) as usize;
-                    if parent_l1_pa != 0 {
-                        let parent_l1_kva = crate::mm::mmu::pa_to_kernel_va(parent_l1_pa) as *const u64;
-                        let new_l1_kva = crate::mm::mmu::pa_to_kernel_va(user_l1_pa) as *mut u64;
-                        for i in 0..3 {
-                            let entry = core::ptr::read_volatile(parent_l1_kva.add(i));
-                            if entry != 0 {
-                                core::ptr::write_volatile(new_l1_kva.add(i), entry);
+                // Copy the first 3 entries (0-3 GiB identity region) from
+                // the **active boot L1** page table (read via the parent's
+                // TTBR0_EL1) into the child's L1.  The boot L1_ID page
+                // entries are 1 GiB block descriptors that never get
+                // shattered during normal operation (no user process maps
+                // anything in the 0-3 GiB range), so each child inherits
+                // clean block entries covering UART MMIO + kernel identity.
+                //
+                // We read the parent's L1 through its L0[0] entry rather
+                // than through TTBR1_EL1 because TTBR1 exclusively serves
+                // the high-half kernel window — its L0[0] does NOT point
+                // to L1_ID.
+                let active_l0_pa = (ttbr0_reg & 0x0000_FFFF_FFFF_F000) as usize;
+                if active_l0_pa != 0 {
+                    let active_l0_kva = crate::mm::mmu::pa_to_kernel_va(active_l0_pa) as *const u64;
+                    let entry_0 = unsafe { core::ptr::read_volatile(active_l0_kva.add(0)) };
+                    if entry_0 != 0 {
+                        let parent_l1_pa = (entry_0 & 0x0000_FFFF_FFFF_F000) as usize;
+                        if parent_l1_pa != 0 {
+                            let parent_l1_kva = crate::mm::mmu::pa_to_kernel_va(parent_l1_pa) as *const u64;
+                            let new_l1_kva = crate::mm::mmu::pa_to_kernel_va(user_l1_pa) as *mut u64;
+                            for i in 0..3 {
+                                let entry = unsafe { core::ptr::read_volatile(parent_l1_kva.add(i)) };
+                                if entry != 0 {
+                                    unsafe { core::ptr::write_volatile(new_l1_kva.add(i), entry); }
+                                }
                             }
                         }
                     }

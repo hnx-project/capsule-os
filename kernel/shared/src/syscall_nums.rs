@@ -182,7 +182,21 @@ pub const SYSCALL_SPAWN: u32 = 113;
 /// registering `svc.vfs`, etc.) without blocking on the IPC bus.
 pub const SYSCALL_YIELD: u32 = 114;
 
+/// Process Manager syscall — multiplexed over `cmd`:
+///   cmd=0: CREATE(parent_pid, name_ptr, l0_pa) → pid
+///   cmd=1: EXIT(pid, exit_code) → status
+///   cmd=2: WAIT(pid) → child_exit_status
+///   cmd=3: LIST(buf, max) → count
+///   cmd=4: RELEASE_PT(l0_pa) → status
+pub const SYSCALL_PROC_MGMT: u32 = 120;
+
+pub const PROC_MGMT_CREATE: u32 = 0;
+pub const PROC_MGMT_EXIT: u32 = 1;
+pub const PROC_MGMT_WAIT: u32 = 2;
+pub const PROC_MGMT_LIST: u32 = 3;
+pub const PROC_MGMT_RELEASE_PT: u32 = 4;
+
 /// One past the last valid syscall number.  Any `syscall_num >= SYSCALL_NR`
 /// is reserved by the ABI for future extensions and must not be accepted by
 /// the dispatcher — see `kernel/src/syscall/mod.rs`.
-pub const SYSCALL_NR: u32 = 115;
+pub const SYSCALL_NR: u32 = 121;

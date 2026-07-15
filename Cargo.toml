@@ -22,6 +22,7 @@ members = [
     "userspace/services/devmgr",
     "userspace/services/fileagent",
     "userspace/services/loader",
+    "userspace/services/procmgr",
     # "userspace/services/init",
     "userspace/programs/osh",
     "userspace/programs/ls",

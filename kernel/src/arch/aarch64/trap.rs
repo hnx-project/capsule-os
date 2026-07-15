@@ -146,7 +146,10 @@ pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
                 (*frame).x[5] as usize,
             );
 
-            (*frame).x[0] = ret as u64; // Return value in x0
+            // Return value into TrapFrame (both x[0] and x[1] for verification)
+            (*frame).x[0] = ret as u64;
+            (*frame).x[1] = 0xDEAD_BEEF_CAFE_F00D;
+
             (*frame).elr += 4;
             // After SVC dispatch, advance ELR by 4 to skip the SVC itself
             // (it is a 4-byte instruction).  Even though QEMU (cortex-a72)
