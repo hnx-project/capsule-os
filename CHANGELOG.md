@@ -36,7 +36,7 @@ it leaves pre-1.0 development.
 
 ### Planned for 0.5.10+
 - Host-side unit tests for the no_std-safe subset of `kernel/` and
-  `hnxstd/` (currently no `#[cfg(test)]` paths can actually run
+  `libstd/` (currently no `#[cfg(test)]` paths can actually run
   inside the `aarch64-unknown-none` or `riscv64imac-unknown-none-elf`
   targets; the host-testable subset has not been carved out).
 - Init anchor respawn follow-ups:
@@ -45,12 +45,12 @@ it leaves pre-1.0 development.
     trigger an SError from EL0 in 30 s of normal QEMU boot.
   - `sys_execve` argv copy path is correct but currently
     unexercised by the default boot chain (init uses
-    `hnxlibc::exec` (SYSCALL_EXEC, no argv), not
-    `hnxlibc::execve` (SYSCALL_EXECVE, with argv)).  Exercising
+    `libc::exec` (SYSCALL_EXEC, no argv), not
+    `libc::execve` (SYSCALL_EXECVE, with argv)).  Exercising
     it requires changing `init/src/main.rs` to call
-    `hnxlibc::execve("osh", &["osh"])` (or similar) and
+    `libc::execve("osh", &["osh"])` (or similar) and
     confirming `argc=1, argv[0]="osh"` reaches the new process
-    via the `user entry trampoline` in `hnxlibc/src/entry/`.
+    via the `user entry trampoline` in `libraries/libc/src/entry/`.
 
 ### Landed since 0.5.9 (on `develop`, pending release as 0.5.10)
 - **Init anchor respawn** (`555333b feat(init-anchor)`): new module
@@ -315,13 +315,13 @@ kernel ABI that every program in `userspace/programs/` and
   (B1.5 partial close of KERNEL_HEALTH.md A2).
 
 ### Added (userspace / runtime)
-- `hnxlibc::pipe`, `dup2`, `wait4`, `getppid`, `sigaction`,
+- `libc::pipe`, `dup2`, `wait4`, `getppid`, `sigaction`,
   `raise`, `kill`, `pause`, `pipe_pair` C-ABI wrappers.
 - EL0 `panic_handler` (B10): pre-1.0 was a silent `loop {}`.
   1.0 prints `EL0 PANIC: <msg> @ <file>:<line>` to fd 2 before
   halting the processor.  Source location comes from the
   compiler's `#[track_caller]` metadata.
-- `hnxstd` (B9) now ships `vec::Vec<T>`, `string::String`,
+- `libstd` (B9) now ships `vec::Vec<T>`, `string::String`,
   `fmt::format!`, `write!` macros for EL0 ELF programs.
 
 ### Added (build)
@@ -344,7 +344,7 @@ kernel ABI that every program in `userspace/programs/` and
   PORT_*, EVENT_*, TIMER_*, FUTEX_* along with the
   unconnected PMEM_*) are now numbered and documented.
 - `Process` / `Thread` / `TrapFrame` layouts are frozen.
-- C ABI exposed by `hnxlibc` is frozen.
+- C ABI exposed by `libc` is frozen.
 
 ### Known issues
 
@@ -390,13 +390,13 @@ ABI that every program in `userspace/programs/` and
   (B1.5 partial close of KERNEL_HEALTH.md A2).
 
 ### Added (userspace / runtime)
-- `hnxlibc::pipe`, `dup2`, `wait4`, `getppid`, `sigaction`,
+- `libc::pipe`, `dup2`, `wait4`, `getppid`, `sigaction`,
   `raise`, `kill`, `pause`, `pipe_pair` C-ABI wrappers.
 - EL0 `panic_handler` (B10): pre-1.0 was a silent `loop {}`.
   1.0 prints `EL0 PANIC: <msg> @ <file>:<line>` to fd 2 before
   halting the processor.  Source location comes from the
   compiler's `#[track_caller]` metadata.
-- `hnxstd` (B9) now ships `vec::Vec<T>`, `string::String`,
+- `libstd` (B9) now ships `vec::Vec<T>`, `string::String`,
   `fmt::format!`, `write!` macros for EL0 ELF programs.
 
 ### Added (build)

@@ -1,9 +1,8 @@
 # KERNEL_HEALTH.md - CapsuleOS Kernel Health Table (POSIX-aligned)
 
 > **Generated:** 2026-07-11
-> **Scope:** `kernel/src/**`, `userspace/{hnxlibc,hnxstd,services}`,
-> `tools/ohlink-cc`, plus the static-analysis findings of
-> [`AUDIT.md`](./AUDIT.md).
+> **Scope:** `kernel/src/**`, `libraries/{libc,libstd,libcapsule}`,
+> plus the static-analysis findings of [`AUDIT.md`](./AUDIT.md).
 >
 > **This is the planning table, not the implementation table.**
 > For implementation commits see [`CHANGELOG.md`](./CHANGELOG.md);
@@ -16,7 +15,7 @@
 > Every `open(2) / read(2) / write(2) / lseek(2) / close(2)` that
 > an EL0 program can issue today returns either the literal byte
 > string `VFS_READ_OK` (H4) or a freshly-allocated empty `Vnode`
-> (H8).  The userland libc (`hnxlibc`) routes around this by talking
+> (H8).  The userland libc (`libc`) routes around this by talking
 > directly to fileagent through `sys_channel_*`, so the bring-up
 > works *in practice* — but the kernel syscall surface as exposed
 > to EL0 is a stub, not a router.  Phase 6 v0.6.0-α is the wire-up.
@@ -61,7 +60,7 @@ work — they shape what items appear in the table below and what
 
 Row tags: `PosixBroken = current bug is wrong / stub POSIX
 behaviour that will be seen by any EL0 program that bypasses
-hnxlibc (i.e. raw `__NR_open` / hand-written aarch64 SVC #0
+libc (i.e. raw `__NR_open` / hand-written aarch64 SVC #0
 calls).`
 
 ---
@@ -70,21 +69,21 @@ calls).`
 
 | # | Item | State | Notes |
 |---|------|-------|-------|
-| **P1** | `sys_open` (K1/H8) | `latent / PosixBroken` | `vfs/handlers/vfs.rs:4-18` allocates a fresh `Vnode` per call with `size=0` and **never reads any rootfs content**. Returns `Ok(fd)` unconditionally. An EL0 program that bypasses hnxlibc and issues `open("/etc/passwd")` will succeed, get a fd, then `read()` from it returns `b"VFS_READ_OK"`. **0.6-α target:** convert to forwarder that resolves `svc.vfs`, sends `FileAgentCmd::Open`, parses the response, and stores `(process_id, fd) → LibcFile` in the per-process POSIX fd table (P7). |
+| **P1** | `sys_open` (K1/H8) | `latent / PosixBroken` | `vfs/handlers/vfs.rs:4-18` allocates a fresh `Vnode` per call with `size=0` and **never reads any rootfs content**. Returns `Ok(fd)` unconditionally. An EL0 program that bypasses libc and issues `open("/etc/passwd")` will succeed, get a fd, then `read()` from it returns `b"VFS_READ_OK"`. **0.6-α target:** convert to forwarder that resolves `svc.vfs`, sends `FileAgentCmd::Open`, parses the response, and stores `(process_id, fd) → LibcFile` in the per-process POSIX fd table (P7). |
 | **P2** | `sys_read` fd≥3 (K2/H4) | `latent / PosixBroken` | `vfs/handlers/vfs.rs:31-70` returns `b"VFS_READ_OK"` literal (11 bytes) for any non-stdin fd. **0.6-α target:** forwarder: resolve fd→`{session_chan, remote_fd}` from per-process POSIX fd table, issue `FileAgentCmd::Read` over channel, **use `safe_copy_to_user`** to fill the caller buffer. fd=0 stays on the UART path (K-D2). |
 | **P3** | `sys_write` fd≥3 (K5) | `latent / PosixBroken` | `handlers/mod.rs:8-52` returns `Status::NotAllowed` for any fd>2. **0.6-α target:** forwarder: resolve fd→`{session_chan, remote_fd}`, `safe_copy_from_user` into a 256-byte temp buffer, send `FileAgentCmd::Write` (the variant that ships a VMO handle for the buffer body) over channel. |
 | **P4** | `sys_close` (K3/H8) | `latent / PosixBroken` | `vfs/handlers/vfs.rs:20-29` releases the **stub Vnode** — there is no real file. **0.6-α target:** forwarder: lookup fd in POSIX fd table, send `FileAgentCmd::Close`, free the slot. |
 | **P5** | `sys_lseek` (K4) | `latent / PosixBroken` | `vfs/handlers/vfs.rs:72-89` writes a local offset counter against the stub Vnode. **0.6-α target:** forwarder: send `FileAgentCmd::Seek` (`whence` is an enum on the wire); or maintain `offset` kernel-locally and push on each `Read`/`Write`. Either is acceptable; the cheaper one wins. |
 | **P6** | `sys_getpid` / `sys_gettid` | `not-started / PosixBroken` | `syscall/numbers.rs` defines `SYSCALL_GET_TID=2`, `SYSCALL_GET_PID=3` but `syscall_dispatch` (AUDIT M1) has no arm. Any EL0 caller gets `Status::NotAllowed`. **0.6-α target:** wire to `Scheduler::get_current_thread().process_id` / `.id`. Cheap (one match arm each), unlocks `libc::getpid()`. |
-| **P7** | per-process POSIX fd table | `not-started` | Currently the POSIX fd→channel mapping lives entirely in userspace as `hnxlibc::LIBC_FILES[16]` (`hnxlibc/src/lib.rs:263`). An EL0 program that does **not** link hnxlibc (raw OHLINK, raw `__NR_open`) has nowhere to look up the channel associated with a kernel fd. **0.6-α target:** kernel owns the per-process table indexed by `(process_id, fd) → LibcFile { session_chan, remote_fd }`. hnxlibc drops its local table in favour of the kernel one. Page-allocated per-process, like the existing `Process` root VMAR. |
+| **P7** | per-process POSIX fd table | `not-started` | Currently the POSIX fd→channel mapping lives entirely in userspace as `libc::LIBC_FILES[16]` (`libraries/libc/src/lib.rs`). An EL0 program that does **not** link libc (raw OHLINK, raw `__NR_open`) has nowhere to look up the channel associated with a kernel fd. **0.6-α target:** kernel owns the per-process table indexed by `(process_id, fd) → LibcFile { session_chan, remote_fd }`. libc drops its local table in favour of the kernel one. Page-allocated per-process, like the existing `Process` root VMAR. |
 
 ## Bucket 2 - POSIX Libc Names (link-level surface)
 
 | # | Item | State | Notes |
 |---|------|-------|-------|
-| **L1** | `libc::open` C-ABI | `code-ready-not-verified` | `hnxlibc::open` (`hnxlibc/src/lib.rs:313`) is `#[no_mangle] pub extern "C"`. Body bypasses `__NR_open` and goes straight through `channel_lookup("svc.vfs")`. Bypasses any raw `syscall(__NR_open, ...)` caller. **0.6-α target:** hnxlibc calls `sys_open`-via-syscall ABI so EL0 programs that link hnxlibc AND EL0 programs that raw-syscall both work. |
+| **L1** | `libc::open` C-ABI | `code-ready-not-verified` | `libc::open` is `#[no_mangle] pub extern "C"`. Body bypasses `__NR_open` and goes straight through `channel_lookup("svc.vfs")`. Bypasses any raw `syscall(__NR_open, ...)` caller. **0.6-α target:** libc calls `sys_open`-via-syscall ABI so EL0 programs that link libc AND EL0 programs that raw-syscall both work. |
 | **L2** | `libc::read / write / close / lseek` C-ABI | `code-ready-not-verified` | Same C-ABI shape as L1. **0.6-α target:** same. |
-| **L3** | `libc::execve(2)` C-ABI | `working` | `sys_exec` accepts a NUL-terminated path pointer and parsed OHLINK bytes; phase 5.2 wired this up. C name `execve` is exposed in hnxlibc. |
+| **L3** | `libc::execve(2)` C-ABI | `working` | `sys_exec` accepts a NUL-terminated path pointer and parsed OHLINK bytes; phase 5.2 wired this up. C name `execve` is exposed in libc. |
 | **L4** | `libc::wait / waitpid` | `not-started` | `syscall/numbers.rs` doesn't define these. Dead process zombies never reaped. **0.7 target:** wrap a PID-collection side channel on `sys_process_exit`. |
 
 ## Bucket 3 - ELF / loader / dynamic linking

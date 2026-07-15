@@ -115,10 +115,9 @@
 
 > 目标: 将原本脆弱的分散式子模块，彻底升级合并为全新的 **Subtree 单体仓架构**。在微内核中引入我们自研的 `#![no_std]` 强类型 `ohlink-format` 协议，废弃原有硬编码偏移及 ohc-tool 打包黑盒。同时改造 `xtask` 自举编译宿主机工具链，完成闭环。
 
-### 5.1 Subtree 级联多仓合流与团队标识锁定 ✅
+### 5.1 Subtree 级联多仓合流 ✅
 - [x] 彻底注销并清除 legacy 子模块，将 `bootloader`、`kernel` 与宿主机工具链 `tools/ohlink-cc` 全部以 Squashed 干净历史形式并入主干。
 - [x] 注册 Subtree 专属的上游 Remote 控制器（`bootloader-up`, `kernel-up`, `ohlink-cc-up`），实现极为便利、整洁的一键增量合并。
-- [x] 规范化配置本地 Git 本地管理员身份标识：`TinchyChin <tinchychin97@gmail.com>`。
 
 ### 5.2 OHLINK 强类型微内核装载器 (sys_exec) ✅
 - [x] 引入 `#![no_std]` 的 `ohlink-format` 格式，将其无缝整合入 HNX 微内核。
@@ -154,7 +153,7 @@
 ---
 
 ## 🟡 Phase 6 至 Phase 10 (后续路线图)
-- **Phase 6: v0.6.0 POSIX 兼容层** (标准 Syscall 映射、信号、Socket、管道，以及 hnxstd 用户态标准库与 ohlink-linker 的深度符号绑定)
+- **Phase 6: v0.6.0 POSIX 兼容层** (标准 Syscall 映射、信号、Socket、管道，以及 libstd 用户态标准库与 ohlink-linker 的深度符号绑定)
   - 子项: **Init anchor respawn** (kernel 侧: pid=1 死时自动 spawn `system/bin/init`,跟 Linux `init=` 行为对齐,解决当前 loader 死后系统空转的 WIP 项)
   - 子项: **RISC-V 64 HAL ownership** (当前 reins 4 个都没标 own,需要补 `riscv64-expert` 第五个 rein 或在 aarch64-expert 里拉 S-Mode CSR / `stvec` / `satp` / PMP / SBI 经验沉淀)
 - **Phase 7: v0.7.0 文件系统服务** (VFS 双向 Channel 服务，实现 ramfs、FAT16/32 文件系统常驻服务)

@@ -37,8 +37,8 @@ depend on anything above.
 │      product, not in user code.                                  │
 ├──────────────────────────────────────────────────────────────────┤
 │  L2  Userspace support crates                                    │
-│        hnxlibc   C-ABI shim over the syscall surface             │
-│        hnxstd    #![no_std] standard library (Vec, String, …)   │
+│        libc      C-ABI shim over the syscall surface             │
+│        libstd    #![no_std] standard library (Vec, String, …)   │
 │      EL0 / U-mode.  Pure library code; no `fn main`.            │
 ├──────────────────────────────────────────────────────────────────┤
 │  L1  HNX microkernel  (hnx-core)                                 │
@@ -97,15 +97,15 @@ capsule-os/                          (this repo, GitCode)
 │       ├── drivers/                 GIC, PL011, generic timer
 │       └── lib.rs                   kernel_main + smoke tests
 │
-├── userspace/                                                   (L2–L4)
-│   ├── hnxlibc/                     C-ABI shim
-│   ├── hnxstd/                      #![no_std] stdlib
+├── libraries/                       Top-level OS runtime libraries
+│   ├── libc/                        C-ABI shim over the syscall surface
+│   ├── libstd/                      Self-built Rust standard library
+│   ├── libcapsule/                  Microkernel system SDK
+│   └── targets/                     custom target JSON spec files
+│
+├── userspace/                       User-space sandboxed programs
 │   ├── services/                    L3 system services
 │   └── programs/                    L4 apps
-│
-├── std/                             custom target JSON spec files
-│   └── targets/                     aarch64-unknown-capsule.json,
-│                                    riscv64-unknown-capsule.json
 │
 ├── tools/                           host-side toolchain
 │   ├── ohlink-cc/                   subtree: ohlink-cc (compiler
@@ -477,6 +477,6 @@ into `addr2line -e build/dist/kernel/kernel.elf` to get the source line.
 | Change the OHLINK parser                             | `tools/ohlink-cc/ohlink-format/`            |
 | Add a new trap class (e.g. wire up `fiq_el0`)        | `kernel/src/arch/<arch>/boot_asm.S`        |
 | Tweak the boot sequence                              | `kernel/src/lib.rs::kernel_main`           |
-| Update the public API surface (libc / std)            | `hnxlibc/` + `hnxstd/` |
+| Update the public API surface (libc / std)            | `libraries/libc/` + `libraries/libstd/` |
 | Tweak the `xtask` workflow                           | `tools/xtask/src/`                         |
 | Change the dual-arch contract                        | `kernel/src/arch/mod.rs` + per-arch sibling |

@@ -30,11 +30,11 @@ CapsuleOS rejects the heavy overhead of loading complex ELF binaries in sandboxe
 * **Microkernel Safe Loader**: A highly secure `#![no_std]` OHLINK parser built into the microkernel and bootloader, incorporating robust CRC32-IEEE checksum validation and automatic segment page-alignment.
 * **Format-Level Isolation**: Complete separation of executable sections (`.text` is marked as Read-Only + Execute, `.rodata` as Read-Only + Non-Executable, and `.data` as Read-Write + Non-Executable) enforced securely via 4-level MMU hardware translations.
 
-### 🧱 3. Comprehensive User-Space Sandbox & `hnxstd`
+### 🧱 3. Comprehensive User-Space Sandbox & `libstd`
 To make writing secure OS services highly developer-friendly, CapsuleOS features:
 * **Custom Target Spec**: Official target triples `aarch64-unknown-capsule` and `riscv64-unknown-capsule` that define the OS environment.
-* **`hnxlibc` ABI**: A clean layer mapping standard C-ABI symbols (`write`, `read`, `exit`, etc.) to low-level microkernel system calls.
-* **`hnxstd` Standard Library**: A self-built, fully compliant standard library providing `Vec`, `String`, `println!`, and core collections to sandboxed user-space servers like `init`, `loader`, `devmgr`, and `vfs`.
+* **`libc` ABI**: A clean layer mapping standard C-ABI symbols (`write`, `read`, `exit`, etc.) to low-level microkernel system calls.
+* **`libstd` Standard Library**: A self-built, fully compliant standard library providing `Vec`, `String`, `println!`, and core collections to sandboxed user-space servers like `init`, `loader`, `devmgr`, and `vfs`.
 
 ---
 
@@ -48,13 +48,14 @@ CapsuleOS has transitioned from complex, fragile Git Submodules into a highly ro
 ├── kernel/                # 📂 (Subtree: hnx-core) Privileged Microkernel Runtime
 │   ├── linker/            # 📜 Architecture linker scripts
 │   └── src/               # 🦀 MMU, Scheduler, Interrupts, and System Calls
+├── libraries/             # 📂 Top-level OS libraries (libc, libstd, libcapsule, targets)
+│   ├── libc/              # 🧬 Standard C system-call bridging library
+│   ├── libstd/            # 🦀 Self-built Rust standard library (Vec, String, Println)
+│   ├── libcapsule/        # 📂 System specialized helper library
+│   └── targets/           # 📜 JSON target specifications for Rustc
 ├── userspace/             # 📂 User-Space Sandboxed Ecosystem
-│   ├── hnxlibc/           # 🧬 Standard C system-call bridging library
-│   ├── hnxstd/            # 🦀 Self-built Rust standard library (Vec, String, Println)
 │   ├── services/          # 🛡️ Sandboxed servers (init, devmgr, vfs, loader)
 │   └── programs/          # 🐚 Shell, CLI applications, and tools
-├── std/                   # 📂 Cross-Compilation Spec Definitions
-│   └── targets/           # 📜 JSON target specifications for Rustc
 ├── tools/                 # 📂 System Build and Packaging Tools
 │   ├── ohlink-cc/         # 📂 (Subtree: ohlink-cc) Pure-Rust Compiler Backend, Linker, and VM Emulator
 │   └── xtask/             # 🎛️ Dual-Star build orchestrator and GitCode manager
@@ -154,7 +155,7 @@ CapsuleOS is under **active pre-1.0 development** (currently `v0.5.9-develop` on
 * RISC-V 64 HAL ownership (currently an explicit roster gap — see "Known Limitations").
 * EL0 fault resilience hardening (recent: scheduler Dead-thread handling, `sys_exit` reschedule, full `serror_el0` handler).
 * Init anchor respawn (kernel-side spawn of `system/bin/init` when the boot anchor pid 1 dies).
-* Host-side unit test infrastructure for the no_std-safe subset of `kernel/` and `hnxstd/`.
+* Host-side unit test infrastructure for the no_std-safe subset of `kernel/` and `libstd/`.
 * CI matrix running both architectures through `cargo xtask code build` on every push.
 
 **Not a goal before 1.0:**
