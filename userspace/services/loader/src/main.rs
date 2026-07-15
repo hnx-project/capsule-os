@@ -15,52 +15,52 @@ pub fn main() -> i32 {
     );
 
     // Stage 1: Spawn DevMgr (Device Manager)
-    let devmgr_res = Command::new("devmgr", "system/bin/devmgr").spawn();
-    Logger::print_spawn_status("devmgr", devmgr_res);
+    // let devmgr_res = Command::new("devmgr", "system/bin/devmgr").spawn();
+    // Logger::print_spawn_status("devmgr", devmgr_res);
 
     // Stage 2: Spawn FileAgent (System VFS backend)
     let fa_res = Command::new("fileagent", "system/bin/fileagent").spawn();
-    Logger::print_spawn_status("fileagent", fa_res);
+    // Logger::print_spawn_status("fileagent", fa_res);
 
     // Stage 3: Spawn ProcMgr (Process Manager)
     let procmgr_res = Command::new("procmgr", "system/bin/procmgr").spawn();
-    Logger::print_spawn_status("procmgr", procmgr_res);
+    // Logger::print_spawn_status("procmgr", procmgr_res);
 
-    // Stage 4: Polling Wait for File System Service registration
-    let mut attempts = 0;
-    const MAX_ATTEMPTS: usize = 200;
-    while Channel::lookup("svc.vfs").is_err() {
-        attempts += 1;
-        if attempts >= MAX_ATTEMPTS {
-            libstd::io::print("Loader: svc.vfs did not register, exec'ing osh anyway\n");
-            break;
-        }
-        libstd::thread::yield_now();
-    }
+    // // Stage 4: Polling Wait for File System Service registration
+    // let mut attempts = 0;
+    // const MAX_ATTEMPTS: usize = 200;
+    // while Channel::lookup("svc.vfs").is_err() {
+    //     attempts += 1;
+    //     if attempts >= MAX_ATTEMPTS {
+    //         libstd::io::print("Loader: svc.vfs did not register, exec'ing osh anyway\n");
+    //         break;
+    //     }
+    //     libstd::thread::yield_now();
+    // }
 
-    // Stage 5: Wait for Process Manager registration
-    let mut p_attempts = 0;
-    while Channel::lookup("svc.procmgr").is_err() {
-        p_attempts += 1;
-        if p_attempts >= MAX_ATTEMPTS {
-            libstd::io::print("Loader: svc.procmgr did not register, starting osh anyway\n");
-            break;
-        }
-        libstd::thread::yield_now();
-    }
+    // // Stage 5: Wait for Process Manager registration
+    // let mut p_attempts = 0;
+    // while Channel::lookup("svc.procmgr").is_err() {
+    //     p_attempts += 1;
+    //     if p_attempts >= MAX_ATTEMPTS {
+    //         libstd::io::print("Loader: svc.procmgr did not register, starting osh anyway\n");
+    //         break;
+    //     }
+    //     libstd::thread::yield_now();
+    // }
 
-    // Stage 6: Spawn user shell
-    libstd::io::print("Loader: launching user shell osh\n");
-    match Command::new("osh", "system/bin/osh").spawn() {
-        Ok(pid) => {
-            libstd::io::print("Loader: osh launched successfully, entering idle loop\n");
-            let _ = pid;
-        }
-        Err(e) => {
-            libstd::io::print("Loader: failed to spawn osh\n");
-            let _ = e;
-        }
-    }
+    // // Stage 6: Spawn user shell
+    // libstd::io::print("Loader: launching user shell osh\n");
+    // match Command::new("osh", "system/bin/osh").spawn() {
+    //     Ok(pid) => {
+    //         libstd::io::print("Loader: osh launched successfully, entering idle loop\n");
+    //         let _ = pid;
+    //     }
+    //     Err(e) => {
+    //         libstd::io::print("Loader: failed to spawn osh\n");
+    //         let _ = e;
+    //     }
+    // }
 
     loop {
         libstd::thread::yield_now();

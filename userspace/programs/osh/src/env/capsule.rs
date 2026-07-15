@@ -1,5 +1,6 @@
 use super::{Environment, ShellError};
 
+extern crate libc;
 extern crate libcapsule;
 extern crate libstd;
 
@@ -72,7 +73,7 @@ impl Environment for CapsuleEnv {
         }
         let count = core::cmp::min(args.len() + 1, 16);
         // Fallback or use libcapsule's clean execve wrapper
-        let code = libcapsule::syscalls::execve_impl(cmd, &argv_storage[..count]);
+        let code = libc::syscalls::execve_impl(cmd, &argv_storage[..count]);
         Ok(code)
     }
 
@@ -94,7 +95,7 @@ impl Environment for CapsuleEnv {
 
     fn pipe(&self, fds: &mut [i32; 2]) -> Result<(), ShellError> {
         let mut raw = [0i32; 2];
-        match libcapsule::syscalls::pipe_pair(&mut raw) {
+        match libc::syscalls::pipe_pair(&mut raw) {
             Ok(()) => {
                 fds[0] = raw[0];
                 fds[1] = raw[1];
@@ -105,7 +106,7 @@ impl Environment for CapsuleEnv {
     }
 
     fn dup2(&self, old_fd: i32, new_fd: i32) -> Result<(), ShellError> {
-        match libcapsule::syscalls::dup2(old_fd, new_fd) {
+        match libc::syscalls::dup2(old_fd, new_fd) {
             Ok(_) => Ok(()),
             Err(_) => Err(ShellError::IoError),
         }
@@ -114,7 +115,7 @@ impl Environment for CapsuleEnv {
     fn wait(&self, pid: u64) -> Result<i32, ShellError> {
         let mut status: i32 = 0;
         loop {
-            match libcapsule::syscalls::wait4(pid as i64, &mut status, 0) {
+            match libc::syscalls::wait4(pid as i64, &mut status, 0) {
                 Ok((_, _)) => return Ok(status),
                 Err(libcapsule::Status::TryAgain) => {
                     libstd::thread::yield_now();

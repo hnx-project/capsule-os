@@ -54,6 +54,7 @@ pub const SYSCALL_VMO_CREATE_CHILD: u32 = 35;
 pub const SYSCALL_VMAR_MAP: u32 = 40;
 pub const SYSCALL_VMAR_UNMAP: u32 = 41;
 pub const SYSCALL_VMAR_PROTECT: u32 = 42;
+pub const SYSCALL_VMAR_MAP_SELF: u32 = 43;
 
 pub const SYSCALL_THREAD_CREATE: u32 = 50;
 pub const SYSCALL_THREAD_START: u32 = 51;
@@ -201,4 +202,4 @@ pub const SYSCALL_SERVICE_SPAWN: u32 = 115;
 /// One past the last valid syscall number.  Any `syscall_num >= SYSCALL_NR`
 /// is reserved by the ABI for future extensions and must not be accepted by
 /// the dispatcher — see `kernel/src/syscall/mod.rs`.
-pub const SYSCALL_NR: u32 = 122;
+pub const SYSCALL_NR: u32 = 123;

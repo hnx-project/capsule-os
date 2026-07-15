@@ -334,14 +334,14 @@ pub extern "C" fn open(path: *const u8, flags: i32, _mode: i32) -> i32 {
     //    talks to fileagent on our behalf and parks the resulting
     //    (process_id, fd) -> {session_chan, remote_fd} mapping in
     //    its PosixFdTable; we just get the local fd back.
-    syscall!(SYSCALL_OPEN, path as usize, len, flags as usize, 0, 0, 0) as i32
+    libcapsule::syscall!(SYSCALL_OPEN, path as usize, len, flags as usize, 0, 0, 0) as i32
 }
 
 #[no_mangle]
 pub extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
     // All fds go straight through to the kernel.  fd=0 is the UART
     // stdin path (K-D2); fd>=3 is the fileagent forwarder (P2).
-    syscall!(SYSCALL_READ, fd as usize, buf as usize, count, 0, 0, 0) as isize
+    libcapsule::syscall!(SYSCALL_READ, fd as usize, buf as usize, count, 0, 0, 0) as isize
 }
 
 #[no_mangle]
@@ -349,19 +349,19 @@ pub extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
     // fd=1/2 are UART stdout/stderr (K-D2); fd>=3 is the fileagent
     // forwarder (P3).  See the file-header comment for the VMO
     // gap that Phase 6.6 will close for the no-VMO write path.
-    syscall!(SYSCALL_WRITE, fd as usize, buf as usize, count, 0, 0, 0) as isize
+    libcapsule::syscall!(SYSCALL_WRITE, fd as usize, buf as usize, count, 0, 0, 0) as isize
 }
 
 #[no_mangle]
 pub extern "C" fn close(fd: i32) -> i32 {
     // Kernel owns the POSIX fd table (P7) and closes the fileagent
     // session when the local fd is freed (P4).
-    syscall!(SYSCALL_CLOSE, fd as usize, 0, 0, 0, 0, 0) as i32
+    libcapsule::syscall!(SYSCALL_CLOSE, fd as usize, 0, 0, 0, 0, 0) as i32
 }
 
 #[no_mangle]
 pub extern "C" fn exit(status: i32) -> ! {
-    syscall!(SYSCALL_EXIT, status as usize, 0, 0, 0, 0, 0);
+    libcapsule::syscall!(SYSCALL_EXIT, status as usize, 0, 0, 0, 0, 0);
     loop {}
 }
 
@@ -374,7 +374,7 @@ pub extern "C" fn nanosleep(_req: *const u8, _rem: *mut u8) -> i32 {
 pub extern "C" fn getpid() -> i32 {
     // Wire to the kernel syscall (Phase 6 v0.6.0-α P6).  The
     // previous stub returned 1 unconditionally.
-    syscall!(SYSCALL_GET_PID, 0, 0, 0, 0, 0, 0) as i32
+    libcapsule::syscall!(SYSCALL_GET_PID, 0, 0, 0, 0, 0, 0) as i32
 }
 
 fn print(s: &str) {
@@ -402,7 +402,7 @@ pub fn execve(path: &str, argv: &[&[u8]]) -> i32 {
 }
 
 fn send_dir_command(cmd: &FileAgentCmd) -> i32 {
-    let session_chan = match syscalls::channel_lookup("svc.vfs") {
+    let session_chan = match libcapsule::syscalls::channel_lookup("svc.vfs") {
         Ok(ch) => ch,
         Err(_) => return -1,
     };
@@ -413,21 +413,22 @@ fn send_dir_command(cmd: &FileAgentCmd) -> i32 {
             core::mem::size_of::<FileAgentCmd>(),
         )
     };
-    if let Err(_) = syscalls::channel_write(session_chan, cmd_slice, &[]) {
-        let _ = syscalls::close(session_chan);
+    if let Err(_) = libcapsule::syscalls::channel_write(session_chan, cmd_slice, &[]) {
+        let _ = libcapsule::syscalls::close(session_chan);
         return -1;
     }
 
     let mut resp_buf = [0u8; 8];
     let mut resp_handles = [0u32; 2];
-    let result = match syscalls::channel_read(session_chan, &mut resp_buf, &mut resp_handles) {
-        Ok(read_len) if read_len >= 8 => unsafe {
-            core::ptr::read_unaligned(resp_buf.as_ptr() as *const i64)
-        },
-        _ => -1,
-    };
+    let result =
+        match libcapsule::syscalls::channel_read(session_chan, &mut resp_buf, &mut resp_handles) {
+            Ok(read_len) if read_len >= 8 => unsafe {
+                core::ptr::read_unaligned(resp_buf.as_ptr() as *const i64)
+            },
+            _ => -1,
+        };
 
-    let _ = syscalls::close(session_chan);
+    let _ = libcapsule::syscalls::close(session_chan);
     result as i32
 }
 

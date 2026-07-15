@@ -3,6 +3,7 @@ pub mod vmar;
 pub mod phys;
 pub mod mmu;
 pub mod smoke;
+pub mod slab;
 
 pub use vmo::Vmo;
 pub use vmar::Vmar;

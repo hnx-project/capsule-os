@@ -109,30 +109,12 @@ impl Drop for X19Guard {
 
 #[no_mangle]
 pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
-    // **AAPCS workaround**: the trap asm uses x19 as the TrapFrame pointer
-    // because x19 is the only callee-saved register that survives a nested
-    // IRQ + switch_to (which mutates sp).  Rust's C-ABI does NOT save
-    // x19-x28 unless the function body actually uses them, so save x19
-    // manually here and restore it on every return path via the
-    // `X19Guard` RAII helper.
-    let saved_x19: u64;
-    unsafe {
-        core::arch::asm!(
-            "mov {0}, x19",
-            out(reg) saved_x19,
-            options(nomem, preserves_flags)
-        );
-    }
-    let _x19_guard = X19Guard { saved: saved_x19 };
     let esr = unsafe { (*frame).esr };
     let elr = unsafe { (*frame).elr };
     let spsr = unsafe { (*frame).spsr };
-    let ec = (esr >> 26) & 0x3F; // Exception Class
+    let ec = (esr >> 26) & 0x3F;
 
     if ec == 0x11 || ec == 0x15 {
-        // SVC exceptions in AArch64/AArch32 state
-        // EC=0x11: SVC in AArch64
-        // EC=0x15: SVC in AArch32 (or trapped MSR/MRS)
         unsafe {
             let syscall_num = (*frame).x[16];
 
@@ -146,45 +128,23 @@ pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
                 (*frame).x[5] as usize,
             );
 
-            // Return value into TrapFrame (both x[0] and x[1] for verification)
-            (*frame).x[0] = ret as u64;
-            (*frame).x[1] = 0xDEAD_BEEF_CAFE_F00D;
-
             (*frame).elr += 4;
-            // After SVC dispatch, advance ELR by 4 to skip the SVC itself
-            // (it is a 4-byte instruction).  Even though QEMU (cortex-a72)
-            // reports our AArch64 `svc #0` with ESR.EC=0x15 (a classification
-            // quirk on this model — real hardware reports EC=0x11 for
-            // AArch64 SVC), the ELR_EL1 value it stores on trap entry is
-            // the SVC PC.  Without `+= 4` the eret jumps straight back
-            // into the same `svc #0`, the loader's T11+ tracepoints stop
-            // firing, and the user-mode program appears to hang.
-
             if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
                 unsafe { (*t).context.elr = (*frame).elr; }
             }
 
-            // Reload TTBR0_EL1 before the eret that returns to EL0.
-            // Some syscall paths (spawn, exit) can trigger a context
-            // switch that re-uses the same thread index; the scheduler
-            // sets TTBR0 on the switch path, but a compiler reordering
-            // of the cache-maintenance asm blocks can defeat it.
-            // This reload ensures the translation regime is correct
-            // regardless of what happened in the syscall.
-            {
-                let saved_x19_2: u64;
-                core::arch::asm!("mov {0}, x19", out(reg) saved_x19_2, options(nomem, preserves_flags));
-                let _x19_guard2 = X19Guard { saved: saved_x19_2 };
-                if let Some(t_svc) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
-                    if let Some((l0_pa_svc, asid_svc)) = crate::task::process::find_process_l0_user_pa(unsafe { (*t_svc).process_id }) {
-                        crate::arch::aarch64::mmu::set_ttbr0_el1(l0_pa_svc, asid_svc);
-                    }
+            // TTBR0 reload — do this BEFORE the x0 write so any
+            // schedule() side effect can't clobber the return value.
+            if let Some(t_svc) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
+                if let Some((l0_pa_svc, asid_svc)) = crate::task::process::find_process_l0_user_pa(unsafe { (*t_svc).process_id }) {
+                    crate::arch::aarch64::mmu::set_ttbr0_el1(l0_pa_svc, asid_svc);
                 }
             }
+
+            // Write return value into the TrapFrame for the asm epilogue.
+            unsafe { core::ptr::write_volatile(&mut (*frame).x[0], ret as u64); }
         }
     } else {
-        // Non-SVC EL0 exception (data abort, instruction abort, etc.)
-        // Log details, kill the faulting user-space thread, and trigger rescheduling to avoid dead EL0 infinite loops!
         unsafe {
             let far = (*frame).far;
             let elr = (*frame).elr;
@@ -197,12 +157,6 @@ pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
                     "EC={:#x} ESR={:#x} ELR={:#x} FAR={:#x} SPSR={:#x} thread=#{} pid={} -- KILLED thread to prevent looping exception",
                     ec, esr, elr, far, spsr, (*t).id, pid
                 );
-                // If the fault killed the boot anchor (pid 1), try
-                // to bring `system/bin/init` back BEFORE we mark
-                // the caller Dead and reschedule — otherwise the
-                // scheduler's pop_next will only see other ready
-                // threads (if any) and the system will halt even
-                // when a fresh init would have kept it running.
                 crate::task::init_respawn::respawn_init_if_anchor(pid);
                 (*t).state = crate::task::thread::ThreadState::Dead;
                 crate::task::scheduler::SCHEDULER.schedule();

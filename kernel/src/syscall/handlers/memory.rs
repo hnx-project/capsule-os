@@ -290,3 +290,44 @@ pub fn sys_vmar_map(
         proc.root_vmar.map(vmo, vmo_offset, target_va, size, flags)
     })?
 }
+
+pub fn sys_vmar_map_self(
+    table: &HandleTable,
+    vmo_handle_raw: u32,
+    vaddr_offset: usize,
+    size: usize,
+    flags_raw: u32,
+) -> Result<usize> {
+    let thread_ptr = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() }
+        .ok_or(Status::NotFound)?;
+    let proc_id = unsafe { (*thread_ptr).process_id };
+    let proc = crate::task::process::find_process_mut(proc_id)
+        .ok_or(Status::NotFound)?;
+
+    let vmo_hv = HandleValue::new(vmo_handle_raw);
+    let target_va = proc.root_vmar.base + vaddr_offset;
+    let flags = crate::mm::vmar::VmarFlags::from_bits(flags_raw);
+
+    // Must include USER flag to prevent mapping kernel-only pages
+    if !flags.user() {
+        return Err(Status::InvalidArgs);
+    }
+
+    table.with_vmo(vmo_hv, Rights::READ.bits(), |vmo| {
+        proc.root_vmar.map(vmo, 0, target_va, size, flags)
+    })?
+}
+
+pub fn sys_vmar_unmap(
+    vaddr_offset: usize,
+    size: usize,
+) -> Result<()> {
+    let thread_ptr = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() }
+        .ok_or(Status::NotFound)?;
+    let proc_id = unsafe { (*thread_ptr).process_id };
+    let proc = crate::task::process::find_process_mut(proc_id)
+        .ok_or(Status::NotFound)?;
+
+    let target_va = proc.root_vmar.base + vaddr_offset;
+    proc.root_vmar.unmap(target_va, size)
+}

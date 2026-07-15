@@ -65,6 +65,20 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
             }
         }
 
+        SYSCALL_VMAR_MAP_SELF => {
+            match handlers::memory::sys_vmar_map_self(table, arg0 as u32, arg1, arg2, arg3 as u32) {
+                Ok(va) => va,
+                Err(e) => e.to_raw(),
+            }
+        }
+
+        SYSCALL_VMAR_UNMAP => {
+            match handlers::memory::sys_vmar_unmap(arg0, arg1) {
+                Ok(()) => 0,
+                Err(e) => e.to_raw(),
+            }
+        }
+
         SYSCALL_VMO_CREATE => {
             let size = arg0;
             match handlers::memory::sys_vmo_create(table, size) {
@@ -439,7 +453,6 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
         | SYSCALL_PROCESS_EXIT
         | SYSCALL_VMO_GET_SIZE
         | SYSCALL_VMO_SET_SIZE
-        | SYSCALL_VMAR_UNMAP
         | SYSCALL_VMAR_PROTECT
         | SYSCALL_CHANNEL_CALL
         | SYSCALL_PORT_CREATE

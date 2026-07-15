@@ -1,3 +1,5 @@
+use alloc::boxed::Box;
+
 pub const RAMFS_MAX_FILES: usize = 64;
 pub const RAMFS_MAX_NAME_LEN: usize = 64;
 
@@ -12,7 +14,7 @@ pub struct RamfsNode {
     pub name: [u8; RAMFS_MAX_NAME_LEN],
     pub ntype: RamfsNodeType,
     pub size: usize,
-    pub data: [u8; 4096],
+    pub data: Box<[u8; 4096]>,
     pub children: [Option<usize>; 16],
     pub child_count: usize,
 }
@@ -23,7 +25,7 @@ impl RamfsNode {
             name: [0u8; RAMFS_MAX_NAME_LEN],
             ntype: RamfsNodeType::Directory,
             size: 0,
-            data: [0u8; 4096],
+            data: Box::new([0u8; 4096]),
             children: [const { None }; 16],
             child_count: 0,
         };
@@ -40,7 +42,7 @@ impl RamfsNode {
             name: [0u8; RAMFS_MAX_NAME_LEN],
             ntype: RamfsNodeType::File,
             size: 0,
-            data: [0u8; 4096],
+            data: Box::new([0u8; 4096]),
             children: [const { None }; 16],
             child_count: 0,
         };
@@ -59,18 +61,6 @@ impl RamfsNode {
         self.children[self.child_count] = Some(child_idx);
         self.child_count += 1;
         true
-    }
-
-    pub fn find_child(&self, name: &str) -> Option<usize> {
-        for i in 0..self.child_count {
-            if let Some(idx) = self.children[i] {
-                let child_name = unsafe { core::str::from_utf8_unchecked(&self.data[idx..]) };
-                if child_name == name {
-                    return Some(idx);
-                }
-            }
-        }
-        None
     }
 }
 
