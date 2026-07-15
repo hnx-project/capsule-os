@@ -158,6 +158,23 @@ pub fn load_binary(vmo_handle: usize, name: &str) -> Result<u64, Status> {
     }
 }
 
+pub fn service_spawn(desc: &shared::launcher::ServiceDescriptor) -> Result<u64, Status> {
+    let ret = syscall!(
+        SYSCALL_SERVICE_SPAWN,
+        desc as *const shared::launcher::ServiceDescriptor as usize,
+        0,
+        0,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret as u64)
+    }
+}
+
 /// Spawn an EL0 process from the embedded rootfs by `path` (short name
 /// like `"devmgr"` or rootfs-relative `"system/bin/devmgr"`), without
 /// replacing the caller.  Returns the new pid as a `u64` on success.

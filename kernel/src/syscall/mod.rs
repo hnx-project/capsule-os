@@ -186,10 +186,20 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
         }
 
         SYSCALL_LOAD_BINARY => {
+            crate::kprintln!("DEBUG KERNEL SYSCALL_LOAD_BINARY dispatched!");
             let vmo_handle = arg0 as u32;
             let name_ptr = arg1;
             let name_len = arg2;
             let result = handlers::process::sys_load_binary(table, vmo_handle, name_ptr, name_len);
+            match result {
+                Ok(pid) => pid as usize,
+                Err(e) => e.to_raw(),
+            }
+        }
+
+        SYSCALL_SERVICE_SPAWN => {
+            let desc_ptr = arg0;
+            let result = handlers::process::sys_service_spawn(table, desc_ptr);
             match result {
                 Ok(pid) => pid as usize,
                 Err(e) => e.to_raw(),

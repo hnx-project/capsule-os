@@ -196,7 +196,9 @@ pub const PROC_MGMT_WAIT: u32 = 2;
 pub const PROC_MGMT_LIST: u32 = 3;
 pub const PROC_MGMT_RELEASE_PT: u32 = 4;
 
+pub const SYSCALL_SERVICE_SPAWN: u32 = 115;
+
 /// One past the last valid syscall number.  Any `syscall_num >= SYSCALL_NR`
 /// is reserved by the ABI for future extensions and must not be accepted by
 /// the dispatcher — see `kernel/src/syscall/mod.rs`.
-pub const SYSCALL_NR: u32 = 121;
+pub const SYSCALL_NR: u32 = 122;

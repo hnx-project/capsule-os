@@ -20,6 +20,13 @@ impl Process {
 
     /// Safely load an OHLINK executable binary from a slice VMO into the process
     pub fn load_binary(&self, binary_vmo: &Vmo, name: &str) -> Result<u64, Status> {
-        libcapsule::syscalls::load_binary(binary_vmo.handle(), name)
+        let handle = binary_vmo.handle();
+        libcapsule::syscalls::load_binary(handle, name)
+    }
+
+    /// Atomically spawn and run a process using a binary VMO, abstracting away creation details.
+    pub fn spawn(binary_vmo: &Vmo, name: &str) -> Result<u64, Status> {
+        let handle = binary_vmo.handle();
+        libcapsule::syscalls::load_binary(handle, name)
     }
 }

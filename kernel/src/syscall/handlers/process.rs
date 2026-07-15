@@ -570,6 +570,8 @@ pub fn sys_load_binary(
 ) -> Result<u64> {
     use crate::object::handle_table::KernelObject;
 
+    crate::kprintln!("DEBUG KERNEL sys_load_binary enter: vmo_handle_raw={}", vmo_handle_raw);
+
     let vmo_hv = HandleValue::new(vmo_handle_raw);
 
     // Read the full OHLINK image out of the source VMO into a heap-backed
@@ -578,9 +580,20 @@ pub fn sys_load_binary(
     // Instead we allocate a kernel VMO of the same size as the source
     // image, copy bytes into it via Vmo::read, then hand launch_user_program
     // a slice borrowed from the kernel heap mapping.
-    let source_size: usize = table.with_vmo(vmo_hv, Rights::READ.bits(), |vmo| -> usize {
+    let source_size_res = table.with_vmo(vmo_hv, Rights::READ.bits(), |vmo| -> usize {
         vmo.size()
-    })?;
+    });
+
+    let source_size = match source_size_res {
+        Ok(sz) => {
+            crate::kprintln!("DEBUG KERNEL sys_load_binary: source_size={}", sz);
+            sz
+        }
+        Err(e) => {
+            crate::kprintln!("DEBUG KERNEL sys_load_binary: table.with_vmo failed with {:?}", e);
+            return Err(e);
+        }
+    };
 
     // Bound the kernel scratch buffer by both the source VMO size and the
     // static scratch cap (128 KiB).  If the source is larger than the
@@ -622,12 +635,82 @@ pub fn sys_load_binary(
     let bytes_slice: &[u8] = unsafe { &LOAD_BINARY_SCRATCH[..copied_into_scratch] };
     let name_static: &'static str = "user-prog";
 
+    crate::kprintln!("DEBUG KERNEL sys_load_binary: assigned pid=NEW");
+
     let pid = crate::task::process::Process::launch_user_program(name_static, bytes_slice)?;
+    crate::kprintln!("DEBUG KERNEL sys_load_binary: assigned pid={}", pid);
 
     // Hand the caller a Process handle so it can later close, wait, etc.
     let rights = Rights::READ.bits() | Rights::WRITE.bits();
     let _ = table.add(KernelObject::Process(pid), rights);
 
+    Ok(pid)
+}
+
+/// SYSCALL_SERVICE_SPAWN: safe and atomic service creation completely within kernel context.
+pub fn sys_service_spawn(
+    table: &HandleTable,
+    desc_ptr: usize,
+) -> Result<u64> {
+    if desc_ptr == 0 {
+        return Err(Status::InvalidArgs);
+    }
+    
+    // 1. Get current process l0 translation page table
+    let t = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() }
+        .ok_or(Status::NotFound)?;
+    let proc_id = unsafe { (*t).process_id };
+    let proc = crate::task::process::find_process_mut(proc_id)
+        .ok_or(Status::ProcessNotFound)?;
+    let l0_pa = proc.l0_user_pa;
+
+    // 2. Safely copy the ServiceDescriptor struct from user space to kernel stack
+    let mut desc = core::mem::MaybeUninit::<shared::launcher::ServiceDescriptor>::uninit();
+    let desc_sz = core::mem::size_of::<shared::launcher::ServiceDescriptor>();
+    
+    crate::syscall::handlers::ipc::safe_copy_from_user(
+        l0_pa,
+        desc_ptr,
+        desc_sz,
+        unsafe { core::slice::from_raw_parts_mut(desc.as_mut_ptr() as *mut u8, desc_sz) }
+    )?;
+    
+    let mut desc = unsafe { desc.assume_init() };
+
+    // 3. Safely copy descriptor name and path strings out of user memory
+    let mut name_buf = [0u8; 64];
+    let name_len = core::cmp::min(desc.name.len(), 63);
+    crate::syscall::handlers::ipc::safe_copy_from_user(
+        l0_pa,
+        desc.name.as_ptr() as usize,
+        name_len,
+        &mut name_buf[..name_len]
+    )?;
+    let name_str = core::str::from_utf8(&name_buf[..name_len]).map_err(|_| Status::InvalidArgs)?;
+    
+    let mut path_buf = [0u8; 128];
+    let path_len = core::cmp::min(desc.path.len(), 127);
+    crate::syscall::handlers::ipc::safe_copy_from_user(
+        l0_pa,
+        desc.path.as_ptr() as usize,
+        path_len,
+        &mut path_buf[..path_len]
+    )?;
+    let path_str = core::str::from_utf8(&path_buf[..path_len]).map_err(|_| Status::InvalidArgs)?;
+
+    // Re-bind the temporary kernel-stack string slices into static-lifetime equivalents
+    // for standard ServiceLauncher consumption (ServiceLauncher is safe because it only reads
+    // these slices during the scope of launch).
+    desc.name = unsafe { core::mem::transmute(name_str) };
+    desc.path = unsafe { core::mem::transmute(path_str) };
+
+    // 4. Delegate completely to our high-level, zero-duplication ServiceLauncher!
+    let pid = crate::loader::ServiceLauncher::launch(&desc)?;
+    
+    // Register the Process handle so the caller can wait/terminate it normally
+    let rights = Rights::READ.bits() | Rights::WRITE.bits();
+    let _ = table.add(crate::object::handle_table::KernelObject::Process(pid), rights);
+    
     Ok(pid)
 }
 
@@ -1363,5 +1446,3 @@ impl<'a> ProcListEntry<'a> {
         buf
     }
 }
-
-
