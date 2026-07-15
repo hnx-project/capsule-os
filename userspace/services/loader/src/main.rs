@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
 
-extern crate libc;
 extern crate libstd;
 
 mod bootfs;
@@ -9,7 +8,7 @@ mod log;
 
 use bootfs::BootFsLoader;
 use libcapsule::syscalls;
-use libstd::Vmo;
+use libstd::os::capsule::Vmo;
 use log::Logger;
 
 #[no_mangle]

@@ -71,13 +71,17 @@ fn main() {
 #[cfg(not(feature = "host"))]
 #[no_mangle]
 pub fn main() -> i32 {
-    use libc::{hnx_arg, hnx_argc};
     let env = env::capsule::CapsuleEnv;
-    let argc = hnx_argc();
     let mut opts = CatOptions::new();
-    let mut file_path: &[u8] = &[];
-    for i in 1..argc as usize {
-        let a = hnx_arg(i);
+    let mut file_path_str = libstd::string::String::new();
+
+    let mut count = 0;
+    for arg in libstd::env::args() {
+        if count == 0 {
+            count += 1;
+            continue;
+        }
+        let a = arg.as_bytes();
         if a.first() == Some(&b'-') {
             for &c in &a[1..] {
                 if c == b'n' {
@@ -89,21 +93,18 @@ pub fn main() -> i32 {
                     return 1;
                 }
             }
-        } else if file_path.is_empty() {
-            file_path = a;
+        } else if file_path_str.len() == 0 {
+            file_path_str = arg;
         }
+        count += 1;
     }
-    if file_path.is_empty() {
+
+    if file_path_str.len() == 0 {
         env.write_stderr(b"Usage: cat [-n] <file_path>\n");
         return 1;
     }
-    let path_str = match core::str::from_utf8(file_path) {
-        Ok(s) => s,
-        Err(_) => {
-            env.write_stderr(b"Error: Invalid UTF-8 in argv\n");
-            return 1;
-        }
-    };
+
+    let path_str = file_path_str.as_str();
     match cat::run_cat(&env, path_str, &opts) {
         Ok(_) => 0,
         Err(env::FsError::FileNotFound) => {

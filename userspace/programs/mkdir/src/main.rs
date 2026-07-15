@@ -76,30 +76,30 @@ fn main() {
 #[cfg(not(feature = "host"))]
 #[no_mangle]
 pub fn main() -> i32 {
-    use libc::{hnx_arg, hnx_argc};
     let env = env::capsule::CapsuleEnv;
-    let argc = hnx_argc();
     let mut recursive = false;
-    let mut target: &[u8] = &[];
-    for i in 1..argc as usize {
-        let a = hnx_arg(i);
-        if a == b"-p" {
-            recursive = true;
-        } else if target.is_empty() {
-            target = a;
+    let mut target_str = libstd::string::String::new();
+
+    let mut count = 0;
+    for arg in libstd::env::args() {
+        if count == 0 {
+            count += 1;
+            continue;
         }
+        if arg.as_str() == "-p" {
+            recursive = true;
+        } else if target_str.len() == 0 {
+            target_str = arg;
+        }
+        count += 1;
     }
-    if target.is_empty() {
+
+    if target_str.len() == 0 {
         env.write_stderr(b"Usage: mkdir [-p] <directory_path>\n");
         return 1;
     }
-    let path_str = match core::str::from_utf8(target) {
-        Ok(s) => s,
-        Err(_) => {
-            env.write_stderr(b"Error: Invalid UTF-8 in argv\n");
-            return 1;
-        }
-    };
+
+    let path_str = target_str.as_str();
     let res = if recursive {
         // TODO: 当 fileagent 真正起来后递归创建目录；现在 kernel 端只支持单层
         match env.mkdir(path_str) {

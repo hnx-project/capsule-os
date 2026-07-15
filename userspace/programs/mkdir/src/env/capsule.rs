@@ -1,28 +1,30 @@
 use super::{FileSystem, FsError};
 
-extern crate libc;
+extern crate libstd;
 
 pub struct CapsuleEnv;
 
 impl FileSystem for CapsuleEnv {
     fn mkdir(&self, path: &str) -> Result<(), FsError> {
-        let res = libc::mkdir(path.as_ptr());
-        if res == 0 {
-            Ok(())
-        } else {
-            Err(FsError::Unknown)
+        match libstd::fs::create_dir(path) {
+            Ok(()) => Ok(()),
+            Err(_) => Err(FsError::Unknown),
         }
     }
 
     fn write_stdout(&self, data: &[u8]) {
-        let _ = libc::write(1, data.as_ptr(), data.len());
+        if let Ok(s) = core::str::from_utf8(data) {
+            libstd::io::print(s);
+        }
     }
 
     fn write_stderr(&self, data: &[u8]) {
-        let _ = libc::write(2, data.as_ptr(), data.len());
+        if let Ok(s) = core::str::from_utf8(data) {
+            libstd::io::print(s);
+        }
     }
 
-    fn exit(&self, code: i32) -> ! {
-        libc::exit(code);
+    fn exit(&self, _code: i32) -> ! {
+        panic!("Process exited");
     }
 }

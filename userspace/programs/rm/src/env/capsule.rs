@@ -1,31 +1,25 @@
 use super::{FileSystem, FsError};
 
-extern crate libc;
+extern crate libstd;
 
 pub struct CapsuleEnv;
 
 impl FileSystem for CapsuleEnv {
     fn unlink(&self, path: &str) -> Result<(), FsError> {
-        let res = libc::unlink(path.as_ptr());
-        if res == 0 {
-            Ok(())
-        } else {
-            Err(FsError::FileNotFound)
+        match libstd::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(_) => Err(FsError::FileNotFound),
         }
     }
 
     fn remove_dir(&self, path: &str) -> Result<(), FsError> {
-        let res = libc::rmdir(path.as_ptr());
-        if res == 0 {
-            Ok(())
-        } else {
-            Err(FsError::PermissionDenied)
+        match libstd::fs::remove_dir(path) {
+            Ok(()) => Ok(()),
+            Err(_) => Err(FsError::PermissionDenied),
         }
     }
 
     fn is_dir(&self, _path: &str) -> bool {
-        // TODO: pending SYSCALL_STAT / metadata query — return false so
-        // `rm -r` falls back to `unlink` semantics for known files.
         false
     }
 
@@ -33,19 +27,22 @@ impl FileSystem for CapsuleEnv {
     where
         F: FnMut(&str),
     {
-        // TODO: pending SYSCALL_READDIR.
         Err(FsError::Unknown)
     }
 
     fn write_stdout(&self, data: &[u8]) {
-        let _ = libc::write(1, data.as_ptr(), data.len());
+        if let Ok(s) = core::str::from_utf8(data) {
+            libstd::io::print(s);
+        }
     }
 
     fn write_stderr(&self, data: &[u8]) {
-        let _ = libc::write(2, data.as_ptr(), data.len());
+        if let Ok(s) = core::str::from_utf8(data) {
+            libstd::io::print(s);
+        }
     }
 
-    fn exit(&self, code: i32) -> ! {
-        libc::exit(code);
+    fn exit(&self, _code: i32) -> ! {
+        panic!("Process exited");
     }
 }

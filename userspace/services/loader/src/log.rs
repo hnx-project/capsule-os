@@ -1,4 +1,5 @@
-use libc;
+extern crate libstd;
+
 use shared::status::Status;
 
 pub struct Logger;
@@ -6,10 +7,7 @@ pub struct Logger;
 impl Logger {
     /// Write a direct message to standard output safely by staging on the warm stack
     pub fn write(msg: &str) {
-        let mut stack_buf = [0u8; 128];
-        let len = core::cmp::min(msg.len(), 127);
-        stack_buf[..len].copy_from_slice(&msg.as_bytes()[..len]);
-        let _ = libc::write(1, stack_buf.as_ptr(), len);
+        libstd::io::print(msg);
     }
 
     /// Print status for a spawned process

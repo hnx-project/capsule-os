@@ -13,6 +13,5 @@ name = "osh"
 path = "src/main.rs"
 
 [dependencies]
-libc.workspace = true
-libcapsule.workspace = true
 libstd = { workspace = true, optional = true }
+libcapsule = { workspace = true }

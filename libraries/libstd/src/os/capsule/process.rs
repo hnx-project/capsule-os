@@ -1,4 +1,4 @@
-use crate::io::vmo::Vmo;
+use crate::os::capsule::Vmo;
 use shared::status::Status;
 
 /// Safer Object Wrapper for Process management

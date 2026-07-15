@@ -1,14 +1,11 @@
 use super::{Dirent, FileSystem, FsError};
 
-extern crate libc;
+extern crate libstd;
 
 pub struct CapsuleEnv;
 
 impl FileSystem for CapsuleEnv {
     fn open_dir(&self, _path: &str) -> Result<i32, FsError> {
-        // TODO: SYSCALL_READDIR + FileAgent ReadDir 协议尚未落地
-        // （参见 capsule-design.md §2）。  直接返 DirectoryNotFound 让
-        // ls 在 shell 里走"未实现"路径。
         Err(FsError::DirectoryNotFound)
     }
 
@@ -19,14 +16,18 @@ impl FileSystem for CapsuleEnv {
     fn close_dir(&self, _fd: i32) {}
 
     fn write_stdout(&self, data: &[u8]) {
-        let _ = libc::write(1, data.as_ptr(), data.len());
+        if let Ok(s) = core::str::from_utf8(data) {
+            libstd::io::print(s);
+        }
     }
 
     fn write_stderr(&self, data: &[u8]) {
-        let _ = libc::write(2, data.as_ptr(), data.len());
+        if let Ok(s) = core::str::from_utf8(data) {
+            libstd::io::print(s);
+        }
     }
 
-    fn exit(&self, code: i32) -> ! {
-        libc::exit(code);
+    fn exit(&self, _code: i32) -> ! {
+        panic!("Process exited");
     }
 }

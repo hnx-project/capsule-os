@@ -1,27 +1,27 @@
 use super::{ProcSystem, ProcessInfo};
 
-extern crate libc;
+extern crate libstd;
 
 pub struct CapsuleEnv;
 
 impl ProcSystem for CapsuleEnv {
     fn get_process_list(&self, _infos: &mut [ProcessInfo]) -> Result<usize, ()> {
-        // TODO: 等待 SYSCALL_PROCESS_SNAPSHOT / 监控 channel 协议
-        // （参见 userspace/programs/ps/src/capsule-design.md §1）。当前
-        // kernel / fileagent 尚未落地进程快照通道，所以这里直接返回
-        // `Ok(0)` 让 ps 在 shell 中显示空表。
         Ok(0)
     }
 
     fn write_stdout(&self, data: &[u8]) {
-        let _ = libc::write(1, data.as_ptr(), data.len());
+        if let Ok(s) = core::str::from_utf8(data) {
+            libstd::io::print(s);
+        }
     }
 
     fn write_stderr(&self, data: &[u8]) {
-        let _ = libc::write(2, data.as_ptr(), data.len());
+        if let Ok(s) = core::str::from_utf8(data) {
+            libstd::io::print(s);
+        }
     }
 
-    fn exit(&self, code: i32) -> ! {
-        libc::exit(code);
+    fn exit(&self, _code: i32) -> ! {
+        panic!("Process exited");
     }
 }

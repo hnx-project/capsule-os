@@ -71,14 +71,35 @@ fn main() {
 #[cfg(not(feature = "host"))]
 #[no_mangle]
 pub fn main() -> i32 {
-    use libc::{hnx_arg, hnx_argc};
     let env = env::capsule::CapsuleEnv;
-    let argc = hnx_argc();
     let mut no_create = false;
-    let mut targets: [&[u8]; 16] = [&[]; 16];
+    let mut targets_arr: [libstd::string::String; 16] = [
+        libstd::string::String::new(),
+        libstd::string::String::new(),
+        libstd::string::String::new(),
+        libstd::string::String::new(),
+        libstd::string::String::new(),
+        libstd::string::String::new(),
+        libstd::string::String::new(),
+        libstd::string::String::new(),
+        libstd::string::String::new(),
+        libstd::string::String::new(),
+        libstd::string::String::new(),
+        libstd::string::String::new(),
+        libstd::string::String::new(),
+        libstd::string::String::new(),
+        libstd::string::String::new(),
+        libstd::string::String::new(),
+    ];
     let mut target_count = 0;
-    for i in 1..argc as usize {
-        let a = hnx_arg(i);
+
+    let mut count = 0;
+    for arg in libstd::env::args() {
+        if count == 0 {
+            count += 1;
+            continue;
+        }
+        let a = arg.as_bytes();
         if a.first() == Some(&b'-') {
             for &c in &a[1..] {
                 if c == b'c' {
@@ -91,25 +112,20 @@ pub fn main() -> i32 {
                 }
             }
         } else if target_count < 16 {
-            targets[target_count] = a;
+            targets_arr[target_count] = arg;
             target_count += 1;
         }
+        count += 1;
     }
+
     if target_count == 0 {
         env.write_stderr(b"Usage: touch [-c] <file_path>\n");
         return 1;
     }
+
     let mut rc = 0;
     for i in 0..target_count {
-        let target = targets[i];
-        let path = match core::str::from_utf8(target) {
-            Ok(s) => s,
-            Err(_) => {
-                env.write_stderr(b"Error: Invalid UTF-8 in argv\n");
-                rc = 1;
-                continue;
-            }
-        };
+        let path = targets_arr[i].as_str();
         match env.touch(path, no_create) {
             Ok(_) => {}
             Err(env::FsError::PathNotFound) => {

@@ -1,28 +1,27 @@
 use super::{KillError, ProcSystem};
 
-extern crate libc;
+extern crate libstd;
 
 pub struct CapsuleEnv;
 
 impl ProcSystem for CapsuleEnv {
-    fn kill(&self, pid: u32, signal: i32) -> Result<(), KillError> {
-        // CapsuleOS does not yet expose a dedicated SYSCALL_KILL — the
-        // IPC-bus-less prototype has no signal routing.  We surface a
-        // `PermissionDenied` for unknown pids so the calling shell can
-        // keep its error-handling path exercised until kill lands.
-        let _ = (pid, signal);
+    fn kill(&self, _pid: u32, _signal: i32) -> Result<(), KillError> {
         Err(KillError::PermissionDenied)
     }
 
     fn write_stdout(&self, data: &[u8]) {
-        let _ = libc::write(1, data.as_ptr(), data.len());
+        if let Ok(s) = core::str::from_utf8(data) {
+            libstd::io::print(s);
+        }
     }
 
     fn write_stderr(&self, data: &[u8]) {
-        let _ = libc::write(2, data.as_ptr(), data.len());
+        if let Ok(s) = core::str::from_utf8(data) {
+            libstd::io::print(s);
+        }
     }
 
-    fn exit(&self, code: i32) -> ! {
-        libc::exit(code);
+    fn exit(&self, _code: i32) -> ! {
+        panic!("Process exited");
     }
 }

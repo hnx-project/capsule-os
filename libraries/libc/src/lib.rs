@@ -1,5 +1,6 @@
 #![no_std]
 
+pub mod posix_stub;
 pub mod syscalls;
 pub use shared::status::Status;
 pub use shared::syscall_nums::*;

@@ -152,8 +152,11 @@ pub fn run_shell<E: Environment>(env: &E) {
     // 启动静默清屏：通过 VFS 打开统一路由的 /dev/tty 设备并写入 ANSI 清屏复位转义字符
     if let Ok(tty_fd) = env.open("/dev/tty", 0) {
         let _ = env.write(tty_fd, b"\x1b[2J\x1b[H");
+        // We close the tty fd safely using our standard Drop/mem::transmute style or directly
         #[cfg(not(feature = "host"))]
-        let _ = libc::close(tty_fd);
+        {
+            let _file = unsafe { core::mem::transmute::<i32, libstd::fs::File>(tty_fd) };
+        }
     }
 
     let mut input_buf = [0u8; 256];
