@@ -18,7 +18,7 @@ impl Vmo {
 
     /// Create a child VMO slicing an existing parent VMO range
     pub fn create_child(&self, offset: usize, size: usize) -> Result<Self, Status> {
-        let child_handle = hnxlibc::syscalls::vmo_create_child(self.handle, offset, size)?;
+        let child_handle = libcapsule::syscalls::vmo_create_child(self.handle, offset, size)?;
         Ok(Self {
             handle: child_handle,
         })
@@ -32,24 +32,24 @@ impl Vmo {
         let buf_ptr = temp.as_mut_ptr() as *mut u8;
         let slice = unsafe { core::slice::from_raw_parts_mut(buf_ptr, size) };
 
-        hnxlibc::syscalls::vmo_read(self.handle, offset, slice)?;
+        libcapsule::syscalls::vmo_read(self.handle, offset, slice)?;
 
         unsafe { Ok(temp.assume_init()) }
     }
 
     /// Read raw slice buffer bytes
     pub fn read(&self, offset: usize, buf: &mut [u8]) -> Result<usize, Status> {
-        hnxlibc::syscalls::vmo_read(self.handle, offset, buf)
+        libcapsule::syscalls::vmo_read(self.handle, offset, buf)
     }
 
     /// Write raw slice buffer bytes
     pub fn write(&self, offset: usize, buf: &[u8]) -> Result<usize, Status> {
-        hnxlibc::syscalls::vmo_write(self.handle, offset, buf)
+        libcapsule::syscalls::vmo_write(self.handle, offset, buf)
     }
 }
 
 impl Drop for Vmo {
     fn drop(&mut self) {
-        let _ = hnxlibc::syscalls::close(self.handle);
+        let _ = libcapsule::syscalls::close(self.handle);
     }
 }

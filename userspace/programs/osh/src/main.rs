@@ -2,7 +2,7 @@
 #![cfg_attr(not(feature = "host"), no_main)]
 
 #[cfg(not(feature = "host"))]
-use hnxlibc::{hnx_arg, hnx_argc, write as hwrite};
+use libc::{hnx_arg, hnx_argc, write as hwrite};
 
 pub mod builtins;
 pub mod env;

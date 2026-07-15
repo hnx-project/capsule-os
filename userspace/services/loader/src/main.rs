@@ -1,15 +1,15 @@
 #![no_std]
 #![no_main]
 
-extern crate hnxlibc;
-extern crate hnxstd;
+extern crate libc;
+extern crate libstd;
 
 mod bootfs;
 mod log;
 
 use bootfs::BootFsLoader;
-use hnxlibc::syscalls;
-use hnxstd::Vmo;
+use libcapsule::syscalls;
+use libstd::Vmo;
 use log::Logger;
 
 #[no_mangle]

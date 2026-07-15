@@ -1,12 +1,12 @@
 #![no_std]
 #![no_main]
 
-extern crate hnxlibc;
+extern crate libc;
 
 pub mod fatfs;
 pub mod ramfs;
 
-use hnxlibc::syscalls;
+use libcapsule::syscalls;
 use ramfs::{RamFs, RamfsNode, RamfsNodeType};
 
 static mut RAM_FS: Option<RamFs> = None;
@@ -122,7 +122,7 @@ pub fn main() -> i32 {
                         // 处理命令并带上客户端传入的句柄列表
                         handle_command(cmd, session_chan, &cmd_handles);
                     }
-                    Err(hnxlibc::Status::PeerClosed) => {
+                    Err(libcapsule::Status::PeerClosed) => {
                         // 客户端关闭连接，清理该会话
                         let _ = syscalls::close(session_chan);
                         SESSIONS[i] = 0;
@@ -340,7 +340,7 @@ fn do_read(fd: u32, len: usize) -> (i32, &'static [u8]) {
     unsafe {
         if fd == 100 {
             static mut TTY_BUF: [u8; 1024] = [0u8; 1024];
-            let read_bytes = hnxlibc::read(0, TTY_BUF.as_mut_ptr(), len.min(1024));
+            let read_bytes = libc::read(0, TTY_BUF.as_mut_ptr(), len.min(1024));
             if read_bytes >= 0 {
                 let static_data =
                     core::slice::from_raw_parts(TTY_BUF.as_ptr(), read_bytes as usize);
@@ -374,7 +374,7 @@ fn do_read(fd: u32, len: usize) -> (i32, &'static [u8]) {
 fn do_write(fd: u32, data: &[u8]) -> i32 {
     unsafe {
         if fd == 100 {
-            let written = hnxlibc::write(1, data.as_ptr(), data.len());
+            let written = libc::write(1, data.as_ptr(), data.len());
             return written as i32;
         }
         if fd < 16 {

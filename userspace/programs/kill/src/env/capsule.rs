@@ -1,6 +1,6 @@
 use super::{KillError, ProcSystem};
 
-extern crate hnxlibc;
+extern crate libc;
 
 pub struct CapsuleEnv;
 
@@ -15,14 +15,14 @@ impl ProcSystem for CapsuleEnv {
     }
 
     fn write_stdout(&self, data: &[u8]) {
-        let _ = hnxlibc::write(1, data.as_ptr(), data.len());
+        let _ = libc::write(1, data.as_ptr(), data.len());
     }
 
     fn write_stderr(&self, data: &[u8]) {
-        let _ = hnxlibc::write(2, data.as_ptr(), data.len());
+        let _ = libc::write(2, data.as_ptr(), data.len());
     }
 
     fn exit(&self, code: i32) -> ! {
-        hnxlibc::exit(code);
+        libc::exit(code);
     }
 }

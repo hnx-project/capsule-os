@@ -153,7 +153,7 @@ pub fn run_shell<E: Environment>(env: &E) {
     if let Ok(tty_fd) = env.open("/dev/tty", 0) {
         let _ = env.write(tty_fd, b"\x1b[2J\x1b[H");
         #[cfg(not(feature = "host"))]
-        let _ = hnxlibc::close(tty_fd);
+        let _ = libc::close(tty_fd);
     }
 
     let mut input_buf = [0u8; 256];

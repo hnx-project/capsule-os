@@ -9,7 +9,7 @@ pub struct Process {
 impl Process {
     /// Allocate a fresh sandboxed Process context inside the microkernel
     pub fn create(name: &str) -> Result<Self, Status> {
-        let handle = hnxlibc::syscalls::process_create(name)?;
+        let handle = libcapsule::syscalls::process_create(name)?;
         Ok(Self { pid: handle as u64 })
     }
 
@@ -20,6 +20,6 @@ impl Process {
 
     /// Safely load an OHLINK executable binary from a slice VMO into the process
     pub fn load_binary(&self, binary_vmo: &Vmo, name: &str) -> Result<u64, Status> {
-        hnxlibc::syscalls::load_binary(binary_vmo.handle(), name)
+        libcapsule::syscalls::load_binary(binary_vmo.handle(), name)
     }
 }

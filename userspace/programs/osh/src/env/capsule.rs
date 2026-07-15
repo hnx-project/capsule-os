@@ -1,7 +1,7 @@
 use super::{Environment, ShellError};
 
-extern crate hnxlibc;
-extern crate hnxstd;
+extern crate libc;
+extern crate libstd;
 
 pub struct CapsuleEnv;
 
@@ -16,13 +16,13 @@ pub struct CapsuleEnv;
 impl Environment for CapsuleEnv {
     fn write_stdout(&self, data: &[u8]) {
         if let Ok(s) = core::str::from_utf8(data) {
-            hnxstd::io::print(s);
+            libstd::io::print(s);
         }
     }
 
     fn write_stderr(&self, data: &[u8]) {
         if let Ok(s) = core::str::from_utf8(data) {
-            hnxstd::io::print(s);
+            libstd::io::print(s);
         }
     }
 
@@ -32,7 +32,7 @@ impl Environment for CapsuleEnv {
             buf[i] = 0;
         }
 
-        let mut res = hnxlibc::read(0, buf.as_mut_ptr(), buf.len());
+        let mut res = libc::read(0, buf.as_mut_ptr(), buf.len());
 
         // Adaptively reconstruct actual read length if return value is clobbered to 0
         if res == 0 {
@@ -53,14 +53,14 @@ impl Environment for CapsuleEnv {
     }
 
     fn getcwd(&self, buf: &mut [u8]) -> Result<usize, ShellError> {
-        match hnxlibc::getcwd(buf) {
+        match libc::getcwd(buf) {
             Ok(n) => Ok(n),
             Err(_) => Err(ShellError::IoError),
         }
     }
 
     fn chdir(&self, path: &str) -> Result<(), ShellError> {
-        match hnxlibc::chdir(path) {
+        match libc::chdir(path) {
             Ok(()) => Ok(()),
             Err(_) => Err(ShellError::PathNotFound),
         }
@@ -95,7 +95,7 @@ impl Environment for CapsuleEnv {
             argv_storage[i + 1] = a.as_bytes();
         }
         let count = core::cmp::min(args.len() + 1, 16);
-        let code = hnxlibc::execve(cmd, &argv_storage[..count]);
+        let code = libc::execve(cmd, &argv_storage[..count]);
         Ok(code)
     }
 
@@ -113,7 +113,7 @@ impl Environment for CapsuleEnv {
             argv_storage[i + 1] = a.as_bytes();
         }
         let count = core::cmp::min(args.len() + 1, 16);
-        match hnxlibc::spawn(cmd, &argv_storage[..count]) {
+        match libcapsule::syscalls::spawn(cmd, &argv_storage[..count]) {
             Ok(pid) => Ok(pid),
             Err(_) => Err(ShellError::IoError),
         }
@@ -125,7 +125,7 @@ impl Environment for CapsuleEnv {
         // stack-array since the kernel reads 8 bytes (two
         // i32s).
         let mut raw = [0i32; 2];
-        match hnxlibc::pipe_pair(&mut raw) {
+        match libc::pipe_pair(&mut raw) {
             Ok(()) => {
                 fds[0] = raw[0];
                 fds[1] = raw[1];
@@ -136,7 +136,7 @@ impl Environment for CapsuleEnv {
     }
 
     fn dup2(&self, old_fd: i32, new_fd: i32) -> Result<(), ShellError> {
-        match hnxlibc::dup2(old_fd, new_fd) {
+        match libc::dup2(old_fd, new_fd) {
             Ok(_) => Ok(()),
             Err(_) => Err(ShellError::IoError),
         }
@@ -146,11 +146,11 @@ impl Environment for CapsuleEnv {
         let mut status: i32 = 0;
         loop {
             // Restore status pointer back to &mut status to safely return wait codes
-            match hnxlibc::wait4(pid as i64, &mut status, 0) {
+            match libc::wait4(pid as i64, &mut status, 0) {
                 Ok((_, _)) => return Ok(status),
-                Err(hnxlibc::Status::TryAgain) => {
+                Err(libcapsule::Status::TryAgain) => {
                     // Child is still running, yield our remaining quantum
-                    hnxlibc::yield_cpu();
+                    libcapsule::syscalls::yield_cpu();
                 }
                 Err(_) => return Err(ShellError::IoError),
             }
@@ -158,18 +158,18 @@ impl Environment for CapsuleEnv {
     }
 
     fn yield_cpu(&self) {
-        hnxlibc::yield_cpu();
+        libcapsule::syscalls::yield_cpu();
     }
 
     fn open(&self, path: &str, flags: i32) -> Result<i32, ShellError> {
-        match hnxlibc::open_str(path, flags, 0) {
+        match libc::open_str(path, flags, 0) {
             fd if fd >= 0 => Ok(fd),
             _ => Err(ShellError::PathNotFound),
         }
     }
 
     fn read(&self, fd: i32, buf: &mut [u8]) -> Result<usize, ShellError> {
-        let n = hnxlibc::read(fd, buf.as_mut_ptr(), buf.len());
+        let n = libc::read(fd, buf.as_mut_ptr(), buf.len());
         if n >= 0 {
             Ok(n as usize)
         } else {
@@ -178,7 +178,7 @@ impl Environment for CapsuleEnv {
     }
 
     fn write(&self, fd: i32, data: &[u8]) -> Result<usize, ShellError> {
-        let n = hnxlibc::write(fd, data.as_ptr(), data.len());
+        let n = libc::write(fd, data.as_ptr(), data.len());
         if n >= 0 {
             Ok(n as usize)
         } else {
@@ -193,6 +193,6 @@ impl Environment for CapsuleEnv {
     }
 
     fn exit(&self, code: i32) -> ! {
-        hnxlibc::exit(code);
+        libc::exit(code);
     }
 }

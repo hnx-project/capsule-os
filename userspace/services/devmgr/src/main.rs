@@ -1,11 +1,11 @@
 #![no_std]
 #![no_main]
 
-extern crate hnxlibc;
+extern crate libc;
 
 fn print(s: &str) {
     unsafe {
-        hnxlibc::write(1, s.as_ptr(), s.len());
+        libc::write(1, s.as_ptr(), s.len());
     }
 }
 

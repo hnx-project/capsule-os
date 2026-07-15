@@ -1,4 +1,4 @@
-use hnxstd::{Process, Vmo};
+use libstd::{Process, Vmo};
 use shared::status::Status;
 
 const MAGIC_BOOTFS: &[u8; 8] = b"HNXF_VFS";

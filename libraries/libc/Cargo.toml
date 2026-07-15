@@ -1,0 +1,10 @@
+[package]
+name = "libc"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+shared = { path = "../../kernel/shared" }

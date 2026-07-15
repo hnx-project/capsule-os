@@ -93,7 +93,7 @@ fn bootstrap_ohlink_tools() -> Result<(), String> {
 
 fn build_userspace_program(plat: &Platform, crate_name: &str) -> Result<(), String> {
     print!("{}  Building{} {} (EL0)...", BOLD_GREEN, RESET, crate_name);
-    let userspace_target = format!("std/targets/{}-unknown-capsule.json", plat.arch);
+    let userspace_target = format!("libraries/targets/{}-unknown-capsule.json", plat.arch);
     // Always build the EL0 / "capsule" feature variant.  Some user
     // programs (e.g. `osh`) default to a host stdlib build for local
     // testing; `--no-default-features --features capsule` switches them

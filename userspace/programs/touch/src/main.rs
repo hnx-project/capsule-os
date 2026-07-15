@@ -71,7 +71,7 @@ fn main() {
 #[cfg(not(feature = "host"))]
 #[no_mangle]
 pub fn main() -> i32 {
-    use hnxlibc::{hnx_arg, hnx_argc};
+    use libc::{hnx_arg, hnx_argc};
     let env = env::capsule::CapsuleEnv;
     let argc = hnx_argc();
     let mut no_create = false;

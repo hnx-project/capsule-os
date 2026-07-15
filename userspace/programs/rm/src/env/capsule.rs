@@ -1,12 +1,12 @@
 use super::{FileSystem, FsError};
 
-extern crate hnxlibc;
+extern crate libc;
 
 pub struct CapsuleEnv;
 
 impl FileSystem for CapsuleEnv {
     fn unlink(&self, path: &str) -> Result<(), FsError> {
-        let res = hnxlibc::unlink(path.as_ptr());
+        let res = libc::unlink(path.as_ptr());
         if res == 0 {
             Ok(())
         } else {
@@ -15,7 +15,7 @@ impl FileSystem for CapsuleEnv {
     }
 
     fn remove_dir(&self, path: &str) -> Result<(), FsError> {
-        let res = hnxlibc::rmdir(path.as_ptr());
+        let res = libc::rmdir(path.as_ptr());
         if res == 0 {
             Ok(())
         } else {
@@ -38,14 +38,14 @@ impl FileSystem for CapsuleEnv {
     }
 
     fn write_stdout(&self, data: &[u8]) {
-        let _ = hnxlibc::write(1, data.as_ptr(), data.len());
+        let _ = libc::write(1, data.as_ptr(), data.len());
     }
 
     fn write_stderr(&self, data: &[u8]) {
-        let _ = hnxlibc::write(2, data.as_ptr(), data.len());
+        let _ = libc::write(2, data.as_ptr(), data.len());
     }
 
     fn exit(&self, code: i32) -> ! {
-        hnxlibc::exit(code);
+        libc::exit(code);
     }
 }

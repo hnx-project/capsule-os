@@ -1,6 +1,6 @@
 use super::{Dirent, FileSystem, FsError};
 
-extern crate hnxlibc;
+extern crate libc;
 
 pub struct CapsuleEnv;
 
@@ -19,14 +19,14 @@ impl FileSystem for CapsuleEnv {
     fn close_dir(&self, _fd: i32) {}
 
     fn write_stdout(&self, data: &[u8]) {
-        let _ = hnxlibc::write(1, data.as_ptr(), data.len());
+        let _ = libc::write(1, data.as_ptr(), data.len());
     }
 
     fn write_stderr(&self, data: &[u8]) {
-        let _ = hnxlibc::write(2, data.as_ptr(), data.len());
+        let _ = libc::write(2, data.as_ptr(), data.len());
     }
 
     fn exit(&self, code: i32) -> ! {
-        hnxlibc::exit(code);
+        libc::exit(code);
     }
 }

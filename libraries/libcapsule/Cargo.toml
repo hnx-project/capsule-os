@@ -1,5 +1,5 @@
 [package]
-name = "hnxlibc"
+name = "libcapsule"
 version.workspace = true
 edition.workspace = true
 
@@ -7,4 +7,5 @@ edition.workspace = true
 crate-type = ["rlib"]
 
 [dependencies]
-shared = { path = "../kernel/shared" }
+libc = { path = "../libc" }
+shared = { path = "../../kernel/shared" }

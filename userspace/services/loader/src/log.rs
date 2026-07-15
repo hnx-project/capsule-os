@@ -1,4 +1,4 @@
-use hnxlibc;
+use libc;
 use shared::status::Status;
 
 pub struct Logger;
@@ -9,7 +9,7 @@ impl Logger {
         let mut stack_buf = [0u8; 128];
         let len = core::cmp::min(msg.len(), 127);
         stack_buf[..len].copy_from_slice(&msg.as_bytes()[..len]);
-        let _ = hnxlibc::write(1, stack_buf.as_ptr(), len);
+        let _ = libc::write(1, stack_buf.as_ptr(), len);
     }
 
     /// Print status for a spawned process

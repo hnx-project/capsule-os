@@ -8,7 +8,8 @@ name = "devmgr"
 path = "src/main.rs"
 
 [dependencies]
-hnxlibc.workspace = true
+libc.workspace = true
+libcapsule.workspace = true
 
 [features]
 capsule = []

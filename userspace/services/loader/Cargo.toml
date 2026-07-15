@@ -8,8 +8,9 @@ name = "loader"
 path = "src/main.rs"
 
 [dependencies]
-hnxlibc.workspace = true
-hnxstd.workspace = true
+libc.workspace = true
+libstd.workspace = true
+libcapsule.workspace = true
 shared = { path = "../../../kernel/shared" }
 
 # [build]

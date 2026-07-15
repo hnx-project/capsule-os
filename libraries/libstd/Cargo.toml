@@ -1,10 +1,11 @@
 [package]
-name = "hnxstd"
+name = "libstd"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-hnxlibc = { path = "../../hnxlibc" }
+libc = { path = "../libc" }
+libcapsule = { path = "../libcapsule" }
 shared = { path = "../../kernel/shared" }
 
 [features]
