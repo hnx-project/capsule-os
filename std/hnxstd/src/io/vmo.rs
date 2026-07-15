@@ -19,8 +19,18 @@ impl Vmo {
     /// Create a child VMO slicing an existing parent VMO range
     pub fn create_child(&self, offset: usize, size: usize) -> Result<Self, Status> {
         let child_handle = hnxlibc::syscalls::vmo_create_child(self.handle, offset, size)?;
+        // TEMP print the raw child_handle
+        let bytes = [
+            b'C', b'H', b'=',
+            b'0' + (child_handle / 1000 % 10) as u8,
+            b'0' + (child_handle / 100 % 10) as u8,
+            b'0' + (child_handle / 10 % 10) as u8,
+            b'0' + (child_handle % 10) as u8,
+            b'\n'
+        ];
+        let _ = hnxlibc::write(1, bytes.as_ptr(), 8);
         Ok(Self {
-            handle: child_handle,
+            handle: child_handle as usize,
         })
     }
 

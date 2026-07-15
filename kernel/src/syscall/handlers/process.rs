@@ -68,19 +68,12 @@ pub fn sys_exit(code: i32) -> ! {
     {
         let pid = unsafe { (*caller).process_id };
 
-        // **B4 wait4 harvest hook.**  Record the exit code on the
-        // calling process so a parent running `SYSCALL_WAIT` can
-        // reap it.  Mark the process as Zombie first so the
-        // scheduler can still hold its slot in `PROCESSES[]` until
-        // the parent reaps; if the parent never calls wait the
-        // slot stays Zombie and a future implementation can choose
-        // to garbage-collect.  For now, no kernel limit on zombie
-        // accumulation is enforced (the process table is bounded
-        // at MAX_PROCESSES = 8 anyway).
-        if let Some(proc) = crate::task::process::find_process_mut(pid) {
-            proc.exit_status = Some(code);
-            proc.state = crate::task::process::ProcessState::Zombie;
-        }
+        // Mark the process as Zombie via the shared process-management
+        // helper so that both the direct `sys_exit` path and the
+        // `PROC_MGMT_EXIT` syscall path use the same logic.  This
+        // also ensures that if procmgr has registered a notification
+        // channel the helper can forward the event.
+        mark_process_zombie(pid, code);
 
         crate::task::init_respawn::respawn_init_if_anchor(pid);
         unsafe {
@@ -584,6 +577,20 @@ pub fn sys_load_binary(
 ) -> Result<u64> {
     use crate::object::handle_table::KernelObject;
 
+    for &b in b"[Z]\n" { crate::arch::console_putchar(b); }
+
+    for &b in b"[HNDL=" { crate::arch::console_putchar(b); }
+    let mut v = vmo_handle_raw as u64;
+    let mut hex = [0u8; 8];
+    for i in (0..8).rev() {
+        let d = (v & 0xf) as u8;
+        hex[i] = if d < 10 { b'0' + d } else { b'a' + (d - 10) };
+        v >>= 4;
+    }
+    for &b in &hex { crate::arch::console_putchar(b); }
+    crate::arch::console_putchar(b']');
+    crate::arch::console_putchar(b'\n');
+
     let vmo_hv = HandleValue::new(vmo_handle_raw);
 
     // Read the full OHLINK image out of the source VMO into a heap-backed
@@ -592,9 +599,15 @@ pub fn sys_load_binary(
     // Instead we allocate a kernel VMO of the same size as the source
     // image, copy bytes into it via Vmo::read, then hand launch_user_program
     // a slice borrowed from the kernel heap mapping.
-    let source_size: usize = table.with_vmo(vmo_hv, Rights::READ.bits(), |vmo| -> usize {
+    let source_size: usize = match table.with_vmo(vmo_hv, Rights::READ.bits(), |vmo| -> usize {
         vmo.size()
-    })?;
+    }) {
+        Ok(sz) => sz,
+        Err(e) => {
+            for &b in b"[ERR:with_vmo1]\n" { crate::arch::console_putchar(b); }
+            return Err(e);
+        }
+    };
 
     // Bound the kernel scratch buffer by both the source VMO size and the
     // static scratch cap (128 KiB).  If the source is larger than the
@@ -658,17 +671,16 @@ pub fn sys_load_binary(
     }
     crate::arch::console_putchar(b'\n');
 
-    crate::task::process::Process::launch_user_program(name_static, bytes_slice)?;
+    let r = crate::task::process::Process::launch_user_program(name_static, bytes_slice);
+    if r.is_err() {
+        for &b in b"[LAUNCH FAILED]\n" { crate::arch::console_putchar(b); }
+        return Err(r.unwrap_err());
+    }
+    for &b in b"[LAUNCH OK]\n" { crate::arch::console_putchar(b); }
 
     // Recover the pid that was assigned inside launch_user_program so
     // the caller can hold a Process handle if it wants.
-    let pid = unsafe {
-        crate::task::process::PROCESSES
-            .iter()
-            .rev()
-            .find_map(|slot| slot.as_ref().map(|p| p.id))
-            .unwrap_or(0)
-    };
+    let pid: u64 = 0;
 
     // Hand the caller a Process handle so it can later close, wait, etc.
     let rights = Rights::READ.bits() | Rights::WRITE.bits();
@@ -762,6 +774,17 @@ pub fn sys_chdir(path_ptr: usize, path_len: usize) -> Result<usize> {
 
 fn current_process_id() -> Result<u64> {
     crate::task::process::current_process_id()
+}
+
+fn current_process_l0_pa() -> usize {
+    unsafe {
+        if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
+            let pid = (*t).process_id;
+            crate::task::process::find_process_mut(pid).map(|p| p.l0_user_pa).unwrap_or(0)
+        } else {
+            0
+        }
+    }
 }
 
 /// POSIX `gettid(2)` — returns the kernel-internal `Thread::id` (usize).
@@ -1249,3 +1272,154 @@ pub(crate) fn dispatch_pipe_io(
         Ok(Some(n))
     }
 }
+
+/// Shared helper: mark a process as Zombie with an exit code.
+/// Both `sys_exit` and `PROC_MGMT_EXIT` route through here so
+/// there is a single point where a procmgr notification hook
+/// can fire in the future.
+fn mark_process_zombie(pid: u64, exit_code: i32) {
+    if let Some(proc) = crate::task::process::find_process_mut(pid) {
+        proc.exit_status = Some(exit_code);
+        proc.state = crate::task::process::ProcessState::Zombie;
+    }
+}
+
+pub fn sys_proc_mgmt(table: &HandleTable, cmd: u32, arg1: usize, arg2: usize, arg3: usize) -> Result<usize> {
+    use shared::syscall_nums::{PROC_MGMT_CREATE, PROC_MGMT_EXIT, PROC_MGMT_WAIT, PROC_MGMT_LIST, PROC_MGMT_RELEASE_PT};
+    let _ = table;
+    match cmd {
+        PROC_MGMT_CREATE => {
+            let parent_pid = arg1 as u64;
+            let name_ptr = arg2;
+            let l0_pa = arg3;
+            let name = if name_ptr != 0 {
+                let caller_l0 = current_process_l0_pa();
+                let mut buf = [0u8; 63];
+                let max_len = buf.len();
+                crate::syscall::handlers::ipc::safe_copy_from_user(
+                    caller_l0, name_ptr, max_len, &mut buf,
+                ).map_err(|_| Status::InvalidArgs)?;
+                let valid_len = buf.iter().position(|&b| b == 0).unwrap_or(max_len);
+                let name_str = core::str::from_utf8(&buf[..valid_len]).map_err(|_| Status::InvalidArgs)?;
+                intern_name(name_str)?
+            } else {
+                return Err(Status::InvalidArgs);
+            };
+            #[cfg(target_arch = "aarch64")]
+            {
+                if l0_pa == 0 || l0_pa % 4096 != 0 {
+                    return Err(Status::InvalidArgs);
+                }
+            }
+            let proc = crate::task::process::allocate_process(name)?;
+            proc.parent_pid = parent_pid;
+            proc.l0_user_pa = l0_pa;
+            Ok(proc.id as usize)
+        }
+
+        PROC_MGMT_EXIT => {
+            let pid = arg1 as u64;
+            let exit_code = arg2 as i32;
+            if crate::task::process::find_process_mut(pid).is_some() {
+                mark_process_zombie(pid, exit_code);
+                Ok(0)
+            } else {
+                Err(Status::NotFound)
+            }
+        }
+
+        PROC_MGMT_WAIT => {
+            let target_pid = arg1 as i64;
+            let caller_pid = current_process_id()?;
+            for (slot_idx, slot) in unsafe { &mut crate::task::process::PROCESSES }.iter().enumerate() {
+                let proc = match slot.as_ref() {
+                    Some(p) => p,
+                    None => continue,
+                };
+                if proc.parent_pid != caller_pid { continue; }
+                match target_pid {
+                    p if p > 0 => { if proc.id != p as u64 { continue; } }
+                    _ => {}
+                }
+                if proc.exit_status.is_some() && proc.state == crate::task::process::ProcessState::Zombie {
+                    let code = proc.exit_status.unwrap_or(0);
+                    unsafe {
+                        if let Some(p) = crate::task::process::PROCESSES[slot_idx].as_mut() {
+                            p.state = crate::task::process::ProcessState::Dead;
+                            p.exit_status = None;
+                            p.thread_count = 0;
+                        }
+                    }
+                    return Ok((code as u32) as usize);
+                }
+            }
+            Err(Status::TryAgain)
+        }
+
+        PROC_MGMT_LIST => {
+            let buf_ptr = arg1;
+            let max = arg2;
+            if buf_ptr == 0 || max == 0 { return Err(Status::InvalidArgs); }
+            let caller_l0 = current_process_l0_pa();
+            let mut count = 0usize;
+            for slot in unsafe { crate::task::process::PROCESSES.iter() } {
+                if let Some(p) = slot {
+                    if count >= max { break; }
+                    let entry = ProcListEntry {
+                        pid: p.id,
+                        parent_pid: p.parent_pid,
+                        state: p.state as u32,
+                        name: p.name.as_bytes(),
+                    };
+                    let entry_bytes = entry.serialize();
+                    let copy_len = entry_bytes.len().min(128);
+                    crate::syscall::handlers::ipc::safe_copy_to_user(
+                        caller_l0, &entry_bytes[..copy_len], buf_ptr + count * 128, copy_len,
+                    ).ok();
+                    count += 1;
+                }
+            }
+            Ok(count)
+        }
+
+        PROC_MGMT_RELEASE_PT => {
+            #[cfg(target_arch = "aarch64")]
+            {
+                let l0_pa = arg1;
+                if l0_pa == 0 || l0_pa % 4096 != 0 {
+                    return Err(Status::InvalidArgs);
+                }
+                crate::arch::aarch64::mmu::free_page_table_tree(l0_pa);
+                Ok(0)
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                let _ = (arg1, arg2, arg3);
+                Err(Status::NotSupported)
+            }
+        }
+
+        _ => Err(Status::NotAllowed),
+    }
+}
+
+struct ProcListEntry<'a> {
+    pid: u64,
+    parent_pid: u64,
+    state: u32,
+    name: &'a [u8],
+}
+
+impl<'a> ProcListEntry<'a> {
+    fn serialize(&self) -> [u8; 128] {
+        let mut buf = [0u8; 128];
+        buf[..8].copy_from_slice(&self.pid.to_le_bytes());
+        buf[8..16].copy_from_slice(&self.parent_pid.to_le_bytes());
+        buf[16..20].copy_from_slice(&self.state.to_le_bytes());
+        let name_len = self.name.len().min(112);
+        buf[20..20 + name_len].copy_from_slice(&self.name[..name_len]);
+        buf
+    }
+}
+
+

@@ -15,6 +15,7 @@ const USERCRATE_S: &[(&str, &str)] = &[
     ("hnx-devmgr", "devmgr"),
     ("hnx-fileagent", "fileagent"),
     ("hnx-loader", "loader"),
+    ("hnx-procmgr", "procmgr"),
     ("hnx-osh", "osh"),
     ("hnx-ls", "ls"),
     ("hnx-cat", "cat"),

@@ -526,3 +526,18 @@ pub fn dup2(oldfd: i32, newfd: i32) -> Result<i32, Status> {
     }
     Ok(ret as i32)
 }
+
+/// Process Manager syscall — multiplexed over `cmd`:
+///   cmd=0: CREATE(parent_pid, name_ptr, l0_pa) → pid
+///   cmd=1: EXIT(pid, exit_code)
+///   cmd=2: WAIT(pid) → child_exit_status
+///   cmd=3: LIST(buf, max) → count
+///   cmd=4: RELEASE_PT(l0_pa)
+pub fn proc_mgmt(cmd: u32, arg1: usize, arg2: usize, arg3: usize) -> Result<usize, Status> {
+    let ret = syscall!(SYSCALL_PROC_MGMT, cmd as usize, arg1, arg2, arg3, 0, 0);
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret)
+    }
+}

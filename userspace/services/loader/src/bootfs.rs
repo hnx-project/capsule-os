@@ -1,4 +1,5 @@
-use hnxstd::{Process, Vmo};
+use hnxstd::Vmo;
+use hnxlibc::syscalls;
 use shared::status::Status;
 
 const MAGIC_BOOTFS: &[u8; 8] = b"HNXF_VFS";
@@ -84,8 +85,11 @@ impl<'a> BootFsLoader<'a> {
                 let aligned_sz = (file_size + align_diff + 4095) & !4095;
 
                 let child_vmo = self.vmo.create_child(aligned_off, aligned_sz)?;
-                let proc = Process::create(path)?;
-                let pid = proc.load_binary(&child_vmo, path)?;
+                // TEMP: dump the handle value
+                let hv = child_vmo.handle();
+                let msg = [b'H', b'=', b'0' + (hv / 1000 % 10) as u8, b'0' + (hv / 100 % 10) as u8, b'0' + (hv / 10 % 10) as u8, b'0' + (hv % 10) as u8, b'\n'];
+                let _ = hnxlibc::write(1, msg.as_ptr(), 7);
+                let pid = syscalls::load_binary(hv, path)?;
                 return Ok(pid);
             }
         }

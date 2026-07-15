@@ -15,7 +15,7 @@ use log::Logger;
 #[no_mangle]
 pub fn main() -> i32 {
     Logger::write(
-        "Loader: bringing up EL0 services (devmgr + fileagent) via Userboot VMO slices!\n",
+        "Loader: bringing up EL0 services (devmgr, fileagent, procmgr) via Userboot VMO slices!\n",
     );
 
     // Strictly resolve raw handle on main stack to guarantee handle 100 lives until main exits!
@@ -30,7 +30,11 @@ pub fn main() -> i32 {
     let fa_res = loader.load_and_spawn("system/bin/fileagent");
     Logger::print_spawn_status("fileagent", fa_res);
 
-    // Stage 3: Polling Wait for File System Service registration
+    // Stage 3: Spawn ProcMgr (Process Manager)
+    let procmgr_res = loader.load_and_spawn("system/bin/procmgr");
+    Logger::print_spawn_status("procmgr", procmgr_res);
+
+    // Stage 4: Polling Wait for File System Service registration
     let mut attempts = 0;
     const MAX_ATTEMPTS: usize = 200;
     while syscalls::channel_lookup("svc.vfs").is_err() {
@@ -42,9 +46,31 @@ pub fn main() -> i32 {
         let _ = syscalls::yield_cpu();
     }
 
-    // Stage 4: Transfer Control to User Interactive Shell (disabled until procmgr is ready)
-    // Logger::write("Loader: launching user shell osh\n");
-    // let _ = hnxlibc::exec("osh");
+    // Stage 5: Wait for Process Manager registration
+    let mut p_attempts = 0;
+    while syscalls::channel_lookup("svc.procmgr").is_err() {
+        p_attempts += 1;
+        if p_attempts >= MAX_ATTEMPTS {
+            Logger::write("Loader: svc.procmgr did not register, starting osh anyway\n");
+            break;
+        }
+        let _ = syscalls::yield_cpu();
+    }
 
-    0
+    // Stage 6: Spawn user shell
+    Logger::write("Loader: launching user shell osh\n");
+    match loader.load_and_spawn("system/bin/osh") {
+        Ok(pid) => {
+            Logger::write("Loader: osh launched successfully, entering idle loop\n");
+            let _ = pid;
+        }
+        Err(e) => {
+            Logger::write("Loader: failed to spawn osh\n");
+            let _ = e;
+        }
+    }
+
+    loop {
+        let _ = syscalls::yield_cpu();
+    }
 }

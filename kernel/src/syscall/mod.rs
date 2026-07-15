@@ -216,6 +216,14 @@ pub fn syscall_dispatch(syscall_num: u32, arg0: usize, arg1: usize,
             0
         }
 
+        SYSCALL_PROC_MGMT => {
+            let cmd = arg0 as u32;
+            match handlers::process::sys_proc_mgmt(table, cmd, arg1, arg2, arg3) {
+                Ok(v) => v,
+                Err(e) => e.to_raw(),
+            }
+        }
+
         SYSCALL_OPEN => {
             let path_ptr = arg0;
             let path_len = arg1;
