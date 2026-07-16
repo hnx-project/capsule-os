@@ -95,6 +95,7 @@ pub fn sys_exit(code: i32) -> ! {
     // kernel either picks another thread or halts.
     let _ = caller_pid;
     unsafe { crate::task::scheduler::SCHEDULER.schedule(); }
+    crate::log_info!("SYSCALL", "SCHEDULER schedule caller_pid {}, pid {}", caller_pid, code);
 
     // `schedule()` either switched to another thread (and will not
     // return) or hit the all-dead halt path.  The `wfe` / `wfi`
@@ -705,12 +706,15 @@ pub fn sys_service_spawn(
     desc.path = unsafe { core::mem::transmute(path_str) };
 
     // 4. Delegate completely to our high-level, zero-duplication ServiceLauncher!
+    crate::log_info!("SYSCALL_SPAWN", "sys_service_spawn: Entering ServiceLauncher::launch for desc: name={}, path={}", desc.name, desc.path);
     let pid = crate::loader::ServiceLauncher::launch(&desc)?;
+    crate::log_info!("SYSCALL_SPAWN", "sys_service_spawn: ServiceLauncher::launch succeeded with PID={}", pid);
     
     // Register the Process handle so the caller can wait/terminate it normally
     let rights = Rights::READ.bits() | Rights::WRITE.bits();
     let _ = table.add(crate::object::handle_table::KernelObject::Process(pid), rights);
     
+    crate::log_info!("SYSCALL_SPAWN", "sys_service_spawn: Successfully added to handle table, returning PID={}", pid);
     Ok(pid)
 }
 
@@ -939,13 +943,16 @@ pub fn sys_wait4(
             )
             .ok();
         }
+        let mut reaped_process = None;
         unsafe {
-            if let Some(p) = crate::task::process::PROCESSES[slot_idx].as_mut() {
-                p.state = crate::task::process::ProcessState::Dead;
-                p.exit_status = None;
-                p.thread_count = 0;
-            }
+            reaped_process = crate::task::process::PROCESSES[slot_idx].take();
         }
+        if let Some(mut p) = reaped_process {
+            p.state = crate::task::process::ProcessState::Dead;
+            p.exit_status = None;
+            p.thread_count = 0;
+        }
+        let _ = reaped_process; // Drop the reaped Process, triggering Process::drop()
         return Ok(reaped_pid);
     }
 
@@ -1368,12 +1375,19 @@ pub fn sys_proc_mgmt(table: &HandleTable, cmd: u32, arg1: usize, arg2: usize, ar
                 }
                 if proc.exit_status.is_some() && proc.state == crate::task::process::ProcessState::Zombie {
                     let code = proc.exit_status.unwrap_or(0);
+                    // Move ownership destructuring out of static PROCESSES.
+                    // This triggers impl Drop for Process, which safely reclaims intermediate page tables,
+                    // fully adhering to strict drop order.
+                    let mut reaped_process = None;
                     unsafe {
-                        if let Some(p) = crate::task::process::PROCESSES[slot_idx].as_mut() {
-                            p.state = crate::task::process::ProcessState::Dead;
-                            p.exit_status = None;
-                            p.thread_count = 0;
-                        }
+                        reaped_process = crate::task::process::PROCESSES[slot_idx].take();
+                    }
+                    if let Some(mut p) = reaped_process {
+                        p.state = crate::task::process::ProcessState::Dead;
+                        p.exit_status = None;
+                        p.thread_count = 0;
+                        // Let local variable 'p' drop out of scope here. This invokes Process::drop()
+                        // and reclaims its page tables.
                     }
                     return Ok((code as u32) as usize);
                 }

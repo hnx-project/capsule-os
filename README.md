@@ -115,7 +115,7 @@ When launched using `xtask code run --arch aarch64`, the bootloader aligns, vali
 ```text
 INFO  | BOOT           | Booting v0.5.9-develop...
 INFO  | BOOT           | DTB found at fallback addr 0x42000000.
-INFO  | BOOT           | Valid OHC Image Found!
+INFO  | BOOT           | Valid OHLINK Image Found!
 INFO  | BOOT           | => Version : 1.1
 INFO  | BOOT           | => Entry   : 0x0000000040080000
 INFO  | BOOT           | => Segments: 1

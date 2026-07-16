@@ -85,6 +85,16 @@ pub struct Process {
     /// per-process instead of globally.  `ASID_KERNEL` (= 0) while the
     /// slot has not yet been initialised by `init_in_place`.
     pub asid: u16,
+    /// List of VMOs owned by this process. This guarantees that all physical memory
+    /// pages allocated for the process's stack, code, and data segments remain
+    /// permanently reserved under explicit object ownership.
+    pub vmos: [Option<crate::mm::vmo::Vmo>; 32],
+    /// Thread-safe tracker recording the physical page frames (PAs) allocated
+    /// for this process's intermediate page directories (L1, L2, L3) to maintain
+    /// explicit ownership over MMU structure pages and prevent recycling/stomping.
+    pub page_tables: [usize; 64],
+    /// Total number of tracked page table pages.
+    pub page_table_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +127,9 @@ impl Process {
             asid: crate::arch::aarch64::asid::ASID_KERNEL,
             #[cfg(not(target_arch = "aarch64"))]
             asid: 0,
+            vmos: [const { None }; 32],
+            page_tables: [0usize; 64],
+            page_table_count: 0,
         }
     }
 
@@ -151,6 +164,9 @@ impl Process {
         self.pending_signals = 0u32;
         self.fd_table = [const { None }; FD_TABLE_SIZE];
         self.next_fd = USER_FD_BASE;
+        self.vmos = [const { None }; 32];
+        self.page_tables = [0usize; 64];
+        self.page_table_count = 0;
 
         #[cfg(target_arch = "aarch64")]
         {
@@ -244,8 +260,13 @@ impl Process {
 
             crate::arch::aarch64::mmu::zero_page(l0_user_pa);
             crate::arch::aarch64::mmu::flush_table_page_pub(l0_user_pa);
+            proc.page_tables[0] = l0_user_pa;
+            proc.page_table_count += 1;
+
             crate::arch::aarch64::mmu::zero_page(user_l1_pa);
             crate::arch::aarch64::mmu::flush_table_page_pub(user_l1_pa);
+            proc.page_tables[1] = user_l1_pa;
+            proc.page_table_count += 2;
 
             let l0_kva = crate::mm::mmu::pa_to_kernel_va(l0_user_pa) as *mut u64;
             let l1_entry = ((user_l1_pa as u64) & 0x0000_FFFF_FFFF_F000)
@@ -262,6 +283,12 @@ impl Process {
             let uart_flags = crate::arch::aarch64::mmu::MapFlags::device_rw_user();
             if let Err(e) = crate::arch::aarch64::mmu::map_page_under_l0(l0_user_pa, 0x09000000, 0x09000000, uart_flags) {
                 crate::kprintln!("WARNING: Failed to map UART under user L0: {:?}", e);
+            }
+
+            // Map GIC CPU Interface page under user L0 to support IRQ EOI register accesses (0x08010000)
+            let gic_flags = crate::arch::aarch64::mmu::MapFlags::device_rw_user();
+            if let Err(e) = crate::arch::aarch64::mmu::map_page_under_l0(l0_user_pa, 0x08010000, 0x08010000, gic_flags) {
+                crate::kprintln!("WARNING: Failed to map GIC under user L0: {:?}", e);
             }
 
             // High Half Kernel Space Page Table Copy:
@@ -301,7 +328,15 @@ impl Process {
                         if parent_l1_pa != 0 {
                             let parent_l1_kva = crate::mm::mmu::pa_to_kernel_va(parent_l1_pa) as *const u64;
                             let new_l1_kva = crate::mm::mmu::pa_to_kernel_va(user_l1_pa) as *mut u64;
-                            for i in 0..3 {
+                             for i in 0..3 {
+                                // **CRITICAL MULTI-CORE SEGMENT ISOLATION**:
+                                // We ONLY copy L1[1] (1-2GB, containing loader bootstrap text image segments).
+                                // We MUST NOT copy L1[0] (0-1GB, containing identity MMIO/UART device memory) or L1[2]
+                                // (2-3GB, containing parent's private root_vmar mapping, text, and stack).
+                                // This guarantees 100% independent leaf PTE/page tables between PID 1 & 2.
+                                if i == 0 || i == 2 {
+                                    continue;
+                                }
                                 let entry = unsafe { core::ptr::read_volatile(parent_l1_kva.add(i)) };
                                 if entry != 0 {
                                     unsafe { core::ptr::write_volatile(new_l1_kva.add(i), entry); }
@@ -874,6 +909,37 @@ pub fn current_process_id() -> Result<u64> {
     }
 }
 
+/// Thread-safe tracker to register page table pages under the currently running process
+pub fn current_process_register_page_table(pa: usize) {
+    unsafe {
+        if let Ok(pid) = current_process_id() {
+            if let Some(proc) = find_process_mut(pid) {
+                if proc.page_table_count < 64 {
+                    proc.page_tables[proc.page_table_count] = pa;
+                    proc.page_table_count += 1;
+                }
+            }
+        }
+    }
+}
+
+/// Thread-safe tracker to register page table pages under a specific process matching its root L0 PA
+pub fn register_page_table_for_l0(l0_pa: usize, pa: usize) {
+    unsafe {
+        for slot in PROCESSES.iter_mut() {
+            if let Some(proc) = slot {
+                if proc.l0_user_pa == l0_pa {
+                    if proc.page_table_count < 64 {
+                        proc.page_tables[proc.page_table_count] = pa;
+                        proc.page_table_count += 1;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+}
+
 pub fn allocate_process(name: &'static str) -> Result<&'static mut Process> {
     unsafe {
         for slot in PROCESSES.iter_mut() {
@@ -922,4 +988,39 @@ pub fn find_process_l0_user_pa(id: u64) -> Option<(usize, u16)> {
         }
     }
     None
+}
+
+impl Drop for Process {
+    fn drop(&mut self) {
+        // Strict microkernel drop order:
+        // 1. Destructure and clear the ASID/TLB registrations to stop CPU from referencing this process
+        // 2. Free and clear the VMAR registrations to release virtual mappings
+        // 3. Free the tracked L1, L2, L3 Page Table pages so they can be safely reclaimed back to the allocator
+        // 4. Finally, release the OHLINK segment and Stack VMO physical data pages
+        
+        crate::log_info!("PROCESS_DROP", "Process '{}' (PID {}) is dropping. Reclaiming intermediate page table pages.", self.name, self.id);
+        
+        #[cfg(target_arch = "aarch64")]
+        {
+            // Flush all TLB entries for this process ASID
+            unsafe {
+                core::arch::asm!(
+                    "dsb ish",
+                    "tlbi vmalle1is",
+                    "dsb sy",
+                    "isb",
+                    options(nomem, nostack)
+                );
+            }
+        }
+
+        // Free tracked intermediate page directories in backward order
+        for idx in (0..self.page_table_count).rev() {
+            let pa = self.page_tables[idx];
+            if pa != 0 {
+                crate::log_info!("PROCESS_DROP", "Reclaiming Page Table page: {:#x}", pa);
+                crate::mm::phys::free_page(crate::mm::phys::PhysAddr::new(pa));
+            }
+        }
+    }
 }

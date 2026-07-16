@@ -13,6 +13,6 @@ name = "osh"
 path = "src/main.rs"
 
 [dependencies]
-libc = { workspace = true }
-libstd = { workspace = true, optional = true }
-libcapsule = { workspace = true }
+libc = { path = "../../../libraries/libc", package = "libc" }
+libstd = { path = "../../../libraries/libstd", package = "libstd", optional = true }
+libcapsule = { path = "../../../libraries/libcapsule", package = "libcapsule" }

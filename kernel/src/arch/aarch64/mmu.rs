@@ -346,6 +346,7 @@ fn root_for_va(va: usize) -> u64 {
 /// containing 512 2 MiB block entries that re-create the original mapping.
 unsafe fn shatter_l1_block(l1_pa: usize, l1_idx: usize, original: u64) -> Result<usize> {
     let new_l2_pa = phys::alloc_page()?.as_usize();
+    crate::task::process::current_process_register_page_table(new_l2_pa);
     zero_page(new_l2_pa);
 
     let block_base_pa = (original & 0x0000_FFFF_FFFF_F000) as usize;
@@ -414,6 +415,7 @@ pub fn flush_table_page_pub(table_pa: usize) {
 /// containing 512 4 KiB page entries that re-create the original mapping.
 unsafe fn shatter_l2_block(l2_pa: usize, l2_idx: usize, original: u64) -> Result<usize> {
     let new_l3_pa = phys::alloc_page()?.as_usize();
+    crate::task::process::current_process_register_page_table(new_l3_pa);
     zero_page(new_l3_pa);
 
     let block_pa = (original & 0x0000_FFFF_FFFF_F000) as usize;
@@ -464,6 +466,7 @@ pub fn map_page(va: usize, pa: usize, flags: MapFlags) -> Result<()> {
         } else {
             // Allocate L1.
             let new_l1 = phys::alloc_page()?.as_usize();
+            crate::task::process::current_process_register_page_table(new_l1);
             zero_page(new_l1);
             // CRITICAL FIX: Ensure the Table Descriptor has UXNTable (bit 60), PXNTable (bit 61), 
             // and APTable (bits 62:61) set to 0. This allows lower levels (EL0 user) to fully execute code.
@@ -483,6 +486,7 @@ pub fn map_page(va: usize, pa: usize, flags: MapFlags) -> Result<()> {
             shatter_l1_block(l1_pa, l1_idx, l1e)?
         } else {
             let new_l2 = phys::alloc_page()?.as_usize();
+            crate::task::process::current_process_register_page_table(new_l2);
             zero_page(new_l2);
             // CRITICAL FIX: Ensure UXNTable / PXNTable / APTable are zeroed out on this Table Descriptor
             let entry = pa_to_pte_addr(new_l2) | PTE_VALID | PTE_TYPE_TABLE;
@@ -501,6 +505,7 @@ pub fn map_page(va: usize, pa: usize, flags: MapFlags) -> Result<()> {
             shatter_l2_block(l2_pa, l2_idx, l2e)?
         } else {
             let new_l3 = phys::alloc_page()?.as_usize();
+            crate::task::process::current_process_register_page_table(new_l3);
             zero_page(new_l3);
             // CRITICAL FIX: Ensure UXNTable / PXNTable / APTable are zeroed out on this Table Descriptor
             let entry = pa_to_pte_addr(new_l3) | PTE_VALID | PTE_TYPE_TABLE;
@@ -564,6 +569,7 @@ pub fn map_page_under_l0(l0_pa: usize, va: usize, pa: usize, flags: MapFlags) ->
             let entry = pa_to_pte_addr(new_l1) | PTE_VALID | PTE_TYPE_TABLE;
             let clean_entry = entry & 0x07FF_FFFF_FFFF_FFFFu64;
             write_pte(l0_pa, l0_idx, clean_entry);
+            crate::task::process::register_page_table_for_l0(l0_pa, new_l1);
             new_l1
         };
 
@@ -580,6 +586,7 @@ pub fn map_page_under_l0(l0_pa: usize, va: usize, pa: usize, flags: MapFlags) ->
             let entry = pa_to_pte_addr(new_l2) | PTE_VALID | PTE_TYPE_TABLE;
             let clean_entry = entry & 0x07FF_FFFF_FFFF_FFFFu64;
             write_pte(l1_pa, l1_idx, clean_entry);
+            crate::task::process::register_page_table_for_l0(l0_pa, new_l2);
             new_l2
         };
 
@@ -596,6 +603,7 @@ pub fn map_page_under_l0(l0_pa: usize, va: usize, pa: usize, flags: MapFlags) ->
             let entry = pa_to_pte_addr(new_l3) | PTE_VALID | PTE_TYPE_TABLE;
             let clean_entry = entry & 0x07FF_FFFF_FFFF_FFFFu64;
             write_pte(l2_pa, l2_idx, clean_entry);
+            crate::task::process::register_page_table_for_l0(l0_pa, new_l3);
             new_l3
         };
 
@@ -698,13 +706,21 @@ pub fn set_ttbr0_el1(l0_pa: usize, asid: u16) {
             core::arch::asm!("dc civac, {0}", in(reg) cur, options(nostack));
             cur += d_step;
         }
-        core::arch::asm!("dsb ish", options(nostack));
+        // Double DSB Sandwich Barrier:
+        // 1. Ensure all memory writes to physical page tables (zero_page, write_pte, etc.)
+        //    have drained and are fully completed across all CPU cores' caches
+        core::arch::asm!("dsb sy", options(nostack));
+
+        // 2. Broadcast Inner Shareable domain-wide precise ASID invalidation
+        //    tlbi aside1is expects ASID left-shifted by 48, matching register format.
+        let asid_val = (asid as u64) << 48;
+        core::arch::asm!("tlbi aside1is, {0}", in(reg) asid_val, options(nostack));
+
+        // 3. Wait for TLB invalidate broadcast to successfully propagate and complete on all cores
+        core::arch::asm!("dsb sy", options(nostack));
 
         core::arch::asm!(
             "msr ttbr0_el1, {val}",
-            "isb",
-            "tlbi vmalle1",
-            "dsb sy",
             "isb",
             val = in(reg) packed,
             options(nostack)

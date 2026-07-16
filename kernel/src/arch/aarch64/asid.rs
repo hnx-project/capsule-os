@@ -108,7 +108,7 @@ pub fn rollover_generation() -> u32 {
 /// PA configuration on QEMU 512 MB).
 #[inline(always)]
 pub fn pack_ttbr(l0_base_pa: u64, asid: u16) -> u64 {
-    let _ = asid;
     let pa_masked = l0_base_pa & 0x0000_FFFF_FFFF_F000u64;
-    pa_masked
+    let asid_shifted = (asid as u64) << TTBR_ASID_SHIFT;
+    pa_masked | asid_shifted
 }

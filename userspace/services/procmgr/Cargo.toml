@@ -8,9 +8,9 @@ name = "procmgr"
 path = "src/main.rs"
 
 [dependencies]
-libstd = { workspace = true }
-libcapsule = { workspace = true }
-libc = { workspace = true }
+libstd = { path = "../../../libraries/libstd", package = "libstd" }
+libcapsule = { path = "../../../libraries/libcapsule", package = "libcapsule" }
+libc = { path = "../../../libraries/libc", package = "libc" }
 
 [features]
 capsule = []

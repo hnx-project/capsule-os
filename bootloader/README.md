@@ -123,7 +123,7 @@ qemu-system-aarch64 \
 ```text
 [Bootloader] Booting...
 [Bootloader] DTB parsed successfully.
-[Bootloader] Valid OHC Image Found!
+[Bootloader] Valid OHLINK Image Found!
   Version : 0x0001
   Entry   : 0x0000000040080000
   Size    : 0x000519e0 bytes

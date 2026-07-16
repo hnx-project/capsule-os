@@ -8,8 +8,10 @@ name = "devmgr"
 path = "src/main.rs"
 
 [dependencies]
-libc.workspace = true
-libcapsule.workspace = true
+libstd = { path = "../../../libraries/libstd", package = "libstd" }
+libcapsule = { path = "../../../libraries/libcapsule", package = "libcapsule" }
+shared = { path = "../../../kernel/shared" }
+
 
 [features]
 capsule = []

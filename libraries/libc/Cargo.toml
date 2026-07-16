@@ -4,8 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 [lib]
-crate-type = ["rlib"]
+crate-type = ["rlib", "staticlib"]
+name =  "libc"
 
 [dependencies]
-libcapsule = { path = "../libcapsule" }
+libcapsule = { path = "../libcapsule", package = "libcapsule" }
 shared = { path = "../../kernel/shared" }

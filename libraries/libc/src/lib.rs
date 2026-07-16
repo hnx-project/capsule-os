@@ -1,5 +1,7 @@
 #![no_std]
 
+extern crate libcapsule;
+
 pub mod posix_stub;
 pub mod syscalls;
 pub use shared::status::Status;

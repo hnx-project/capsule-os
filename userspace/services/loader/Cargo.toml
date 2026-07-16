@@ -8,8 +8,8 @@ name = "loader"
 path = "src/main.rs"
 
 [dependencies]
-libstd.workspace = true
-libcapsule.workspace = true
+libstd = { path = "../../../libraries/libstd", package = "libstd" }
+libcapsule = { path = "../../../libraries/libcapsule", package = "libcapsule" }
 shared = { path = "../../../kernel/shared" }
 
 # [build]

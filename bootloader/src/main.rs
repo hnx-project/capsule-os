@@ -53,7 +53,7 @@ extern "C" fn rust_main(dtb_ptr: *const u8) -> ! {
 
     let entry_point = header.entry_point;
 
-    log_info!("BOOT", "Valid OHC Image Found!");
+    log_info!("BOOT", "Valid OHLINK Image Found!");
     log_info!(
         "BOOT",
         "=> Version : {}.{}",

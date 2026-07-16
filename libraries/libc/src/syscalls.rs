@@ -1,6 +1,7 @@
 use shared::status::Status;
 #[allow(unused_imports)]
 pub use shared::syscall_nums::*;
+extern crate libcapsule;
 
 pub fn exit(code: i32) -> ! {
     libcapsule::syscall!(SYSCALL_EXIT, code as usize, 0, 0, 0, 0, 0);

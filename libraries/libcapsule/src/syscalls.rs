@@ -26,6 +26,8 @@ macro_rules! syscall {
                 in("x4") r4,
                 in("x5") r5,
                 in("x16") $num,
+                out("x30") _,             // Tell the compiler that the Link Register (x30) is clobbered!
+                options(nostack)          // Enforce that memory is completely clean
             );
         }
         #[cfg(target_arch = "riscv64")]
@@ -42,6 +44,8 @@ macro_rules! syscall {
                 in("a4") r4,
                 in("a5") r5,
                 in("a7") $num,
+                out("ra") _,
+                options(nostack)
             );
         }
         ret_val
@@ -304,16 +308,61 @@ pub fn load_binary(vmo_handle: usize, name: &str) -> Result<u64> {
     }
 }
 
+pub fn wait4(pid: i64, status_ptr: *mut i32, options: i32) -> Result<u64> {
+    let ret = syscall!(
+        shared::syscall_nums::SYSCALL_WAIT4,
+        pid as usize,
+        status_ptr as usize,
+        options as usize,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret as u64)
+    }
+}
+
 pub fn service_spawn(desc: &shared::launcher::ServiceDescriptor) -> Result<u64> {
+    // Stage 1: print info before entering syscall
+    let desc_ptr = desc as *const shared::launcher::ServiceDescriptor as usize;
+
+    // We cannot use normal formatting here easily without allocator/format macros,
+    // so we write a raw print using a simple block.
+    // Let's write the syscall with a simple wrapper to see if we ever get back.
     let ret = syscall!(
         shared::syscall_nums::SYSCALL_SERVICE_SPAWN,
-        desc as *const shared::launcher::ServiceDescriptor as usize,
+        desc_ptr,
         0,
         0,
         0,
         0,
         0
     );
+
+    // If we reach here, we're extremely lucky! Let's print the return value as raw bytes
+    // or through some syscall.
+    let mut temp = [0u8; 32];
+    temp[0..13].copy_from_slice(b"SPAWN RETURN ");
+    let mut val = ret;
+    for i in 0..8 {
+        let b = (val & 0xF) as u8;
+        temp[13 + 7 - i] = if b < 10 { b'0' + b } else { b'A' + (b - 10) };
+        val >>= 4;
+    }
+    temp[21] = b'\n';
+    let _ = syscall!(
+        shared::syscall_nums::SYSCALL_WRITE,
+        1,
+        temp.as_ptr() as usize,
+        22,
+        0,
+        0,
+        0
+    );
+
     if (ret as isize) < 0 {
         Err(Status::from_raw(ret as i32))
     } else {

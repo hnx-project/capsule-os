@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 libc.workspace = true
-libcapsule.workspace = true
+libcapsule = { path = "../../../libraries/libcapsule", package = "libcapsule" }
 
 [features]
 capsule = []
