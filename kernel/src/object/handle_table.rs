@@ -86,15 +86,10 @@ impl HandleSlots {
         let slot_size = core::mem::size_of::<Option<Slot>>();
         let total = MAX_HANDLES * slot_size;
         let pages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
-        let first_pa = crate::mm::phys::alloc_page().expect("alloc_page failed");
+        let first_pa = crate::mm::phys::alloc_kheap_page().expect("alloc_kheap_page failed");
         let base_va = crate::mm::mmu::pa_to_kernel_va(first_pa.as_usize());
-        unsafe {
-            core::ptr::write_bytes(base_va as *mut u8, 0, PAGE_SIZE);
-        }
         for _ in 1..pages {
-            let pa = crate::mm::phys::alloc_page().expect("alloc_page failed");
-            let va = crate::mm::mmu::pa_to_kernel_va(pa.as_usize());
-            unsafe { core::ptr::write_bytes(va as *mut u8, 0, PAGE_SIZE); }
+            let _pa = crate::mm::phys::alloc_kheap_page().expect("alloc_kheap_page failed");
         }
         // Niche-optimised `None` may NOT be all-zero bytes, so we must
         // explicitly write `None` into every slot.

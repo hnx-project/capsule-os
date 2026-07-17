@@ -223,7 +223,7 @@ pub fn sys_execve(
     let caller_pid = current_process_id()?;
     let caller_proc = crate::task::process::find_process_mut(caller_pid)
         .ok_or(Status::NotFound)?;
-    let caller_l0_pa = caller_proc.l0_user_pa;
+    let caller_l0_pa = caller_proc.page_table.l0_pa();
     if caller_l0_pa == 0 {
         return Err(Status::InvalidArgs);
     }
@@ -365,7 +365,7 @@ pub fn sys_spawn(
     let caller_pid = current_process_id()?;
     let caller_proc = crate::task::process::find_process_mut(caller_pid)
         .ok_or(Status::NotFound)?;
-    let caller_l0_pa = caller_proc.l0_user_pa;
+    let caller_l0_pa = caller_proc.page_table.l0_pa();
     if caller_l0_pa == 0 {
         return Err(Status::InvalidArgs);
     }
@@ -663,7 +663,7 @@ pub fn sys_service_spawn(
     let proc_id = unsafe { (*t).process_id };
     let proc = crate::task::process::find_process_mut(proc_id)
         .ok_or(Status::ProcessNotFound)?;
-    let l0_pa = proc.l0_user_pa;
+    let l0_pa = proc.page_table.l0_pa();
 
     // 2. Safely copy the ServiceDescriptor struct from user space to kernel stack
     let mut desc = core::mem::MaybeUninit::<shared::launcher::ServiceDescriptor>::uninit();
@@ -740,7 +740,7 @@ pub fn sys_getcwd(buf_ptr: usize, buf_len: usize) -> Result<usize> {
     // Writing directly to `buf_ptr` would corrupt the kernel's direct-map
     // alias of that address; we must route the bytes through
     // `safe_copy_to_user` so the destination is the actual user page.
-    let l0_pa = proc.l0_user_pa;
+    let l0_pa = proc.page_table.l0_pa();
     if l0_pa == 0 {
         return Err(Status::InvalidArgs);
     }
@@ -779,7 +779,7 @@ pub fn sys_chdir(path_ptr: usize, path_len: usize) -> Result<usize> {
     // the actual user page rather than the kernel's direct-map alias of
     // it (which would silently round-trip bytes through kernel memory
     // and corrupt them when MMU attributes differ).
-    let l0_pa = proc.l0_user_pa;
+    let l0_pa = proc.page_table.l0_pa();
     if l0_pa == 0 {
         return Err(Status::InvalidArgs);
     }
@@ -809,7 +809,7 @@ fn current_process_l0_pa() -> usize {
     unsafe {
         if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
             let pid = (*t).process_id;
-            crate::task::process::find_process_mut(pid).map(|p| p.l0_user_pa).unwrap_or(0)
+            crate::task::process::find_process_mut(pid).map(|p| p.page_table.l0_pa()).unwrap_or(0)
         } else {
             0
         }
@@ -934,7 +934,7 @@ pub fn sys_wait4(
             let code_bytes = (code as i32).to_le_bytes();
             crate::syscall::handlers::ipc::safe_copy_to_user(
                 match crate::task::process::find_process_mut(caller_pid) {
-                    Some(p) => p.l0_user_pa,
+                    Some(p) => p.page_table.l0_pa(),
                     None => 0,
                 },
                 &code_bytes,
@@ -1102,7 +1102,7 @@ pub fn sys_pipe(
     let caller_pid = crate::task::process::current_process_id()?;
     let caller_proc = crate::task::process::find_process_mut(caller_pid)
         .ok_or(Status::NotFound)?;
-    let caller_l0 = caller_proc.l0_user_pa;
+    let caller_l0 = caller_proc.page_table.l0_pa();
     if caller_l0 == 0 || ufds_ptr == 0 {
         return Err(Status::InvalidArgs);
     }
@@ -1265,11 +1265,11 @@ pub(crate) fn dispatch_pipe_io(
                 return Err(Status::NotAllowed);
             }
         }
-        if proc.l0_user_pa == 0 {
+        if proc.page_table.l0_pa() == 0 {
             return Err(Status::InvalidArgs);
         }
         crate::syscall::handlers::ipc::safe_copy_from_user(
-            proc.l0_user_pa,
+            proc.page_table.l0_pa(),
             buf_ptr,
             want,
             &mut kernel_buf[..want],
@@ -1292,9 +1292,9 @@ pub(crate) fn dispatch_pipe_io(
             pipe_id,
             &mut kernel_buf[..want],
         )?;
-        if n > 0 && proc.l0_user_pa != 0 {
+        if n > 0 && proc.page_table.l0_pa() != 0 {
             crate::syscall::handlers::ipc::safe_copy_to_user(
-                proc.l0_user_pa,
+                proc.page_table.l0_pa(),
                 &kernel_buf[..n],
                 buf_ptr,
                 n,
@@ -1345,7 +1345,7 @@ pub fn sys_proc_mgmt(table: &HandleTable, cmd: u32, arg1: usize, arg2: usize, ar
             }
             let proc = crate::task::process::allocate_process(name)?;
             proc.parent_pid = parent_pid;
-            proc.l0_user_pa = l0_pa;
+            proc.page_table.set_root_raw(l0_pa);
             Ok(proc.id as usize)
         }
 

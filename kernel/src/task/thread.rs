@@ -35,8 +35,9 @@ pub struct ThreadContext {
     pub user_sp: u64,   // user SP (sp_el0)
     pub elr: u64,       // user PC to eret to on resume
     pub spsr: u64,      // saved PSTATE (saved copy of user SPSR on trap)
-    pub process_id: u64, // the PID of the process this thread belongs to, for loading TTBR0_EL1 in assembly
-    pub l0_user_pa: u64, // the physical address of L0 page directory of the process
+    pub process_id: u64,          // PID, for TTBR0_EL1 in assembly
+    pub l0_user_pa: u64,          // L0 PA, for TTBR0_EL1 in assembly
+    pub page_table_gen: u64,      // generation stamp from PageTableTree (stale-handle detection)
 }
 
 const _ASSERT_LAYOUT: () = {
@@ -111,9 +112,9 @@ pub extern "C" fn thread_bootstrap() -> ! {
 
 impl Thread {
     pub fn new_kernel(name: &'static str, entry: extern "C" fn()) -> Result<Self> {
-        let stack_pa0 = phys::alloc_page()?;
+        let stack_pa0 = phys::alloc_kstack_page()?;
         for _ in 1..KERNEL_STACK_PAGES {
-            let _ = phys::alloc_page()?;
+            let _ = phys::alloc_kstack_page()?;
         }
         let kernel_stack_va = pa_to_kernel_va(stack_pa0.as_usize());
         let stack_top = kernel_stack_va + KERNEL_STACK_SIZE;
@@ -157,9 +158,9 @@ impl Thread {
     }
 
     pub fn new_user(name: &'static str, entry: usize, stack_top: usize) -> Result<Self> {
-        let stack_pa0 = phys::alloc_page()?;
+        let stack_pa0 = phys::alloc_kstack_page()?;
         for _ in 1..KERNEL_STACK_PAGES {
-            let _ = phys::alloc_page()?;
+            let _ = phys::alloc_kstack_page()?;
         }
         let kernel_stack_va = pa_to_kernel_va(stack_pa0.as_usize());
         let kernel_stack_top = kernel_stack_va + KERNEL_STACK_SIZE;
@@ -209,9 +210,9 @@ impl Thread {
     }
 
     pub fn new_kernel_with_priority(name: &'static str, entry: extern "C" fn(), priority: Priority) -> Result<Self> {
-        let stack_pa0 = phys::alloc_page()?;
+        let stack_pa0 = phys::alloc_kstack_page()?;
         for _ in 1..KERNEL_STACK_PAGES {
-            let _ = phys::alloc_page()?;
+            let _ = phys::alloc_kstack_page()?;
         }
         let kernel_stack_va = pa_to_kernel_va(stack_pa0.as_usize());
         let stack_top = kernel_stack_va + KERNEL_STACK_SIZE;
@@ -254,9 +255,9 @@ impl Thread {
     }
 
     pub fn new_user_with_priority(name: &'static str, entry: usize, stack_top: usize, priority: Priority) -> Result<Self> {
-        let stack_pa0 = phys::alloc_page()?;
+        let stack_pa0 = phys::alloc_kstack_page()?;
         for _ in 1..KERNEL_STACK_PAGES {
-            let _ = phys::alloc_page()?;
+            let _ = phys::alloc_kstack_page()?;
         }
         let kernel_stack_va = pa_to_kernel_va(stack_pa0.as_usize());
         let kernel_stack_top = kernel_stack_va + KERNEL_STACK_SIZE;

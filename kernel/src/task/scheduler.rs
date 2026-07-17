@@ -367,7 +367,54 @@ impl Scheduler {
                                 );
                             }
                         }
+                        // PRE-ERET generation-stamp check: if the thread's
+                        // PageTableTree generation doesn't match the process,
+                        // the thread holds a stale tree handle.
+                        if let Some(gen) =
+                            crate::task::process::find_process_page_table_gen(t.process_id)
+                        {
+                            if t.context.page_table_gen != gen {
+                                crate::log_error!(
+                                    "SCHED",
+                                    "PRE-ERET: pid={} page_table_gen mismatch: thread={} process={}",
+                                    t.process_id, t.context.page_table_gen, gen
+                                );
+                            }
+                        }
+                        // PRE-ERET validation: walk the page table for
+                        // user_sp (checking the page below SP, since SP
+                        // can start at stack_top which is one-past-end).
+                        let usp = t.context.user_sp as usize;
+                        let check_va = if usp & 0xFFF == 0 && usp >= 8 {
+                            usp - 8
+                        } else {
+                            usp
+                        };
+                        if let Some((l0_pa, _)) =
+                            crate::task::process::find_process_l0_user_pa(t.process_id)
+                        {
+                    match crate::arch::aarch64::mmu::translate_user_va(l0_pa, check_va) {
+                        Some(pa) => {
+                            crate::log_info!("SCHED", "PRE-ERET: user_sp={:#x} -> PA {:#x} pid={} OK",
+                                usp, pa, t.process_id);
+                        }
+                        None => {
+                            crate::log_error!(
+                                "SCHED",
+                                "PRE-ERET: user_sp={:#x} check={:#x} pid={} has no valid PTE!",
+                                usp, check_va, t.process_id
+                            );
+                            crate::log_error!(
+                                "SCHED",
+                                "  PT-VALIDATE pid={}: {}",
+                                t.process_id,
+                                if crate::task::process::validate_process_page_table(t.process_id)
+                                    { "tree OK" } else { "** TREE CORRUPTED **" }
+                            );
                     }
+                }
+                }
+                }
                 }
                 self.unlock();
                 // Use a volatile write to ensure the compiler doesn't elide
@@ -418,6 +465,78 @@ impl Scheduler {
             {
                 use crate::mm::mmu::ArchMmu;
                 crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
+            }
+
+            #[cfg(target_arch = "aarch64")]
+            if let Some(ref t) = self.threads[next_idx] {
+                if let Some(gen) =
+                    crate::task::process::find_process_page_table_gen(t.process_id)
+                {
+                    if t.context.page_table_gen != gen {
+                        crate::log_error!(
+                            "SCHED",
+                            "PRE-ERET: pid={} page_table_gen mismatch: thread={} process={}",
+                            t.process_id, t.context.page_table_gen, gen
+                        );
+                    }
+                }
+                let usp = t.context.user_sp as usize;
+                let check_va = if usp & 0xFFF == 0 && usp >= 8 {
+                    usp - 8
+                } else {
+                    usp
+                };
+                if let Some((l0_pa, _)) =
+                    crate::task::process::find_process_l0_user_pa(t.process_id)
+                {
+                    match crate::arch::aarch64::mmu::translate_user_va(l0_pa, check_va) {
+                        Some(pa) => {
+                            crate::log_info!("SCHED", "PRE-ERET: user_sp={:#x} -> PA {:#x} pid={} OK",
+                                usp, pa, t.process_id);
+                        }
+                        None => {
+                            crate::log_error!(
+                                "SCHED",
+                                "PRE-ERET: user_sp={:#x} check={:#x} pid={} has no valid PTE!",
+                                usp, check_va, t.process_id
+                            );
+                            // CANARY: dump PID 1's L3 entries at corruption time.
+                            // Uses the dynamic WATCH_PA if set, else falls back to
+                            // a direct page-table walk.
+                            if t.process_id == 1 {
+                                let watched = crate::mm::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
+                                if watched != 0 {
+                                    unsafe {
+                                        use crate::mm::mmu::pa_to_kernel_va;
+                                        let l3_kva = pa_to_kernel_va(watched) as *const u64;
+                                        for ci in 0..8 {
+                                            let val = core::ptr::read_volatile(l3_kva.add(ci));
+                                            crate::log_error!("CANARY", "PID 1 L3[{}]={:#x} (watched pa={:#x})", ci, val, watched);
+                                        }
+                                    }
+                                } else {
+                                    // fallback: walk PID 1's page table directly
+                                    if let Some((l0_pa, _)) = crate::task::process::find_process_l0_user_pa(1) {
+                                        let stack_va = if let Some(p) = crate::task::process::find_process_mut(1) {
+                                            p.root_vmar.base + 0x2000000
+                                        } else { 0 };
+                                        if stack_va != 0 {
+                                            let pt = crate::arch::aarch64::mmu::translate_user_va(l0_pa, stack_va);
+                                            crate::log_error!("CANARY", "PID 1 stack PT walk: {:#x} -> {:?}", stack_va, pt);
+                                        }
+                                    }
+                                }
+                            }
+                            crate::log_info!(
+                                "SCHED",
+                                "  PT-VALIDATE pid={}: {}",
+                                t.process_id,
+                                if crate::task::process::validate_process_page_table(t.process_id)
+                                    { "tree OK" } else { "** TREE CORRUPTED **" }
+                            );
+                        }
+                    }
+                }
             }
 
             self.unlock();

@@ -38,7 +38,7 @@ fn current_l0_pa() -> Result<usize> {
     }
     let proc = crate::task::process::find_process_mut(proc_id)
         .ok_or(Status::ProcessNotFound)?;
-    Ok(proc.l0_user_pa)
+    Ok(proc.page_table.l0_pa())
 }
 
 /// Translate a single user VA, returning `None` if any level

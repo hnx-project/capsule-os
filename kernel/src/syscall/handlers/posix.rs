@@ -69,7 +69,7 @@ fn current_process_id_and_l0() -> Result<(u64, usize)> {
     }
     let proc = crate::task::process::find_process_mut(proc_id)
         .ok_or(Status::ProcessNotFound)?;
-    Ok((proc_id, proc.l0_user_pa))
+    Ok((proc_id, proc.page_table.l0_pa()))
 }
 
 /// Acquire (or create) a fresh session channel connected to fileagent's

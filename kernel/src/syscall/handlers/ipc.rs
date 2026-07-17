@@ -23,6 +23,15 @@ pub(crate) fn safe_copy_from_user(l0_pa: usize, src_user_va: usize, len: usize, 
         // down to the l3 entry that owns the byte at `va`.
         let kernel_va = crate::mm::mmu::pa_to_kernel_va(pa);
         let chunk_len = core::cmp::min(len - copied, 4096 - (va & 0xfff));
+        // WATCH: check if we're touching the watched L3 page
+        #[cfg(target_arch = "aarch64")]
+        {
+            let watched = crate::mm::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
+            if watched != 0 && pa >= watched && pa < watched + 4096 {
+                crate::log_error!("WATCH", "safe_copy_from_user READ/COPY from watched page PA={:#x} va={:#x} len={} chunk={} l0_pa={:#x}",
+                    pa, va, len, chunk_len, l0_pa);
+            }
+        }
         unsafe {
             core::ptr::copy_nonoverlapping(
                 kernel_va as *const u8,
@@ -50,6 +59,14 @@ pub(crate) fn safe_copy_to_user(l0_pa: usize, src: &[u8], dest_user_va: usize, l
         // physical page.
         let kernel_va = crate::mm::mmu::pa_to_kernel_va(pa);
         let chunk_len = core::cmp::min(len - copied, 4096 - (va & 0xfff));
+        #[cfg(target_arch = "aarch64")]
+        {
+            let watched = crate::mm::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
+            if watched != 0 && pa >= watched && pa < watched + 4096 {
+                crate::log_error!("WATCH", "safe_copy_to_user WRITE to watched page PA={:#x} va={:#x} len={} chunk={} l0_pa={:#x}",
+                    pa, va, len, chunk_len, l0_pa);
+            }
+        }
         unsafe {
             core::ptr::copy_nonoverlapping(
                 src.as_ptr().add(copied),
@@ -94,7 +111,7 @@ pub fn sys_channel_read(table: &HandleTable, handle_raw: u32,
     let l0_pa = if let Some(t) = thread_ptr {
         let proc_id = unsafe { (*t).process_id };
         if let Some(proc) = crate::task::process::find_process_mut(proc_id) {
-            proc.l0_user_pa
+            proc.page_table.l0_pa()
         } else {
             0
         }
@@ -133,7 +150,7 @@ pub fn sys_channel_write(table: &HandleTable, handle_raw: u32,
     let l0_pa = if let Some(t) = thread_ptr {
         let proc_id = unsafe { (*t).process_id };
         if let Some(proc) = crate::task::process::find_process_mut(proc_id) {
-            proc.l0_user_pa
+            proc.page_table.l0_pa()
         } else {
             0
         }
@@ -169,7 +186,7 @@ pub fn sys_channel_register(table: &HandleTable, name_ptr: usize, name_len: usiz
     let l0_pa = if let Some(t) = thread_ptr {
         let proc_id = unsafe { (*t).process_id };
         if let Some(proc) = crate::task::process::find_process_mut(proc_id) {
-            proc.l0_user_pa
+            proc.page_table.l0_pa()
         } else {
             0
         }
@@ -200,7 +217,7 @@ pub fn sys_channel_lookup(table: &HandleTable, name_ptr: usize, name_len: usize)
     let l0_pa = if let Some(t) = thread_ptr {
         let proc_id = unsafe { (*t).process_id };
         if let Some(proc) = crate::task::process::find_process_mut(proc_id) {
-            proc.l0_user_pa
+            proc.page_table.l0_pa()
         } else {
             0
         }

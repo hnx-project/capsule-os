@@ -133,11 +133,7 @@ impl Vmar {
             return Err(Status::InvalidArgs);
         }
         let size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-        let meta_pa = phys::alloc_page()?;
-        unsafe {
-            let base_ptr = arch_mmu::pa_to_kernel_va(meta_pa.as_usize()) as *mut u8;
-            core::ptr::write_bytes(base_ptr, 0, PAGE_SIZE);
-        }
+        let meta_pa = phys::alloc_vmar_meta()?;
         Ok(Vmar { base, size, meta_pa })
     }
 
@@ -271,13 +267,14 @@ impl Vmar {
         Ok(size)
     }
 
-    /// Map a range into a specific L0 root (bypassing TTBR0).
-    /// Used during process launch: the caller temporarily switches TTBR0 to
-    /// kernel L0 so that kernel address accesses work, but this function
-    /// installs the page-table entries into the explicit `l0_pa` (the
-    /// per-process user L0) so the user page table ends up correct.
+    /// Map a range into a specific `PageTableTree` (bypassing TTBR0).
+    /// Used during process launch: the kernel installs page-table entries
+    /// into the per-process user page table tree so the user page table
+    /// ends up correct while the kernel continues to operate through its
+    /// own TTBR1-backed kernel view.
     pub fn map_under_l0(&mut self, vmo: &mut Vmo, vmo_offset: usize,
-                virt_addr: usize, size: usize, flags: VmarFlags, l0_pa: usize) -> Result<usize> {
+                virt_addr: usize, size: usize, flags: VmarFlags,
+                pt: &mut crate::mm::page_table::PageTableTree) -> Result<usize> {
         #[cfg(target_arch = "aarch64")]
         {
             if size == 0 {
@@ -310,7 +307,7 @@ impl Vmar {
                 let va = virt_addr + i * PAGE_SIZE;
                 vmo.commit_page(vmo_off)?;
                 let pa = vmo.get_page_phys(vmo_off).ok_or(Status::NoMemory)?;
-                arch_mmu::map_page_under_l0(l0_pa, va, pa.as_usize(), arch_flags)?;
+                pt.map_va(va, pa.as_usize(), &arch_flags)?;
             }
 
             let mut storage = self.load_storage();

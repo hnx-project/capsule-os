@@ -52,7 +52,7 @@ impl SlabAllocator {
             return ptr::null_mut();
         }
 
-        let pa = match phys::alloc_page() {
+        let pa = match phys::alloc_kheap_page() {
             Ok(p) => p,
             Err(_) => return ptr::null_mut(),
         };

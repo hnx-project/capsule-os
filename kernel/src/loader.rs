@@ -25,6 +25,27 @@ impl ServiceLauncher {
             }
         }
 
+        // CANARY: check PID 1's L3 page is still intact after launch.
+        // Uses the dynamic WATCH_PA if set, otherwise falls back to a
+        // page-table walk from PID 1's L0.
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            let watched = crate::mm::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
+            let check_pa = if watched != 0 {
+                watched
+            } else {
+                0x40255000 // legacy fallback
+            };
+            use crate::mm::mmu::pa_to_kernel_va;
+            let l3_kva = pa_to_kernel_va(check_pa) as *const u64;
+            for ci in 0..4 {
+                let val = core::ptr::read_volatile(l3_kva.add(ci));
+                if val & 3 != 3 {
+                    crate::log_error!("CANARY", "PID 1 L3[{}]={:#x} (expected valid page desc) pa={:#x} after launching PID {}", ci, val, check_pa, pid);
+                }
+            }
+        }
+
         crate::log_info!("LAUNCHER", "Service '{}' (PID {}) launched successfully via ServiceLauncher!", desc.name, pid);
         Ok(pid)
     }

@@ -132,16 +132,12 @@ impl Vmo {
             return Err(Status::InvalidArgs);
         }
 
-        let hs = header_size();
         let mpn = meta_pages_needed(pages);
 
         // Allocate the first metadata page and write the header.
-        let meta_pa = phys::alloc_page()?;
+        let meta_pa = phys::alloc_vmo_meta()?;
         unsafe {
             let base = pa_to_kernel_va(meta_pa.as_usize()) as *mut u8;
-            for i in 0..PAGE_SIZE {
-                core::ptr::write_volatile(base.add(i), 0);
-            }
             let header = base as *mut VmoHeader;
             (*header).magic = VMO_MAGIC;
             (*header).version = VMO_VERSION;
@@ -152,16 +148,12 @@ impl Vmo {
 
             // Allocate remaining metadata pages and record their PAs
             for i in 1..mpn {
-                let extra_pa = phys::alloc_page()?;
+                let extra_pa = phys::alloc_vmo_meta()?;
                 let table_off = PA_TABLE_BASE + (i - 1) * 8;
                 core::ptr::write_volatile(
                     base.add(table_off) as *mut u64,
                     extra_pa.as_usize() as u64,
                 );
-                let eb = pa_to_kernel_va(extra_pa.as_usize()) as *mut u8;
-                for j in 0..PAGE_SIZE {
-                    core::ptr::write_volatile(eb.add(j), 0);
-                }
             }
 
             // Fill all slots directly with the linearly-mapped target physical addresses!
@@ -192,16 +184,12 @@ impl Vmo {
             return Err(Status::InvalidArgs);
         }
 
-        let hs = header_size();
         let mpn = meta_pages_needed(pages);
 
         // Allocate the first metadata page and write the header.
-        let meta_pa = phys::alloc_page()?;
+        let meta_pa = phys::alloc_vmo_meta()?;
         unsafe {
             let base = pa_to_kernel_va(meta_pa.as_usize()) as *mut u8;
-            for i in 0..PAGE_SIZE {
-                core::ptr::write_volatile(base.add(i), 0);
-            }
             let header = base as *mut VmoHeader;
             (*header).magic = VMO_MAGIC;
             (*header).version = VMO_VERSION;
@@ -213,17 +201,12 @@ impl Vmo {
             // Allocate remaining metadata pages and record their PAs
             // in the PA table at the end of page 0.
             for i in 1..mpn {
-                let extra_pa = phys::alloc_page()?;
+                let extra_pa = phys::alloc_vmo_meta()?;
                 let table_off = PA_TABLE_BASE + (i - 1) * 8;
                 core::ptr::write_volatile(
                     base.add(table_off) as *mut u64,
                     extra_pa.as_usize() as u64,
                 );
-                // Zero the extra metadata page.
-                let eb = pa_to_kernel_va(extra_pa.as_usize()) as *mut u8;
-                for j in 0..PAGE_SIZE {
-                    core::ptr::write_volatile(eb.add(j), 0);
-                }
             }
         }
 
@@ -249,7 +232,17 @@ impl Vmo {
             if (*slot).is_some() {
                 return Ok(None);
             }
-            let pa = phys::alloc_page()?;
+            let pa = phys::alloc_vmo_data()?;
+            if pa.as_usize() == 0x40254000 {
+                crate::log_error!("WATCH", "Vmo::commit_page allocated PA=0x40254000 (offset={})", offset);
+            }
+            if pa.as_usize() == 0x40255000 {
+                crate::log_error!("WATCH", "Vmo::commit_page allocated PA=0x40255000 (offset={})", offset);
+            }
+            let watched = crate::mm::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
+            if watched != 0 && pa.as_usize() == watched {
+                crate::log_error!("WATCH", "Vmo::commit_page allocated dynamic WATCH PA={:#x} (offset={})", watched, offset);
+            }
             (*slot) = Some(pa);
             (*self.header()).committed += 1;
             Ok(Some(pa))
@@ -269,16 +262,11 @@ impl Vmo {
     pub fn fork(&mut self, new_id: u64) -> Result<Self> {
         let pages = self.size / PAGE_SIZE;
         let mpn = meta_pages_needed(pages);
-        let hs = header_size();
 
         // Allocate the first metadata page.
-        let meta_pa = phys::alloc_page()?;
+        let meta_pa = phys::alloc_vmo_meta()?;
         unsafe {
             let base = pa_to_kernel_va(meta_pa.as_usize()) as *mut u8;
-            for i in 0..PAGE_SIZE {
-                core::ptr::write_volatile(base.add(i), 0);
-            }
-
             let header = self.header();
             let new_header = base as *mut VmoHeader;
             (*new_header).magic = VMO_MAGIC;
@@ -290,16 +278,12 @@ impl Vmo {
 
             // Allocate remaining metadata pages and record PAs in the PA table.
             for i in 1..mpn {
-                let extra_pa = phys::alloc_page()?;
+                let extra_pa = phys::alloc_vmo_meta()?;
                 let table_off = PA_TABLE_BASE + (i - 1) * 8;
                 core::ptr::write_volatile(
                     base.add(table_off) as *mut u64,
                     extra_pa.as_usize() as u64,
                 );
-                let eb = pa_to_kernel_va(extra_pa.as_usize()) as *mut u8;
-                for j in 0..PAGE_SIZE {
-                    core::ptr::write_volatile(eb.add(j), 0);
-                }
             }
         }
 
@@ -332,14 +316,10 @@ impl Vmo {
         let pages = size / PAGE_SIZE;
         let start_page_idx = offset / PAGE_SIZE;
         let mpn = meta_pages_needed(pages);
-        let hs = header_size();
 
-        let meta_pa = phys::alloc_page()?;
+        let meta_pa = phys::alloc_vmo_meta()?;
         unsafe {
             let base = pa_to_kernel_va(meta_pa.as_usize()) as *mut u8;
-            for i in 0..PAGE_SIZE {
-                core::ptr::write_volatile(base.add(i), 0);
-            }
 
             let new_header = base as *mut VmoHeader;
             (*new_header).magic = VMO_MAGIC;
@@ -351,16 +331,12 @@ impl Vmo {
 
             // Allocate remaining metadata pages and record PAs in the PA table.
             for i in 1..mpn {
-                let extra_pa = phys::alloc_page()?;
+                let extra_pa = phys::alloc_vmo_meta()?;
                 let table_off = PA_TABLE_BASE + (i - 1) * 8;
                 core::ptr::write_volatile(
                     base.add(table_off) as *mut u64,
                     extra_pa.as_usize() as u64,
                 );
-                let eb = pa_to_kernel_va(extra_pa.as_usize()) as *mut u8;
-                for j in 0..PAGE_SIZE {
-                    core::ptr::write_volatile(eb.add(j), 0);
-                }
             }
 
             for i in 0..pages {
@@ -443,12 +419,36 @@ impl Vmo {
                 self.commit_page(cur & !(PAGE_SIZE - 1))?;
             }
             let pa = unsafe { (*self.page_slot(page_idx)).unwrap() };
+            if pa.as_usize() == 0x40254000 {
+                crate::log_error!("WATCH", "Vmo::write target PA=0x40254000 (page_idx={}, in_page={})", page_idx, in_page);
+            }
+            if pa.as_usize() == 0x40255000 {
+                crate::log_error!("WATCH", "Vmo::write target PA=0x40255000 (page_idx={}, in_page={})", page_idx, in_page);
+            }
+            {
+                let watched = crate::mm::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
+                if watched != 0 && pa.as_usize() == watched {
+                    crate::log_error!("WATCH", "Vmo::write target dynamic WATCH PA={:#x} (page_idx={}, in_page={})", watched, page_idx, in_page);
+                }
+            }
             let available = PAGE_SIZE - in_page;
             let want = core::cmp::min(available, buf.len() - written);
             let end = core::cmp::min(cur + want, self.size);
             let real = end - cur;
             unsafe {
                 let dst = pa_to_kernel_va(pa.as_usize()).add(in_page);
+                if pa.as_usize() == 0x40254000 {
+                    crate::log_error!("WATCH", "Vmo::write WRITING to PA=0x40254000 kva={:#x} real={}", dst as usize, real);
+                }
+                if pa.as_usize() == 0x40255000 {
+                    crate::log_error!("WATCH", "Vmo::write WRITING to PA=0x40255000 kva={:#x} real={}", dst as usize, real);
+                }
+                {
+                    let watched = crate::mm::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
+                    if watched != 0 && pa.as_usize() == watched {
+                        crate::log_error!("WATCH", "Vmo::write WRITING to dynamic WATCH PA={:#x} kva={:#x} real={}", watched, dst as usize, real);
+                    }
+                }
                 core::ptr::copy_nonoverlapping(buf.as_ptr().add(written),
                                                dst as *mut u8,
                                                real);

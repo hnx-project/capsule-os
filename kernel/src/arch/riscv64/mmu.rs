@@ -98,17 +98,6 @@ fn va_l2_index(va: usize) -> usize { (va >> 21) & 0x1FF }
 #[inline(always)]
 fn va_l3_index(va: usize) -> usize { (va >> 12) & 0x1FF }
 
-unsafe fn zero_page(page_pa: usize) {
-    // Pre-MMU: PA == VA, so writing to PA is valid.  Post-MMU: callers
-    // (currently only `enable_inner`, which runs before MMU is enabled)
-    // don't trigger this path -- the unit-agnostic helpers in `mm::phys`
-    // route through `pa_to_kernel_va` once `mmu_is_active()` returns true.
-    let ptr = page_pa as *mut u8;
-    for i in 0..PAGE_SIZE {
-        core::ptr::write_volatile(ptr.add(i), 0);
-    }
-}
-
 unsafe fn read_pte(table_pa: usize, idx: usize) -> u64 {
     let ptr = (table_pa as *mut u64).add(idx);
     core::ptr::read_volatile(ptr)
@@ -206,8 +195,7 @@ fn pte_attr_bits(flags: MapFlags) -> u64 {
 /// Shatter an L1 megapage entry: replace the 2 MiB block with a fresh L2
 /// table containing 512 4 KiB page entries that re-create the mapping.
 unsafe fn shatter_l1_megapage(l1_pa: usize, l1_idx: usize, original: u64) -> Result<usize> {
-    let new_l2_pa = phys::alloc_page()?.as_usize();
-    zero_page(new_l2_pa);
+    let new_l2_pa = phys::alloc_pt_page()?.as_usize();
     let base_pa = (((original >> 10) & 0x000F_FFFF_FFFF_FFFF) << 12) as usize;
     let attr = original & 0xFC00_0000_0000_00FF; // preserve V,R,W,X,PBMT
     for i in 0..512 {
@@ -241,8 +229,7 @@ pub fn map_page(va: usize, pa: usize, flags: MapFlags) -> Result<()> {
             // Leaf (megapage) -> shatter into an L2 of 4 KiB pages.
             shatter_l1_megapage(l1_pa, l1_idx, l1e)?
         } else {
-            let new_l2 = phys::alloc_page()?.as_usize();
-            zero_page(new_l2);
+            let new_l2 = phys::alloc_pt_page()?.as_usize();
             write_pte_raw(l1_pa, l1_idx, PTE_V | pte_ppn_field(new_l2));
             new_l2
         };
@@ -257,13 +244,11 @@ pub fn map_page(va: usize, pa: usize, flags: MapFlags) -> Result<()> {
             // 2 MiB megapage at L2 in the current build.  Treat it as
             // already-mapped and overwrite (preserves behavior of the
             // existing UART mapping if anyone tries to remap onto it).
-            let new_l3 = phys::alloc_page()?.as_usize();
-            zero_page(new_l3);
+            let new_l3 = phys::alloc_pt_page()?.as_usize();
             write_pte_raw(l2_pa, l2_idx, PTE_V | pte_ppn_field(new_l3));
             new_l3
         } else {
-            let new_l3 = phys::alloc_page()?.as_usize();
-            zero_page(new_l3);
+            let new_l3 = phys::alloc_pt_page()?.as_usize();
             write_pte_raw(l2_pa, l2_idx, PTE_V | pte_ppn_field(new_l3));
             new_l3
         };
@@ -335,8 +320,7 @@ pub fn build_and_enable(boot: &BootInfo) -> Result<()> {
 
 pub fn enable_inner(ram_base: usize, ram_size: usize, uart_base: usize) -> Result<()> {
     unsafe {
-        let root_pa = phys::alloc_page()?.as_usize();
-        zero_page(root_pa);
+        let root_pa = phys::alloc_pt_page()?.as_usize();
 
         // Map the RAM region as 1 GiB L1 megapages.  Each L1 entry covers
         // exactly 1 GiB, so for any contiguous RAM region we need at most
@@ -367,8 +351,7 @@ pub fn enable_inner(ram_base: usize, ram_size: usize, uart_base: usize) -> Resul
             if can_be_l1_megapage {
                 write_megapage(root_pa, uart_l1_idx, uart_aligned, true);
             } else {
-                let l2_pa = phys::alloc_page()?.as_usize();
-                zero_page(l2_pa);
+                let l2_pa = phys::alloc_pt_page()?.as_usize();
                 write_l1_table(root_pa, uart_l1_idx, l2_pa);
                 let page_idx = (uart_aligned >> PAGE_4K_SHIFT) & 0x1FF;
                 write_4k_page(l2_pa, page_idx, uart_aligned, true);

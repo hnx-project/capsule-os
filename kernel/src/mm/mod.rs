@@ -2,6 +2,7 @@ pub mod vmo;
 pub mod vmar;
 pub mod phys;
 pub mod mmu;
+pub mod page_table;
 pub mod smoke;
 pub mod slab;
 

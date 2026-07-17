@@ -48,29 +48,12 @@ const PTE_XN: u64 = 1 << 54;          // never-execute for now
 const PTE_UXN: u64 = 1 << 53;        // unprivileged execute-never
 
 #[inline(always)]
-fn va_l0_index(va: usize) -> usize { (va >> 39) & 0x1FF }
-#[inline(always)]
-fn va_l1_index(va: usize) -> usize { (va >> 30) & 0x1FF }
-#[inline(always)]
-fn va_l2_index(va: usize) -> usize { (va >> 21) & 0x1FF }
-#[inline(always)]
-fn va_l3_index(va: usize) -> usize { (va >> 12) & 0x1FF }
+pub fn va_l0_index(va: usize) -> usize { (va >> 39) & 0x1FF }
+pub fn va_l1_index(va: usize) -> usize { (va >> 30) & 0x1FF }
+pub fn va_l2_index(va: usize) -> usize { (va >> 21) & 0x1FF }
+pub fn va_l3_index(va: usize) -> usize { (va >> 12) & 0x1FF }
 #[inline(always)]
 fn pa_to_pte_addr(pa: usize) -> u64 { (pa as u64) & 0x0000_FFFF_FFFF_F000 }
-
-pub unsafe fn zero_page(page_pa: usize) {
-    // Pre-MMU: PA is a valid VA (bootloader left us with VA==PA and
-    // the kernel still in low memory).  Post-MMU: PA access through
-    // `pa_to_kernel_va` works because we built a high-half mirror.
-    let ptr = if crate::mm::phys::mmu_is_active() {
-        pa_to_kernel_va(page_pa) as *mut u8
-    } else {
-        page_pa as *mut u8
-    };
-    for i in 0..PAGE_SIZE {
-        core::ptr::write_volatile(ptr.add(i), 0);
-    }
-}
 
 /// Free the entire per-process user page-table tree rooted at `l0_pa`.
 ///
@@ -119,6 +102,15 @@ unsafe fn write_l1_block(table_pa: usize, idx: usize, pa: usize, attr: MemAttr) 
         // | PTE_USER       // Make sure it allows user access by default in shared identity region
         | PTE_XN;
     let ptr = (table_pa as *mut u64).add(idx);
+    if table_pa == 0x40254000 || table_pa == 0x4023d000 || table_pa == 0x4027c000 || table_pa == 0x40267000 || table_pa == 0x40255000 {
+        crate::log_error!("WATCH", "MMU_RS write_l1_block(table_pa={:#x}, idx={}, pa={:#x}, entry={:#x})", table_pa, idx, pa, entry);
+    }
+    {
+        let w = crate::mm::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
+        if w != 0 && table_pa == w {
+            crate::log_error!("WATCH", "MMU_RS write_l1_block DYNAMIC WATCH (table_pa={:#x}, idx={}, pa={:#x}, entry={:#x})", table_pa, idx, pa, entry);
+        }
+    }
     core::ptr::write_volatile(ptr, entry);
 }
 
@@ -141,7 +133,7 @@ unsafe fn write_l0_table(l0_pa: usize, idx: usize, l1_pa: usize) {
     core::ptr::write_volatile(ptr.add(idx), entry);
 }
 
-unsafe fn read_pte(table_pa: usize, idx: usize) -> u64 {
+pub unsafe fn read_pte(table_pa: usize, idx: usize) -> u64 {
     let ptr = if crate::mm::phys::mmu_is_active() {
         pa_to_kernel_va(table_pa) as *mut u64
     } else {
@@ -156,6 +148,15 @@ unsafe fn write_pte(table_pa: usize, idx: usize, entry: u64) {
     } else {
         table_pa as *mut u64
     };
+    if table_pa == 0x40254000 || table_pa == 0x4023d000 || table_pa == 0x4027c000 || table_pa == 0x40267000 || table_pa == 0x40255000 {
+        crate::log_error!("WATCH", "MMU_RS write_pte(table_pa={:#x}, idx={}, entry={:#x})", table_pa, idx, entry);
+    }
+    {
+        let w = crate::mm::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
+        if w != 0 && table_pa == w {
+            crate::log_error!("WATCH", "MMU_RS write_pte DYNAMIC WATCH (table_pa={:#x}, idx={}, entry={:#x})", table_pa, idx, entry);
+        }
+    }
     core::ptr::write_volatile(ptr.add(idx), entry);
     // CRITICAL: clean+invalidate the cache line covering the PTE we
     // just wrote.  Without this, the data cache can hold a stale
@@ -345,9 +346,8 @@ fn root_for_va(va: usize) -> u64 {
 /// Shatter an L1 Block entry: replace the 1 GiB block with a fresh L2 table
 /// containing 512 2 MiB block entries that re-create the original mapping.
 unsafe fn shatter_l1_block(l1_pa: usize, l1_idx: usize, original: u64) -> Result<usize> {
-    let new_l2_pa = phys::alloc_page()?.as_usize();
+    let new_l2_pa = phys::alloc_pt_page()?.as_usize();
     crate::task::process::current_process_register_page_table(new_l2_pa);
-    zero_page(new_l2_pa);
 
     let block_base_pa = (original & 0x0000_FFFF_FFFF_F000) as usize;
     // Original attributes (AttrIdx, SH, AF, AP, XN, etc.)
@@ -366,6 +366,9 @@ unsafe fn shatter_l1_block(l1_pa: usize, l1_idx: usize, original: u64) -> Result
                   | PTE_TYPE_BLOCK
                   | block_attr;
         write_pte(new_l2_pa, i, entry);
+        if new_l2_pa == 0x40254000 || new_l2_pa == 0x4023d000 || new_l2_pa == 0x4027c000 || new_l2_pa == 0x40267000 || new_l2_pa == 0x40255000 {
+            crate::log_error!("WATCH", "MMU_RS shatter_l1_block WROTE TO 0x40253000 NEW L2 new_l2_pa={:#x}, i={}, entry={:#x}", new_l2_pa, i, entry);
+        }
     }
 
     // Replace L1 block with a Table entry pointing at the new L2.
@@ -414,9 +417,8 @@ pub fn flush_table_page_pub(table_pa: usize) {
 /// Shatter an L2 Block entry: replace the 2 MiB block with a fresh L3 table
 /// containing 512 4 KiB page entries that re-create the original mapping.
 unsafe fn shatter_l2_block(l2_pa: usize, l2_idx: usize, original: u64) -> Result<usize> {
-    let new_l3_pa = phys::alloc_page()?.as_usize();
+    let new_l3_pa = phys::alloc_pt_page()?.as_usize();
     crate::task::process::current_process_register_page_table(new_l3_pa);
-    zero_page(new_l3_pa);
 
     let block_pa = (original & 0x0000_FFFF_FFFF_F000) as usize;
     let mut block_attr = original & 0xFFF0_0000_0000_0FFF; // attr, AP, XN, AF, ...
@@ -465,9 +467,8 @@ pub fn map_page(va: usize, pa: usize, flags: MapFlags) -> Result<()> {
             return Err(shared::status::Status::NotAllowed);
         } else {
             // Allocate L1.
-            let new_l1 = phys::alloc_page()?.as_usize();
+            let new_l1 = phys::alloc_pt_page()?.as_usize();
             crate::task::process::current_process_register_page_table(new_l1);
-            zero_page(new_l1);
             // CRITICAL FIX: Ensure the Table Descriptor has UXNTable (bit 60), PXNTable (bit 61), 
             // and APTable (bits 62:61) set to 0. This allows lower levels (EL0 user) to fully execute code.
             let entry = pa_to_pte_addr(new_l1) | PTE_VALID | PTE_TYPE_TABLE;
@@ -485,9 +486,8 @@ pub fn map_page(va: usize, pa: usize, flags: MapFlags) -> Result<()> {
             // Block entry -> shatter to L2 table.
             shatter_l1_block(l1_pa, l1_idx, l1e)?
         } else {
-            let new_l2 = phys::alloc_page()?.as_usize();
+            let new_l2 = phys::alloc_pt_page()?.as_usize();
             crate::task::process::current_process_register_page_table(new_l2);
-            zero_page(new_l2);
             // CRITICAL FIX: Ensure UXNTable / PXNTable / APTable are zeroed out on this Table Descriptor
             let entry = pa_to_pte_addr(new_l2) | PTE_VALID | PTE_TYPE_TABLE;
             let clean_entry = entry & 0x07FF_FFFF_FFFF_FFFFu64;
@@ -504,9 +504,8 @@ pub fn map_page(va: usize, pa: usize, flags: MapFlags) -> Result<()> {
             // Block entry -> shatter to L3 table.
             shatter_l2_block(l2_pa, l2_idx, l2e)?
         } else {
-            let new_l3 = phys::alloc_page()?.as_usize();
+            let new_l3 = phys::alloc_pt_page()?.as_usize();
             crate::task::process::current_process_register_page_table(new_l3);
-            zero_page(new_l3);
             // CRITICAL FIX: Ensure UXNTable / PXNTable / APTable are zeroed out on this Table Descriptor
             let entry = pa_to_pte_addr(new_l3) | PTE_VALID | PTE_TYPE_TABLE;
             let clean_entry = entry & 0x07FF_FFFF_FFFF_FFFFu64;
@@ -563,8 +562,7 @@ pub fn map_page_under_l0(l0_pa: usize, va: usize, pa: usize, flags: MapFlags) ->
         } else if l0e & PTE_VALID != 0 {
             return Err(shared::status::Status::NotAllowed);
         } else {
-            let new_l1 = phys::alloc_page()?.as_usize();
-            zero_page(new_l1);
+            let new_l1 = phys::alloc_pt_page()?.as_usize();
             flush_table_page(new_l1);
             let entry = pa_to_pte_addr(new_l1) | PTE_VALID | PTE_TYPE_TABLE;
             let clean_entry = entry & 0x07FF_FFFF_FFFF_FFFFu64;
@@ -580,8 +578,7 @@ pub fn map_page_under_l0(l0_pa: usize, va: usize, pa: usize, flags: MapFlags) ->
         } else if l1e & PTE_VALID != 0 {
             shatter_l1_block(l1_pa, l1_idx, l1e)?
         } else {
-            let new_l2 = phys::alloc_page()?.as_usize();
-            zero_page(new_l2);
+            let new_l2 = phys::alloc_pt_page()?.as_usize();
             flush_table_page(new_l2);
             let entry = pa_to_pte_addr(new_l2) | PTE_VALID | PTE_TYPE_TABLE;
             let clean_entry = entry & 0x07FF_FFFF_FFFF_FFFFu64;
@@ -597,8 +594,7 @@ pub fn map_page_under_l0(l0_pa: usize, va: usize, pa: usize, flags: MapFlags) ->
         } else if l2e & PTE_VALID != 0 {
             shatter_l2_block(l2_pa, l2_idx, l2e)?
         } else {
-            let new_l3 = phys::alloc_page()?.as_usize();
-            zero_page(new_l3);
+            let new_l3 = phys::alloc_pt_page()?.as_usize();
             flush_table_page(new_l3);
             let entry = pa_to_pte_addr(new_l3) | PTE_VALID | PTE_TYPE_TABLE;
             let clean_entry = entry & 0x07FF_FFFF_FFFF_FFFFu64;
@@ -677,6 +673,7 @@ pub fn unmap_page(va: usize) -> Result<()> {
 #[inline(always)]
 pub fn set_ttbr0_el1(l0_pa: usize, asid: u16) {
     let packed = crate::arch::aarch64::asid::pack_ttbr(l0_pa as u64, asid);
+    crate::log_debug!("TTBR0", "msr {:#x} (l0_pa={:#x}, asid={})", packed, l0_pa, asid);
     unsafe {
         // CRITICAL: Before switching TTBR0_EL1 we MUST flush the L0
         // page and all dependent page-table pages from the data
@@ -780,12 +777,9 @@ pub fn build_and_enable(boot: &BootInfo) -> Result<()> {
 pub fn enable_inner(ram_base: usize, ram_size: usize, _uart_base: usize) -> Result<()> {
     unsafe {
         // Allocate 3 pages: L0, L1_ID (identity), L1_HIGH (high-half mirror of RAM).
-        let l0_pa = phys::alloc_page()?.as_usize();
-        let l1_id_pa = phys::alloc_page()?.as_usize();
-        let l1_high_pa = phys::alloc_page()?.as_usize();
-        zero_page(l0_pa);
-        zero_page(l1_id_pa);
-        zero_page(l1_high_pa);
+        let l0_pa = phys::alloc_pt_page()?.as_usize();
+        let l1_id_pa = phys::alloc_pt_page()?.as_usize();
+        let l1_high_pa = phys::alloc_pt_page()?.as_usize();
 
         // Identity: 2 GiB blocks covering UART (low 1 GiB) and full 1 GiB of potential RAM.
         write_l1_block(l1_id_pa, 0, 0x0000_0000, MemAttr::Device);
@@ -948,6 +942,7 @@ pub fn translate_user_va(l0_pa: usize, va: usize) -> Option<usize> {
         let l0_idx = va_l0_index(va);
         let l0e = read_pte(l0_pa, l0_idx);
         if l0e & 1 == 0 {
+            crate::log_info!("PTW", "L0[{}] not valid (l0_pa={:#x}, va={:#x})", l0_idx, l0_pa, va);
             return None;
         }
 
@@ -955,6 +950,7 @@ pub fn translate_user_va(l0_pa: usize, va: usize) -> Option<usize> {
         let l1_idx = va_l1_index(va);
         let l1e = read_pte(l1_pa, l1_idx);
         if l1e & 1 == 0 {
+            crate::log_info!("PTW", "L1[{}] not valid (l1_pa={:#x}, va={:#x})", l1_idx, l1_pa, va);
             return None;
         }
         // Check if this is a 1 GiB Block descriptor
@@ -968,6 +964,7 @@ pub fn translate_user_va(l0_pa: usize, va: usize) -> Option<usize> {
         let l2_idx = va_l2_index(va);
         let l2e = read_pte(l2_pa, l2_idx);
         if l2e & 1 == 0 {
+            crate::log_info!("PTW", "L2[{}] not valid (l2_pa={:#x}, va={:#x})", l2_idx, l2_pa, va);
             return None;
         }
         // Check if this is a 2 MiB Block descriptor
@@ -981,6 +978,8 @@ pub fn translate_user_va(l0_pa: usize, va: usize) -> Option<usize> {
         let l3_idx = va_l3_index(va);
         let l3e = read_pte(l3_pa, l3_idx);
         if l3e & 1 == 0 {
+            let bad_l3e = read_pte(l3_pa, l3_idx);
+            crate::log_info!("PTW", "L3[{}] not valid (l3_pa={:#x}, va={:#x}, val={:#x})", l3_idx, l3_pa, va, bad_l3e);
             return None;
         }
 

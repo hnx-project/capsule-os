@@ -16,7 +16,7 @@ pub fn sys_write(fd: usize, ptr: usize, len: usize) -> usize {
         let l0_pa = if let Some(t) = thread_ptr {
             let proc_id = unsafe { (*t).process_id };
             if let Some(proc) = crate::task::process::find_process_mut(proc_id) {
-                proc.l0_user_pa
+                proc.page_table.l0_pa()
             } else {
                 0
             }

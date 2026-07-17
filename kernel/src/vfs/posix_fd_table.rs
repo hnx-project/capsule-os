@@ -103,13 +103,9 @@ fn alloc_posix_fd_table(pid: u64) -> Result<*mut PosixFdTable> {
         if !POSIX_FD_TABLE_PTRS[slot].is_null() {
             return Err(Status::AlreadyExists);
         }
-        let page_pa = crate::mm::phys::alloc_page().map_err(|_| Status::NoMemory)?;
+        let page_pa = crate::mm::phys::alloc_kheap_page().map_err(|_| Status::NoMemory)?;
         let kernel_va = crate::mm::mmu::pa_to_kernel_va(page_pa.as_usize());
         let table = kernel_va as *mut PosixFdTable;
-        // Zero the page so all 64 entries start as `None`.  This is
-        // already-zero because `phys::allocate_page` returns zeroed
-        // frames, but we write through to be explicit.
-        core::ptr::write_bytes(table as *mut u8, 0u8, 4096);
         POSIX_FD_TABLE_PTRS[slot] = table;
         Ok(table)
     }

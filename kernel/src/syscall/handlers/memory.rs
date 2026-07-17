@@ -133,7 +133,7 @@ pub fn sys_vmo_read(
     let l0_user_pa = if let Some(t) = thread_ptr {
         let proc_id = unsafe { (*t).process_id };
         if let Some(proc) = crate::task::process::find_process_mut(proc_id) {
-            proc.l0_user_pa
+            proc.page_table.l0_pa()
         } else {
             return Err(Status::InvalidArgs);
         }
@@ -208,7 +208,7 @@ pub fn sys_vmo_write(
     let l0_user_pa = if let Some(t) = thread_ptr {
         let proc_id = unsafe { (*t).process_id };
         if let Some(proc) = crate::task::process::find_process_mut(proc_id) {
-            proc.l0_user_pa
+            proc.page_table.l0_pa()
         } else {
             return Err(Status::InvalidArgs);
         }

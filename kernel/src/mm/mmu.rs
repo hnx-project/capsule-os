@@ -34,8 +34,19 @@ pub fn kernel_va_to_pa(va: usize) -> usize {
 }
 
 /// Convert a physical address into the kernel virtual address window.
+/// Includes a dynamic WATCH hook: when `pa` matches the global
+/// `WATCH_PA`, a log message is emitted so we can catch every code
+/// path that touches the watched physical page through its KVA alias.
 #[inline(always)]
 pub fn pa_to_kernel_va(pa: usize) -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let watched = crate::mm::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
+        if watched != 0 && pa >= watched && pa < watched + 4096 {
+            crate::log_error!("WATCH", "pa_to_kernel_va called for PA={:#x} (watched={:#x})",
+                pa, watched);
+        }
+    }
     pa.wrapping_add(KERNEL_OFFSET)
 }
 

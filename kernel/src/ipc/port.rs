@@ -41,7 +41,7 @@ impl Port {
         }
         
         // Allocate a dedicated physical page for the queue
-        let queue_pa = crate::mm::phys::alloc_page()?;
+        let queue_pa = crate::mm::phys::alloc_kheap_page()?;
         let queue_va = crate::mm::mmu::pa_to_kernel_va(queue_pa.as_usize());
         
         // Initialize the slots on the allocated page to None

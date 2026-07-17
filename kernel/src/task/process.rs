@@ -1,8 +1,8 @@
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use shared::status::{Result, Status};
 use crate::mm::vmar::Vmar;
 use crate::object::handle_table::HandleTable;
 use crate::vfs::pipe::{PipeId, PipeRole};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use shared::status::{Result, Status};
 
 /// One slot in `Process::fd_table`.  For 1.0 we only carry
 /// pipe-end entries; once fileagent starts serving fds directly
@@ -41,7 +41,7 @@ pub struct Process {
     pub root_vmar: Vmar,
     pub handle_table: HandleTable,
     pub thread_count: usize,
-    pub l0_user_pa: usize,
+    pub page_table: crate::mm::page_table::PageTableTree,
     pub cwd: [u8; CWD_MAX],
     pub cwd_len: usize,
     /// Per-process file descriptor table; index 0/1/2 stay reserved
@@ -89,12 +89,6 @@ pub struct Process {
     /// pages allocated for the process's stack, code, and data segments remain
     /// permanently reserved under explicit object ownership.
     pub vmos: [Option<crate::mm::vmo::Vmo>; 32],
-    /// Thread-safe tracker recording the physical page frames (PAs) allocated
-    /// for this process's intermediate page directories (L1, L2, L3) to maintain
-    /// explicit ownership over MMU structure pages and prevent recycling/stomping.
-    pub page_tables: [usize; 64],
-    /// Total number of tracked page table pages.
-    pub page_table_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,7 +108,7 @@ impl Process {
             root_vmar: Vmar::new_dummy(),
             handle_table: HandleTable::new_dummy(),
             thread_count: 0,
-            l0_user_pa: 0,
+            page_table: crate::mm::page_table::PageTableTree::new(),
             cwd: [0u8; CWD_MAX],
             cwd_len: 0,
             exit_status: None,
@@ -128,8 +122,6 @@ impl Process {
             #[cfg(not(target_arch = "aarch64"))]
             asid: 0,
             vmos: [const { None }; 32],
-            page_tables: [0usize; 64],
-            page_table_count: 0,
         }
     }
 
@@ -155,7 +147,7 @@ impl Process {
         self.root_vmar = root_vmar;
         self.handle_table = handle_table;
         self.thread_count = 0;
-        self.l0_user_pa = 0;
+        self.page_table = crate::mm::page_table::PageTableTree::new();
         self.cwd = cwd;
         self.cwd_len = cwd_len;
         self.exit_status = None;
@@ -165,8 +157,6 @@ impl Process {
         self.fd_table = [const { None }; FD_TABLE_SIZE];
         self.next_fd = USER_FD_BASE;
         self.vmos = [const { None }; 32];
-        self.page_tables = [0usize; 64];
-        self.page_table_count = 0;
 
         #[cfg(target_arch = "aarch64")]
         {
@@ -211,7 +201,15 @@ impl Process {
         parent_pid: u64,
     ) -> Result<u64> {
         let mut proc_id = 0;
-        Self::launch_user_program_with_argv_id(name, binary_bytes, arg_strs, arg_lens, argc, parent_pid, &mut proc_id)?;
+        Self::launch_user_program_with_argv_id(
+            name,
+            binary_bytes,
+            arg_strs,
+            arg_lens,
+            argc,
+            parent_pid,
+            &mut proc_id,
+        )?;
         Ok(proc_id)
     }
 
@@ -231,8 +229,8 @@ impl Process {
         parent_pid: u64,
         out_pid: &mut u64,
     ) -> Result<()> {
-        use crate::mm::vmo::Vmo;
         use crate::mm::vmar::VmarFlags;
+        use crate::mm::vmo::Vmo;
         use crate::task::thread::{Thread, ThreadState};
 
         let parser = ohlink_format::parser::OHLK_Parser::new(binary_bytes).map_err(|e| {
@@ -247,10 +245,6 @@ impl Process {
         *out_pid = pid;
         proc.parent_pid = parent_pid;
 
-        let l0_user_pa = crate::mm::phys::alloc_page()?.as_usize();
-        let user_l1_pa = crate::mm::phys::alloc_page()?.as_usize();
-        proc.l0_user_pa = l0_user_pa;
-
         let mut old_ttbr0: usize = 0;
         #[cfg(target_arch = "aarch64")]
         unsafe {
@@ -258,100 +252,37 @@ impl Process {
             core::arch::asm!("mrs {0}, ttbr0_el1", out(reg) ttbr0_reg, options(nomem, nostack));
             old_ttbr0 = (ttbr0_reg & 0x0000_FFFF_FFFF_F000) as usize;
 
-            crate::arch::aarch64::mmu::zero_page(l0_user_pa);
-            crate::arch::aarch64::mmu::flush_table_page_pub(l0_user_pa);
-            proc.page_tables[0] = l0_user_pa;
-            proc.page_table_count += 1;
+            proc.page_table.allocate_root()?;
 
-            crate::arch::aarch64::mmu::zero_page(user_l1_pa);
-            crate::arch::aarch64::mmu::flush_table_page_pub(user_l1_pa);
-            proc.page_tables[1] = user_l1_pa;
-            proc.page_table_count += 2;
-
-            let l0_kva = crate::mm::mmu::pa_to_kernel_va(l0_user_pa) as *mut u64;
-            let l1_entry = ((user_l1_pa as u64) & 0x0000_FFFF_FFFF_F000)
-                | 1
-                | 3;
-            core::ptr::write_volatile(l0_kva, l1_entry);
-            core::arch::asm!("dc cvac, {0}", in(reg) l0_kva as usize, options(nomem, nostack));
-            core::arch::asm!("dsb ish", options(nomem, nostack));
-
-            // Crucial Fix: Map the UART device physical page (0x09000000) under the process L0 page directory.
-            // When we run in userspace with TTBR0_EL1, any kernel trap/SVC print statement uses 0x09000000
-            // to print log characters. Without this mapping, a Kernel Data Abort (ESR_EL1=0x96000045, FAR_EL1=0x09000000)
-            // occurs inside the sync_el0 / irq vector handlers, leading to double-fault locking.
+            // Map the UART device physical page (0x09000000) under the process L0.
             let uart_flags = crate::arch::aarch64::mmu::MapFlags::device_rw_user();
-            if let Err(e) = crate::arch::aarch64::mmu::map_page_under_l0(l0_user_pa, 0x09000000, 0x09000000, uart_flags) {
+            if let Err(e) = proc.page_table.map_va(0x09000000, 0x09000000, &uart_flags) {
                 crate::kprintln!("WARNING: Failed to map UART under user L0: {:?}", e);
             }
 
-            // Map GIC CPU Interface page under user L0 to support IRQ EOI register accesses (0x08010000)
+            // Map GIC CPU Interface page under user L0.
             let gic_flags = crate::arch::aarch64::mmu::MapFlags::device_rw_user();
-            if let Err(e) = crate::arch::aarch64::mmu::map_page_under_l0(l0_user_pa, 0x08010000, 0x08010000, gic_flags) {
+            if let Err(e) = proc.page_table.map_va(0x08010000, 0x08010000, &gic_flags) {
                 crate::kprintln!("WARNING: Failed to map GIC under user L0: {:?}", e);
             }
 
-            // High Half Kernel Space Page Table Copy:
-            // Since the newly created process has a fresh and empty L0 page directory, we MUST copy the
-            // high-half kernel entries (entries 256..512) from the boot kernel L0 page directory into this
-            // new directory. This ensures that when the CPU switches to the process's page table via TTBR0_EL1,
-            // standard high-half kernel address translations (0xffff800000000000 and above) continue to walk and
-            // translate flawlessly, avoiding Translation Faults on kernel traps or interrupt events.
+            // Copy the high-half kernel entries (L0[256..512]) and identity
+            // L1 block from the current TTBR0 (parent) into the new tree.
             let active_l0_pa = (ttbr0_reg & 0x0000_FFFF_FFFF_F000) as usize;
             if active_l0_pa != 0 {
-                let active_l0_kva = crate::mm::mmu::pa_to_kernel_va(active_l0_pa) as *const u64;
-                let new_l0_kva = crate::mm::mmu::pa_to_kernel_va(l0_user_pa) as *mut u64;
-                for idx in 256..512 {
-                    let entry = core::ptr::read_volatile(active_l0_kva.add(idx));
-                    if entry != 0 {
-                        core::ptr::write_volatile(new_l0_kva.add(idx), entry);
-                    }
-                }
-                // Copy the first 3 entries (0-3 GiB identity region) from
-                // the **active boot L1** page table (read via the parent's
-                // TTBR0_EL1) into the child's L1.  The boot L1_ID page
-                // entries are 1 GiB block descriptors that never get
-                // shattered during normal operation (no user process maps
-                // anything in the 0-3 GiB range), so each child inherits
-                // clean block entries covering UART MMIO + kernel identity.
-                //
-                // We read the parent's L1 through its L0[0] entry rather
-                // than through TTBR1_EL1 because TTBR1 exclusively serves
-                // the high-half kernel window — its L0[0] does NOT point
-                // to L1_ID.
-                let active_l0_pa = (ttbr0_reg & 0x0000_FFFF_FFFF_F000) as usize;
-                if active_l0_pa != 0 {
-                    let active_l0_kva = crate::mm::mmu::pa_to_kernel_va(active_l0_pa) as *const u64;
-                    let entry_0 = unsafe { core::ptr::read_volatile(active_l0_kva.add(0)) };
-                    if entry_0 != 0 {
-                        let parent_l1_pa = (entry_0 & 0x0000_FFFF_FFFF_F000) as usize;
-                        if parent_l1_pa != 0 {
-                            let parent_l1_kva = crate::mm::mmu::pa_to_kernel_va(parent_l1_pa) as *const u64;
-                            let new_l1_kva = crate::mm::mmu::pa_to_kernel_va(user_l1_pa) as *mut u64;
-                             for i in 0..3 {
-                                // **CRITICAL MULTI-CORE SEGMENT ISOLATION**:
-                                // We ONLY copy L1[1] (1-2GB, containing loader bootstrap text image segments).
-                                // We MUST NOT copy L1[0] (0-1GB, containing identity MMIO/UART device memory) or L1[2]
-                                // (2-3GB, containing parent's private root_vmar mapping, text, and stack).
-                                // This guarantees 100% independent leaf PTE/page tables between PID 1 & 2.
-                                if i == 0 || i == 2 {
-                                    continue;
-                                }
-                                let entry = unsafe { core::ptr::read_volatile(parent_l1_kva.add(i)) };
-                                if entry != 0 {
-                                    unsafe { core::ptr::write_volatile(new_l1_kva.add(i), entry); }
-                                }
-                            }
-                        }
-                    }
-                }
-                // Flush the cache lines of the modified L0 page directory to main memory
-                core::arch::asm!("dc cvac, {0}", in(reg) new_l0_kva as usize, options(nomem, nostack));
-                core::arch::asm!("dsb ish", options(nomem, nostack));
-                core::arch::asm!("isb", options(nomem, nostack));
+                proc.page_table.clone_high_half(active_l0_pa);
+                proc.page_table.clone_identity_block(active_l0_pa);
             }
         }
         let mut lowest_vaddr: usize = usize::MAX;
+        let pt = &mut proc.page_table;
+
+        #[cfg(target_arch = "aarch64")]
+        let irq_flags = crate::arch::trap::local_irq_save();
+
+        if !pt.validate() {
+            crate::log_error!("LAUNCHER", "PT-VALIDATE FAILED after root setup pid={}", proc.id);
+        }
 
         for idx in 0..header.header_count {
             let entry_meta = match parser.get_entry(idx) {
@@ -396,7 +327,8 @@ impl Process {
                 vmo.write(write_offset, segment_payload)?;
             }
 
-            proc.root_vmar.map_under_l0(&mut vmo, 0, target_va, aligned_size, flags, l0_user_pa)?;
+            proc.root_vmar
+                .map_under_l0(&mut vmo, 0, target_va, aligned_size, flags, pt)?;
             #[cfg(target_arch = "aarch64")]
             {
                 // To maintain full cache coherency, we must clean D-cache and invalidate I-cache
@@ -411,6 +343,10 @@ impl Process {
                     }
                 }
             }
+        }
+
+        if !pt.validate() {
+            crate::log_error!("LAUNCHER", "PT-VALIDATE FAILED after OHLINK segments pid={}", proc.id);
         }
 
         // Compute the user-mode entry VA.  The OHLINK header carries the
@@ -441,10 +377,21 @@ impl Process {
         let stack_va = proc.root_vmar.base + stack_vaddr_offset;
 
         let stack_flags = VmarFlags::from_bits(
-            VmarFlags::READ.bits() | VmarFlags::WRITE.bits() | VmarFlags::USER.bits()
+            VmarFlags::READ.bits() | VmarFlags::WRITE.bits() | VmarFlags::USER.bits(),
         );
 
-        proc.root_vmar.map_under_l0(&mut stack_vmo, 0, stack_va, stack_size, stack_flags, l0_user_pa)?;
+        proc.root_vmar.map_under_l0(
+            &mut stack_vmo,
+            0,
+            stack_va,
+            stack_size,
+            stack_flags,
+            pt,
+        )?;
+
+        if !pt.validate() {
+            crate::log_error!("LAUNCHER", "PT-VALIDATE FAILED after stack mapping pid={}", proc.id);
+        }
 
         let stack_top = (stack_va + stack_size) & !(15usize);
 
@@ -492,25 +439,11 @@ impl Process {
         // through the kernel-side alias directly.
         #[cfg(target_arch = "aarch64")]
         {
-            // Take a known-safe stack page address (top - 16,
-            // which is well inside the 16 KiB region).
             let touch_va = stack_top - 16;
-            let touch_l0_pa = l0_user_pa;
-            if let Some(touch_pa) = crate::arch::aarch64::mmu::translate_user_va(
-                touch_l0_pa,
-                touch_va,
-            ) {
+            if let Some(touch_pa) = pt.translate_va(touch_va) {
                 let touch_kernel_va = crate::mm::mmu::pa_to_kernel_va(touch_pa) as *mut u64;
                 unsafe {
-                    // 8-byte volatile store so QEMU-TCG
-                    // materialises the backing RAM.  The
-                    // value is 0 (same as the page's existing
-                    // content) so this is a coherent write
-                    // that does not perturb the stack.
                     core::ptr::write_volatile(touch_kernel_va, 0u64);
-                    // dsb ish makes the write observable to
-                    // the page-table walker before the next
-                    // TLB-fill.
                     core::arch::asm!("dsb ish", options(nomem, nostack));
                 }
             }
@@ -525,8 +458,9 @@ impl Process {
         let mut thread = Thread::new_user(name, user_entry, stack_top)?;
         thread.process_id = pid;
         thread.context.process_id = pid;
-        thread.context.l0_user_pa = l0_user_pa as u64;
-        
+        thread.context.l0_user_pa = pt.l0_pa() as u64;
+        thread.context.page_table_gen = pt.generation;
+
         // Strict SPSR Lock: enforce EL0t privilege level with IRQs fully unmasked (spsr=0x000)
         // to prevent timer preempt or exception handler from corrupting the register context
         #[cfg(target_arch = "aarch64")]
@@ -593,18 +527,13 @@ impl Process {
                 let padded = (s_len + 15) & !15;
                 let dst = cursor;
                 crate::syscall::handlers::ipc::safe_copy_to_user(
-                    l0_user_pa,
+                    pt.l0_pa(),
                     &arg_strs[i][..s_len],
                     dst,
                     s_len,
                 )?;
                 let nul: [u8; 1] = [0u8];
-                crate::syscall::handlers::ipc::safe_copy_to_user(
-                    l0_user_pa,
-                    &nul,
-                    dst + s_len,
-                    1,
-                )?;
+                crate::syscall::handlers::ipc::safe_copy_to_user(pt.l0_pa(), &nul, dst + s_len, 1)?;
                 arg_vas[i] = dst;
                 cursor += padded;
             }
@@ -615,7 +544,7 @@ impl Process {
             for i in 0..argc {
                 let bytes = (arg_vas[i] as u64).to_le_bytes();
                 crate::syscall::handlers::ipc::safe_copy_to_user(
-                    l0_user_pa,
+                    pt.l0_pa(),
                     &bytes,
                     argv_ptr_va + i * 8,
                     8,
@@ -682,10 +611,7 @@ impl Process {
             // 16-byte aligned address that is GUARANTEED to be
             // inside the stack region: `stack_top - 16`.
             let sp_top_aligned = (stack_top - 16) & !0xFusize;
-            if let Some(sp_top_pa_resolved) = crate::arch::aarch64::mmu::translate_user_va(
-                l0_user_pa,
-                sp_top_aligned,
-            ) {
+            if let Some(sp_top_pa_resolved) = pt.translate_va(sp_top_aligned) {
                 unsafe {
                     core::arch::asm!(
                         "and x9, {sp_va}, #~0xfff",
@@ -835,9 +761,55 @@ impl Process {
                 "isb",
                 options(nomem, nostack)
             );
+
+            // POST-LAUNCH stack PTE verification: confirm all 4 stack
+            // pages have valid L3 PTEs immediately after mapping.
+            for i in 0..4 {
+                let check_va = stack_va + i * 4096;
+                match pt.translate_va(check_va) {
+                    None => {
+                        crate::log_error!(
+                            "LAUNCHER",
+                            "POST-LAUNCH-FAIL: stack page {} at {:#x} pid={} has no valid PTE!",
+                            i, check_va, proc.id
+                        );
+                    }
+                    Some(pa) => {
+                        crate::log_info!(
+                            "LAUNCHER",
+                            "POST-LAUNCH-OK: stack page {} at {:#x} -> PA {:#x} pid={}",
+                            i, check_va, pa, proc.id
+                        );
+                    }
+                }
+            }
+            // Raw L3 dump at post-launch
+            unsafe {
+                let l0_idx = crate::arch::aarch64::mmu::va_l0_index(stack_va);
+                let l1_idx = crate::arch::aarch64::mmu::va_l1_index(stack_va);
+                let l2_idx = crate::arch::aarch64::mmu::va_l2_index(stack_va);
+                let l0e = crate::arch::aarch64::mmu::read_pte(pt.l0_pa(), l0_idx);
+                let l1_pa = (l0e & 0x0000_FFFF_FFFF_F000) as usize;
+                let l1e = crate::arch::aarch64::mmu::read_pte(l1_pa, l1_idx);
+                let l2_pa = (l1e & 0x0000_FFFF_FFFF_F000) as usize;
+                let l2e = crate::arch::aarch64::mmu::read_pte(l2_pa, l2_idx);
+                let l3_pa = (l2e & 0x0000_FFFF_FFFF_F000) as usize;
+                crate::log_info!("LAUNCHER", "POST-PTW: L0[{}]={:#018x} L1[{}]={:#018x} L2[{}]@PA={:#x}={:#018x} L3@PA={:#x} pid={}",
+                    l0_idx, l0e, l1_idx, l1e, l2_idx, l2_pa, l2e, l3_pa, proc.id);
+                if l3_pa != 0 {
+                    for k in 0..8 {
+                        let raw = crate::arch::aarch64::mmu::read_pte(l3_pa, k);
+                        crate::log_info!("LAUNCHER", "POST-L3[{}]={:#018x} pid={}", k, raw, proc.id);
+                    }
+                }
+            }
             ()
         };
 
+        #[cfg(target_arch = "aarch64")]
+        if !pt.validate() {
+            crate::log_error!("LAUNCHER", "PT-VALIDATE FAILED at post-launch pid={}", proc.id);
+        }
 
         // **Restore the caller-side TTBR0_EL1** before returning to the
         // kernel context, but ONLY when there is a sensible previous
@@ -883,18 +855,50 @@ impl Process {
                 // the loader's entry point walks under the correct
                 // translation regime.
                 let new_asid = proc.asid;
-                crate::arch::aarch64::mmu::set_ttbr0_el1(l0_user_pa, new_asid);
+                crate::arch::aarch64::mmu::set_ttbr0_el1(pt.l0_pa(), new_asid);
             }
         }
 
+        // FINAL CANARY: dump PID 1's L3 page right before return,
+        // AND set the global dynamic WATCH_PA so subsequent WATCH
+        // statements catch writes to this page even when the PA
+        // shifts between runs.
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            let c_l0_idx = crate::arch::aarch64::mmu::va_l0_index(stack_va);
+            let c_l1_idx = crate::arch::aarch64::mmu::va_l1_index(stack_va);
+            let c_l2_idx = crate::arch::aarch64::mmu::va_l2_index(stack_va);
+            let c_l0e = crate::arch::aarch64::mmu::read_pte(pt.l0_pa(), c_l0_idx);
+            let c_l1_pa = (c_l0e & 0x0000_FFFF_FFFF_F000) as usize;
+            let c_l1e = crate::arch::aarch64::mmu::read_pte(c_l1_pa, c_l1_idx);
+            let c_l2_pa = (c_l1e & 0x0000_FFFF_FFFF_F000) as usize;
+            let c_l2e = crate::arch::aarch64::mmu::read_pte(c_l2_pa, c_l2_idx);
+            let c_l3_pa = (c_l2e & 0x0000_FFFF_FFFF_F000) as usize;
+            if c_l3_pa != 0 {
+                let vals: [u64; 8] = core::ptr::read_volatile(
+                    crate::mm::mmu::pa_to_kernel_va(c_l3_pa) as *const [u64; 8]
+                );
+                crate::log_error!("LAUNCHER", "FINAL-CANARY pid={} l3_pa={:#x} L3[0..7]={:#x} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x}",
+                    proc.id, c_l3_pa, vals[0], vals[1], vals[2], vals[3], vals[4], vals[5], vals[6], vals[7]);
+                // Set dynamic WATCH for PID 1 only (the known corruption target).
+                // For other processes we'd overwrite PID 1's WATCH address.
+                if proc.id == 1 {
+                    crate::mm::phys::WATCH_PA.store(c_l3_pa, core::sync::atomic::Ordering::Release);
+                    crate::log_error!("WATCH", "FINAL-CANARY set WATCH_PA={:#x} for pid={}", c_l3_pa, proc.id);
+                }
+            }
+        }
 
+        #[cfg(target_arch = "aarch64")]
+        crate::arch::trap::local_irq_restore(irq_flags);
 
         Ok(())
     }
 }
 
 pub const MAX_PROCESSES: usize = 8;
-pub static mut PROCESSES: [Option<Process>; MAX_PROCESSES] = [None, None, None, None, None, None, None, None];
+pub static mut PROCESSES: [Option<Process>; MAX_PROCESSES] =
+    [None, None, None, None, None, None, None, None];
 
 /// Returns the calling thread's owning process id, or `NotFound`
 /// if no thread is currently scheduled.  Useful for paths that
@@ -909,30 +913,26 @@ pub fn current_process_id() -> Result<u64> {
     }
 }
 
-/// Thread-safe tracker to register page table pages under the currently running process
+/// Thread-safe tracker to register page table pages under the currently running process.
+/// Delegates to `PageTableTree::track` on the current process.
 pub fn current_process_register_page_table(pa: usize) {
     unsafe {
         if let Ok(pid) = current_process_id() {
             if let Some(proc) = find_process_mut(pid) {
-                if proc.page_table_count < 64 {
-                    proc.page_tables[proc.page_table_count] = pa;
-                    proc.page_table_count += 1;
-                }
+                proc.page_table.track(pa);
             }
         }
     }
 }
 
-/// Thread-safe tracker to register page table pages under a specific process matching its root L0 PA
+/// Thread-safe tracker to register page table pages under a specific process matching its root L0 PA.
+/// Delegates to `PageTableTree::track` on the matching process.
 pub fn register_page_table_for_l0(l0_pa: usize, pa: usize) {
     unsafe {
         for slot in PROCESSES.iter_mut() {
             if let Some(proc) = slot {
-                if proc.l0_user_pa == l0_pa {
-                    if proc.page_table_count < 64 {
-                        proc.page_tables[proc.page_table_count] = pa;
-                        proc.page_table_count += 1;
-                    }
+                if proc.page_table.has_root() && proc.page_table.l0_pa() == l0_pa {
+                    proc.page_table.track(pa);
                     break;
                 }
             }
@@ -981,8 +981,34 @@ pub fn find_process_l0_user_pa(id: u64) -> Option<(usize, u16)> {
     unsafe {
         for slot in PROCESSES.iter() {
             if let Some(p) = slot {
-                if p.id == id && p.l0_user_pa != 0 {
-                    return Some((p.l0_user_pa, p.asid));
+                if p.id == id && p.page_table.has_root() {
+                    return Some((p.page_table.l0_pa(), p.asid));
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn validate_process_page_table(id: u64) -> bool {
+    unsafe {
+        for slot in PROCESSES.iter() {
+            if let Some(p) = slot {
+                if p.id == id {
+                    return p.page_table.validate();
+                }
+            }
+        }
+    }
+    false
+}
+
+pub fn find_process_page_table_gen(id: u64) -> Option<u64> {
+    unsafe {
+        for slot in PROCESSES.iter() {
+            if let Some(p) = slot {
+                if p.id == id {
+                    return Some(p.page_table.generation);
                 }
             }
         }
@@ -997,9 +1023,14 @@ impl Drop for Process {
         // 2. Free and clear the VMAR registrations to release virtual mappings
         // 3. Free the tracked L1, L2, L3 Page Table pages so they can be safely reclaimed back to the allocator
         // 4. Finally, release the OHLINK segment and Stack VMO physical data pages
-        
-        crate::log_info!("PROCESS_DROP", "Process '{}' (PID {}) is dropping. Reclaiming intermediate page table pages.", self.name, self.id);
-        
+
+        crate::log_info!(
+            "PROCESS_DROP",
+            "Process '{}' (PID {}) is dropping. Reclaiming intermediate page table pages.",
+            self.name,
+            self.id
+        );
+
         #[cfg(target_arch = "aarch64")]
         {
             // Flush all TLB entries for this process ASID
@@ -1014,13 +1045,6 @@ impl Drop for Process {
             }
         }
 
-        // Free tracked intermediate page directories in backward order
-        for idx in (0..self.page_table_count).rev() {
-            let pa = self.page_tables[idx];
-            if pa != 0 {
-                crate::log_info!("PROCESS_DROP", "Reclaiming Page Table page: {:#x}", pa);
-                crate::mm::phys::free_page(crate::mm::phys::PhysAddr::new(pa));
-            }
-        }
+        unsafe { self.page_table.free_tree(); }
     }
 }

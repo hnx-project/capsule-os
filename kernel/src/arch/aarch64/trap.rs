@@ -256,6 +256,31 @@ fn panic_unhandled(frame: &TrapFrame, class: u64) {
     );
 }
 
+/// Save DAIF, then mask IRQs (set PSTATE.I).
+/// Returns the saved DAIF value for `local_irq_restore`.
+#[inline]
+pub fn local_irq_save() -> u64 {
+    let mut daif: u64;
+    unsafe {
+        core::arch::asm!(
+            "mrs {0}, daif",
+            "msr daifset, #2",
+            "isb",
+            out(reg) daif,
+            options(nomem, preserves_flags),
+        );
+    }
+    daif
+}
+
+/// Restore DAIF to a previously saved value (from `local_irq_save`).
+#[inline]
+pub fn local_irq_restore(saved: u64) {
+    unsafe {
+        core::arch::asm!("msr daif, {0}", in(reg) saved, options(nomem, preserves_flags));
+    }
+}
+
 /// Mask IRQs at the CPU level (set `PSTATE.I`).
 #[inline]
 pub fn disable_irqs() {
