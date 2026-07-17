@@ -1,5 +1,5 @@
 use crate::task::thread::{Priority, Thread, ThreadState};
-use crate::task::switch_to;
+use crate::arch::{ArchHardware, CurrentArch};
 use crate::arch::trap::{disable_irqs, enable_irqs};
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -52,10 +52,8 @@ pub struct Scheduler {
     current_idx: Option<usize>,
     running: bool,
     /// H5: DAIF mask saved by `lock()`, restored by `unlock()`.
-    /// Stored as a bare `usize` (only the low 4 bits matter — A
-    /// bit 0, F bit 1, I bit 2, D bit 3) so we don't have to drag
-    /// the `tock_registers` DAIF newtype into `Scheduler`.
-    daif_save: usize,
+    /// Stored as a bare `core::cell::Cell<usize>` to allow interior mutability without undefined casting.
+    daif_save: core::cell::Cell<usize>,
 }
 
 static SCHEDULER_LOCK: AtomicBool = AtomicBool::new(false);
@@ -71,7 +69,7 @@ impl Scheduler {
             queues: [const { ThreadQueue::new() }; PRIORITY_LEVELS],
             current_idx: None,
             running: false,
-            daif_save: 0,
+            daif_save: core::cell::Cell::new(0),
         }
     }
 
@@ -85,14 +83,8 @@ impl Scheduler {
         // the PSTATE-safe equivalent of Linux's
         // `local_irq_save` / `local_irq_restore`.
         unsafe {
-            core::arch::asm!(
-                "mrs {tmp}, daif",
-                "msr daifset, #0xf",
-                "str {tmp}, [{slot}]",
-                tmp = out(reg) _,
-                slot = in(reg) &self.daif_save,
-                options(preserves_flags),
-            );
+            let flags = crate::arch::CurrentArch::local_irq_save();
+            self.daif_save.set(flags);
         }
         while SCHEDULER_LOCK.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
             core::hint::spin_loop();
@@ -102,13 +94,8 @@ impl Scheduler {
     fn unlock(&self) {
         SCHEDULER_LOCK.store(false, Ordering::Release);
         unsafe {
-            core::arch::asm!(
-                "ldr {tmp}, [{slot}]",
-                "msr daif, {tmp}",
-                tmp = out(reg) _,
-                slot = in(reg) &self.daif_save,
-                options(preserves_flags),
-            );
+            let flags = self.daif_save.get();
+            crate::arch::CurrentArch::local_irq_restore(flags);
         }
     }
 
@@ -231,15 +218,14 @@ impl Scheduler {
             }
 
             #[cfg(target_arch = "aarch64")]
-            {
-                use crate::mm::mmu::ArchMmu;
-                crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
+            unsafe {
+                crate::arch::CurrentArch::flush_tlb();
             }
 
             let mut dummy_ctx = crate::task::thread::ThreadContext::default();
             self.unlock();
             unsafe {
-                switch_to(&mut dummy_ctx, &mut self.threads[idx].as_mut().unwrap().context);
+                CurrentArch::switch_context(&mut dummy_ctx, &mut self.threads[idx].as_mut().unwrap().context);
             }
         }
 
@@ -358,13 +344,7 @@ impl Scheduler {
                         let user_pc = t.context.elr;
                         if user_pc != 0 {
                             unsafe {
-                                core::arch::asm!(
-                                    "ic ivau, {0}",
-                                    "dsb sy",
-                                    "isb",
-                                    in(reg) user_pc,
-                                    options(nostack)
-                                );
+                                <crate::arch::aarch64::Aarch64Hardware as ArchHardware>::instruction_barrier();
                             }
                         }
                         // PRE-ERET generation-stamp check: if the thread's
@@ -395,7 +375,7 @@ impl Scheduler {
                         {
                     match crate::arch::aarch64::mmu::translate_user_va(l0_pa, check_va) {
                         Some(pa) => {
-                            crate::log_info!("SCHED", "PRE-ERET: user_sp={:#x} -> PA {:#x} pid={} OK",
+                            crate::log_debug!("SCHED", "PRE-ERET: user_sp={:#x} -> PA {:#x} pid={} OK",
                                 usp, pa, t.process_id);
                         }
                         None => {
@@ -462,9 +442,8 @@ impl Scheduler {
                 crate::arch::aarch64::mmu::set_ttbr0_el1(next_l0_pa, next_asid);
             }
             #[cfg(target_arch = "aarch64")]
-            {
-                use crate::mm::mmu::ArchMmu;
-                crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
+            unsafe {
+                crate::arch::CurrentArch::flush_tlb();
             }
 
             #[cfg(target_arch = "aarch64")]
@@ -491,7 +470,7 @@ impl Scheduler {
                 {
                     match crate::arch::aarch64::mmu::translate_user_va(l0_pa, check_va) {
                         Some(pa) => {
-                            crate::log_info!("SCHED", "PRE-ERET: user_sp={:#x} -> PA {:#x} pid={} OK",
+                            crate::log_debug!("SCHED", "PRE-ERET: user_sp={:#x} -> PA {:#x} pid={} OK",
                                 usp, pa, t.process_id);
                         }
                         None => {
@@ -504,10 +483,10 @@ impl Scheduler {
                             // Uses the dynamic WATCH_PA if set, else falls back to
                             // a direct page-table walk.
                             if t.process_id == 1 {
-                                let watched = crate::mm::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
+                                let watched = crate::arch::aarch64::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
                                 if watched != 0 {
                                     unsafe {
-                                        use crate::mm::mmu::pa_to_kernel_va;
+                                        use crate::arch::mmu_facade::pa_to_kernel_va;
                                         let l3_kva = pa_to_kernel_va(watched) as *const u64;
                                         for ci in 0..8 {
                                             let val = core::ptr::read_volatile(l3_kva.add(ci));
@@ -542,7 +521,7 @@ impl Scheduler {
             self.unlock();
 
             unsafe {
-                switch_to(&mut *prev_context_ptr, &*next_context_ptr);
+                CurrentArch::switch_context(&mut *prev_context_ptr, &*next_context_ptr);
             }
 
             // Control returns here when this thread is scheduled back in
@@ -554,9 +533,8 @@ impl Scheduler {
             // (B1.3) so that the second process we switched *into* got
             // the same MMU-walker-visible flush on its way in.
             #[cfg(target_arch = "aarch64")]
-            {
-                use crate::mm::mmu::ArchMmu;
-                crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
+            unsafe {
+                crate::arch::CurrentArch::flush_tlb();
 
                 // Restore TTBR0 to the original (now current) process's L0
                 // so the CPU can translate user VAs through the correct table
@@ -576,13 +554,7 @@ impl Scheduler {
                     let user_pc = t.context.elr;
                     if user_pc != 0 {
                         unsafe {
-                            core::arch::asm!(
-                                "ic ivau, {0}",
-                                "dsb sy",
-                                "isb",
-                                in(reg) user_pc,
-                                options(nomem, nostack)
-                            );
+                            <crate::arch::aarch64::Aarch64Hardware as ArchHardware>::instruction_barrier();
                         }
                     }
                 }
@@ -600,10 +572,7 @@ impl Scheduler {
                 unsafe {
                     crate::arch::trap::disable_irqs();
                     loop {
-                        #[cfg(target_arch = "aarch64")]
-                        core::arch::asm!("wfe");
-                        #[cfg(target_arch = "riscv64")]
-                        core::arch::asm!("wfi");
+                        crate::arch::CurrentArch::wait_for_event();
                     }
                 }
             }

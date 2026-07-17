@@ -1,8 +1,8 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use shared::status::{Result, Status};
 use shared::types::{HandleValue, ObjectType};
-use crate::mm::vmo::Vmo;
-use crate::mm::vmar::Vmar;
+use crate::memory::vmo::Vmo;
+use crate::memory::vmar::Vmar;
 use crate::ipc::channel::Channel;
 use crate::ipc::port::Port;
 
@@ -86,10 +86,10 @@ impl HandleSlots {
         let slot_size = core::mem::size_of::<Option<Slot>>();
         let total = MAX_HANDLES * slot_size;
         let pages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
-        let first_pa = crate::mm::phys::alloc_kheap_page().expect("alloc_kheap_page failed");
-        let base_va = crate::mm::mmu::pa_to_kernel_va(first_pa.as_usize());
+        let first_pa = crate::arch::aarch64::phys::alloc_kheap_page().expect("alloc_kheap_page failed");
+        let base_va = crate::arch::mmu_facade::pa_to_kernel_va(first_pa.as_usize());
         for _ in 1..pages {
-            let _pa = crate::mm::phys::alloc_kheap_page().expect("alloc_kheap_page failed");
+            let _pa = crate::arch::aarch64::phys::alloc_kheap_page().expect("alloc_kheap_page failed");
         }
         // Niche-optimised `None` may NOT be all-zero bytes, so we must
         // explicitly write `None` into every slot.

@@ -3,7 +3,7 @@ const MAX_PATH_LEN: usize = 128;
 
 pub fn get_rootfs_image() -> &'static [u8] {
     unsafe {
-        let va = crate::mm::mmu::pa_to_kernel_va(crate::BOOTFS_PHYS_ADDR);
+        let va = crate::arch::mmu_facade::pa_to_kernel_va(crate::BOOTFS_PHYS_ADDR);
         core::slice::from_raw_parts(va as *const u8, crate::BOOTFS_PHYS_SIZE)
     }
 }

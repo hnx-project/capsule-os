@@ -269,6 +269,98 @@ pub extern "C" fn getchar() -> Option<u8> {
 // same way read does.  read(fd>=3, ...) is fully functional.
 // ----------------------------------------------------
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FdType {
+    Console,
+    File {
+        channel_handle: usize,
+        remote_fd: u32,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FdEntry {
+    pub r#type: FdType,
+    pub flags: i32,
+}
+
+#[no_mangle]
+pub static mut USER_FD_TABLE: [Option<FdEntry>; 64] = [
+    Some(FdEntry {
+        r#type: FdType::Console,
+        flags: 0,
+    }),
+    Some(FdEntry {
+        r#type: FdType::Console,
+        flags: 1,
+    }),
+    Some(FdEntry {
+        r#type: FdType::Console,
+        flags: 2,
+    }),
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+];
+
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 enum FileAgentCmd {
@@ -322,9 +414,6 @@ pub extern "C" fn open(path: *const u8, flags: i32, _mode: i32) -> i32 {
         return -1;
     }
 
-    // 1. Resolve the path length.  We pass the user pointer straight
-    //    through to the kernel; the kernel walks the page table and
-    //    length-bounds the read on its side via Phase 6.3 K1.
     let mut len = 0;
     unsafe {
         while *path.add(len) != 0 && len < 127 {
@@ -332,33 +421,247 @@ pub extern "C" fn open(path: *const u8, flags: i32, _mode: i32) -> i32 {
         }
     }
 
-    // 2. Hand off to the kernel POSIX forwarder (P1).  The kernel
-    //    talks to fileagent on our behalf and parks the resulting
-    //    (process_id, fd) -> {session_chan, remote_fd} mapping in
-    //    its PosixFdTable; we just get the local fd back.
-    libcapsule::syscall!(SYSCALL_OPEN, path as usize, len, flags as usize, 0, 0, 0) as i32
+    let session_chan = match libcapsule::syscalls::channel_lookup("svc.vfs") {
+        Ok(ch) => ch,
+        Err(_) => return -1,
+    };
+
+    let mut path_buf = [0u8; 128];
+    unsafe {
+        core::ptr::copy_nonoverlapping(path, path_buf.as_mut_ptr(), len);
+    }
+    let cmd = FileAgentCmd::Open {
+        path: path_buf,
+        path_len: len as u32,
+        flags: flags as u32,
+    };
+
+    let cmd_slice = unsafe {
+        core::slice::from_raw_parts(
+            &cmd as *const FileAgentCmd as *const u8,
+            core::mem::size_of::<FileAgentCmd>(),
+        )
+    };
+
+    if let Err(_) = libcapsule::syscalls::channel_write(session_chan, cmd_slice, &[]) {
+        let _ = libcapsule::syscalls::close(session_chan);
+        return -1;
+    }
+
+    let mut resp_buf = [0u8; 8];
+    let mut resp_handles = [0u32; 2];
+    let remote_fd =
+        match libcapsule::syscalls::channel_read(session_chan, &mut resp_buf, &mut resp_handles) {
+            Ok(read_len) if read_len >= 8 => unsafe {
+                core::ptr::read_unaligned(resp_buf.as_ptr() as *const i64)
+            },
+            _ => -1,
+        };
+
+    if remote_fd < 0 {
+        let _ = libcapsule::syscalls::close(session_chan);
+        return -1;
+    }
+
+    unsafe {
+        let mut allocated_fd = -1;
+        for i in 3..USER_FD_TABLE.len() {
+            if USER_FD_TABLE[i].is_none() {
+                USER_FD_TABLE[i] = Some(FdEntry {
+                    r#type: FdType::File {
+                        channel_handle: session_chan,
+                        remote_fd: remote_fd as u32,
+                    },
+                    flags,
+                });
+                allocated_fd = i as i32;
+                break;
+            }
+        }
+        if allocated_fd == -1 {
+            let _ = libcapsule::syscalls::close(session_chan);
+        }
+        allocated_fd
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
-    // All fds go straight through to the kernel.  fd=0 is the UART
-    // stdin path (K-D2); fd>=3 is the fileagent forwarder (P2).
-    libcapsule::syscall!(SYSCALL_READ, fd as usize, buf as usize, count, 0, 0, 0) as isize
+    if buf.is_null() || count == 0 {
+        return 0;
+    }
+    if fd < 0 || fd >= 64 {
+        return -1;
+    }
+
+    unsafe {
+        let entry = match &USER_FD_TABLE[fd as usize] {
+            Some(e) => e,
+            None => return -1,
+        };
+
+        match &entry.r#type {
+            FdType::Console => {
+                libcapsule::syscall!(SYSCALL_READ, fd as usize, buf as usize, count, 0, 0, 0)
+                    as isize
+            }
+            FdType::File {
+                channel_handle,
+                remote_fd,
+            } => {
+                let cmd = FileAgentCmd::Read {
+                    fd: *remote_fd,
+                    len: count,
+                };
+                let cmd_slice = core::slice::from_raw_parts(
+                    &cmd as *const FileAgentCmd as *const u8,
+                    core::mem::size_of::<FileAgentCmd>(),
+                );
+
+                if let Err(_) = libcapsule::syscalls::channel_write(*channel_handle, cmd_slice, &[])
+                {
+                    return -1;
+                }
+
+                let mut resp_buf = [0u8; 16];
+                let mut resp_handles = [0u32; 2];
+                match libcapsule::syscalls::channel_read(
+                    *channel_handle,
+                    &mut resp_buf,
+                    &mut resp_handles,
+                ) {
+                    Ok(read_len) if read_len >= 16 => {
+                        let result = core::ptr::read_unaligned(resp_buf.as_ptr() as *const i64);
+                        if result < 0 {
+                            return -1;
+                        }
+                        let data_len =
+                            core::ptr::read_unaligned(resp_buf.as_ptr().add(8) as *const usize);
+                        let vmo_handle = resp_handles[0] as usize;
+
+                        if vmo_handle == 0 || data_len == 0 {
+                            return 0;
+                        }
+
+                        let n = core::cmp::min(data_len, count);
+                        let slice = core::slice::from_raw_parts_mut(buf, n);
+                        let _ = libcapsule::syscalls::vmo_read(vmo_handle, 0, slice);
+                        let _ = libcapsule::syscalls::close(vmo_handle);
+                        n as isize
+                    }
+                    _ => -1,
+                }
+            }
+        }
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
-    // fd=1/2 are UART stdout/stderr (K-D2); fd>=3 is the fileagent
-    // forwarder (P3).  See the file-header comment for the VMO
-    // gap that Phase 6.6 will close for the no-VMO write path.
-    libcapsule::syscall!(SYSCALL_WRITE, fd as usize, buf as usize, count, 0, 0, 0) as isize
+    if buf.is_null() || count == 0 {
+        return 0;
+    }
+    if fd < 0 || fd >= 64 {
+        return -1;
+    }
+
+    unsafe {
+        let entry = match &USER_FD_TABLE[fd as usize] {
+            Some(e) => e,
+            None => return -1,
+        };
+
+        match &entry.r#type {
+            FdType::Console => {
+                libcapsule::syscall!(SYSCALL_WRITE, fd as usize, buf as usize, count, 0, 0, 0)
+                    as isize
+            }
+            FdType::File {
+                channel_handle,
+                remote_fd,
+            } => {
+                let vmo = match libcapsule::syscalls::vmo_create(count) {
+                    Ok(v) => v,
+                    Err(_) => return -1,
+                };
+
+                let slice = core::slice::from_raw_parts(buf, count);
+                if let Err(_) = libcapsule::syscalls::vmo_write(vmo, 0, slice) {
+                    let _ = libcapsule::syscalls::close(vmo);
+                    return -1;
+                }
+
+                let cmd = FileAgentCmd::Write {
+                    fd: *remote_fd,
+                    len: count,
+                    vmo_handle: vmo as u32,
+                };
+                let cmd_slice = core::slice::from_raw_parts(
+                    &cmd as *const FileAgentCmd as *const u8,
+                    core::mem::size_of::<FileAgentCmd>(),
+                );
+
+                if let Err(_) =
+                    libcapsule::syscalls::channel_write(*channel_handle, cmd_slice, &[vmo as u32])
+                {
+                    let _ = libcapsule::syscalls::close(vmo);
+                    return -1;
+                }
+
+                let mut resp_buf = [0u8; 8];
+                let mut resp_handles = [0u32; 2];
+                let written = match libcapsule::syscalls::channel_read(
+                    *channel_handle,
+                    &mut resp_buf,
+                    &mut resp_handles,
+                ) {
+                    Ok(read_len) if read_len >= 8 => {
+                        core::ptr::read_unaligned(resp_buf.as_ptr() as *const i64)
+                    }
+                    _ => -1,
+                };
+
+                let _ = libcapsule::syscalls::close(vmo);
+                if written < 0 {
+                    -1
+                } else {
+                    written as isize
+                }
+            }
+        }
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn close(fd: i32) -> i32 {
-    // Kernel owns the POSIX fd table (P7) and closes the fileagent
-    // session when the local fd is freed (P4).
-    libcapsule::syscall!(SYSCALL_CLOSE, fd as usize, 0, 0, 0, 0, 0) as i32
+    if fd < 0 || fd >= 64 {
+        return -1;
+    }
+
+    unsafe {
+        let entry = match USER_FD_TABLE[fd as usize].take() {
+            Some(e) => e,
+            None => return -1,
+        };
+
+        match entry.r#type {
+            FdType::Console => 0,
+            FdType::File {
+                channel_handle,
+                remote_fd,
+            } => {
+                let cmd = FileAgentCmd::Close { fd: remote_fd };
+                let cmd_slice = core::slice::from_raw_parts(
+                    &cmd as *const FileAgentCmd as *const u8,
+                    core::mem::size_of::<FileAgentCmd>(),
+                );
+
+                let _ = libcapsule::syscalls::channel_write(channel_handle, cmd_slice, &[]);
+                let _ = libcapsule::syscalls::close(channel_handle);
+                0
+            }
+        }
+    }
 }
 
 #[no_mangle]

@@ -419,3 +419,43 @@ pub fn proc_mgmt(cmd: u32, arg1: usize, arg2: usize, arg3: usize) -> Result<usiz
         Ok(ret)
     }
 }
+
+pub fn thread_create(
+    process_handle: u32,
+    entry_pc: usize,
+    arg0: usize,
+    arg1: usize,
+    stack_size: usize,
+) -> Result<usize> {
+    let ret = syscall!(
+        shared::syscall_nums::SYSCALL_THREAD_CREATE,
+        process_handle as usize,
+        entry_pc,
+        arg0,
+        arg1,
+        stack_size,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret)
+    }
+}
+
+pub fn thread_start(thread_handle: u32) -> Result<()> {
+    let ret = syscall!(
+        shared::syscall_nums::SYSCALL_THREAD_START,
+        thread_handle as usize,
+        0,
+        0,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(())
+    }
+}

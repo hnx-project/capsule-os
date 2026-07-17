@@ -8,7 +8,7 @@ pub mod arch;
 pub mod fdt;
 pub mod drivers;
 pub mod task;
-pub mod mm;
+pub mod memory;
 pub mod ipc;
 pub mod object;
 pub mod syscall;
@@ -18,22 +18,11 @@ pub mod vfs;
 pub mod loader;
 pub mod rootfs;
 
+use crate::arch::ArchHardware;
+
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    let pc: usize;
-    let sp: usize;
-    unsafe {
-        #[cfg(target_arch = "aarch64")]
-        {
-            core::arch::asm!("mov {}, x30", out(reg) pc);
-            core::arch::asm!("mov {}, sp", out(reg) sp);
-        }
-        #[cfg(target_arch = "riscv64")]
-        {
-            core::arch::asm!("mv {}, ra", out(reg) pc);
-            core::arch::asm!("mv {}, sp", out(reg) sp);
-        }
-    }
+    let (pc, sp) = crate::arch::CurrentArch::get_current_registers();
 
     crate::kprintln!("\n\x1b[1;31m======================================================================\x1b[0m");
     crate::kprintln!("\x1b[1;31m  🔥 KERNEL PANIC: Supervisor Exception 🔥\x1b[0m");
@@ -50,31 +39,10 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     crate::kprintln!("\x1b[90m----------------------------------------------------------------------\x1b[0m");
     crate::kprintln!("=> \x1b[1m[ ARCH-SPECIFIC REGISTERS ]\x1b[0m");
 
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        let spsr: u64;
-        let elr: u64;
-        let esr: u64;
-        core::arch::asm!("mrs {}, spsr_el1", out(reg) spsr);
-        core::arch::asm!("mrs {}, elr_el1", out(reg) elr);
-        core::arch::asm!("mrs {}, esr_el1", out(reg) esr);
-        crate::kprintln!("=> SPSR_EL1 : {:#018x}", spsr);
-        crate::kprintln!("=> ELR_EL1  : {:#018x}", elr);
-        crate::kprintln!("=> ESR_EL1  : {:#018x} (Exception Syndrome Register)", esr);
-    }
-
-    #[cfg(target_arch = "riscv64")]
-    unsafe {
-        let sstatus: usize;
-        let sepc: usize;
-        let scause: usize;
-        core::arch::asm!("csrr {}, sstatus", out(reg) sstatus);
-        core::arch::asm!("csrr {}, sepc", out(reg) sepc);
-        core::arch::asm!("csrr {}, scause", out(reg) scause);
-        crate::kprintln!("=> sstatus  : {:#018x}", sstatus);
-        crate::kprintln!("=> sepc     : {:#018x}", sepc);
-        crate::kprintln!("=> scause   : {:#018x} (Supervisor Cause Register)", scause);
-    }
+    let diag = crate::arch::CurrentArch::get_diagnostics();
+    crate::kprintln!("=> STATUS/SPSR : {:#018x}", diag.spsr_or_status);
+    crate::kprintln!("=> EPC/ELR     : {:#018x}", diag.elr_or_epc);
+    crate::kprintln!("=> CAUSE/ESR   : {:#018x}", diag.esr_or_cause);
 
     crate::kprintln!("\x1b[1;31m======================================================================\x1b[0m");
     crate::kprintln!("\x1b[1;31m  SYSTEM HALTED. Please hard reset QEMU.\x1b[0m");
@@ -111,9 +79,9 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
             crate::log_info!("FDT", "=> RAM base  : {:#x}", boot.ram_base);
             crate::log_info!("FDT", "=> RAM size  : {:#x} ({} MB)", boot.ram_size, boot.ram_size / 1024 / 1024);
 
-            mm::init(boot.ram_base, boot.ram_size);
-            let free_cnt = mm::phys::get_free_pages_count();
-            let total_cnt = mm::phys::get_total_pages_count();
+            crate::arch::phys::init(boot.ram_base, boot.ram_size);
+            let free_cnt = crate::arch::aarch64::phys::get_free_pages_count();
+            let total_cnt = crate::arch::aarch64::phys::get_total_pages_count();
             crate::log_info!("MM", "Physical page allocator initialized.");
             crate::log_info!("MM", "=> Free pages : {} ({} MB) / {} ({} MB)", free_cnt, free_cnt * 4 / 1024, total_cnt, total_cnt * 4 / 1024);
 
@@ -143,7 +111,7 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
 
             crate::log_info!("BOOT", "OK");
 
-            crate::mm::smoke::vmo_vmar_smoke_test();
+            crate::memory::smoke::vmo_vmar_smoke_test();
 
             // Phase 3.2: bootstrap init process and thread / run smoke tests.
             // if let Err(e) = crate::task::smoke::launch_smoke_tests() {
@@ -197,9 +165,9 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
             #[cfg(not(target_arch = "riscv64"))]
             let (ram_base, ram_size, uart_base) = (0x40000000usize, 512 * 1024 * 1024, 0x09000000usize);
 
-            mm::init(ram_base, ram_size);
-            let free_cnt = mm::phys::get_free_pages_count();
-            let total_cnt = mm::phys::get_total_pages_count();
+            crate::arch::phys::init(ram_base, ram_size);
+            let free_cnt = crate::arch::aarch64::phys::get_free_pages_count();
+            let total_cnt = crate::arch::aarch64::phys::get_total_pages_count();
             crate::log_info!("MM", "Physical page allocator initialized.");
             crate::log_info!("MM", "=> Free pages : {} ({} MB) / {} ({} MB)", free_cnt, free_cnt * 4 / 1024, total_cnt, total_cnt * 4 / 1024);
             
@@ -207,7 +175,7 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
             crate::log_info!("MMU", "4-level page tables ACTIVE");
             crate::log_info!("BOOT", "OK");
 
-            crate::mm::smoke::vmo_vmar_smoke_test();
+            crate::memory::smoke::vmo_vmar_smoke_test();
         }
     }
 
@@ -237,7 +205,7 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
         // Enable IRQs and enter WFI loop.
         arch::aarch64::trap::enable_irqs();
         loop {
-            unsafe { core::arch::asm!("wfi", options(nomem, nostack)) }
+            unsafe { crate::arch::CurrentArch::wait_for_interrupt() }
         }
     }
     #[cfg(target_arch = "riscv64")]

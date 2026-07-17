@@ -14,7 +14,7 @@
   "panic-strategy": "abort",
   "dynamic-linking": false,
   "executables": true,
-  "relocation-model": "pic",
+  "relocation-model": "static",
   "tls-model": "local-exec",
   "has-rpath": false,
   "max-atomic-width": 128,

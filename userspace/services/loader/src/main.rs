@@ -1,81 +1,127 @@
 #![no_std]
 #![no_main]
 
-extern crate libstd;
+extern crate libcapsule;
+use libcapsule::kprintln;
 
-mod log;
+/// The standard, stateless AArch64 entry trampoline for loader (PID 1).
+/// Ohlink-linker binds this verbatim to the entry offset (0x10000 / 65536)
+/// defined in xtask.toml.
+#[cfg(target_arch = "aarch64")]
+core::arch::global_asm!(
+    r#"
+.section .text
+.global _start
+_start:
+    // Preserve argc (x0) and argv (x1)
+    mov     x9,  x0
+    mov     x10, x1
 
-use libstd::os::capsule::{Channel, Command};
-use log::Logger;
+    // Align Stack Pointer to 16 bytes (AArch64 hard requirement)
+    mov     x8,  sp
+    and     x8,  x8, #~0xf
+    mov     sp,  x8
+
+    // Zero Frame Pointer and Link Register to terminate unwind stack
+    mov     x29, #0
+    mov     x30, #0
+
+    // Restore args and jump to our user entry manager
+    mov     x0,  x9
+    mov     x1,  x10
+    bl      _hnx_user_entry
+"#
+);
+
+#[no_mangle]
+pub unsafe extern "C" fn _hnx_user_entry() -> ! {
+    // 1. Direct hardware-aligned entry: execute the loader's main function!
+    let code = main();
+
+    // Direct system exit syscall to the kernel
+    libcapsule::syscall!(
+        shared::syscall_nums::SYSCALL_EXIT,
+        code as usize,
+        0,
+        0,
+        0,
+        0,
+        0
+    );
+    loop {}
+}
 
 #[no_mangle]
 pub fn main() -> i32 {
-    libstd::io::print(
-        "Loader: bringing up EL0 services (devmgr, fileagent, procmgr) via ServiceLauncher!\n",
-    );
-
-    // Stage 1: Spawn DevMgr (Device Manager)
-    let devmgr_res = Command::new("devmgr", "system/bin/devmgr").spawn();
-    Logger::print_spawn_status("devmgr", devmgr_res);
-
-    if let Ok(pid) = devmgr_res {
-        // Wait for devmgr to complete its launch run or exit normally.
-        // Doing wait4 prevents EL0-FAULT when devmgr exits asynchronously,
-        // and safely reaps its process zombie context!
-        let mut status = 0i32;
-        while let Err(shared::status::Status::TryAgain) =
-            libcapsule::syscalls::wait4(pid as i64, &mut status as *mut i32, 0)
-        {
-            libstd::thread::yield_now();
-        }
-    }
-    libstd::io::print("ONLY TEST\n");
-
-    // Stage 2: Spawn FileAgent (System VFS backend)
-    let fa_res = Command::new("fileagent", "system/bin/fileagent").spawn();
-    Logger::print_spawn_status("fileagent", fa_res);
-
-    // Stage 3: Spawn ProcMgr (Process Manager)
-    let procmgr_res = Command::new("procmgr", "system/bin/procmgr").spawn();
-    Logger::print_spawn_status("procmgr", procmgr_res);
-
-    // Stage 4: Polling Wait for File System Service registration
-    let mut attempts = 0;
-    const MAX_ATTEMPTS: usize = 200;
-    while Channel::lookup("svc.vfs").is_err() {
-        attempts += 1;
-        if attempts >= MAX_ATTEMPTS {
-            libstd::io::print("Loader: svc.vfs did not register, exec'ing osh anyway\n");
-            break;
-        }
-        libstd::thread::yield_now();
-    }
-
-    // Stage 5: Wait for Process Manager registration
-    let mut p_attempts = 0;
-    while Channel::lookup("svc.procmgr").is_err() {
-        p_attempts += 1;
-        if p_attempts >= MAX_ATTEMPTS {
-            libstd::io::print("Loader: svc.procmgr did not register, starting osh anyway\n");
-            break;
-        }
-        libstd::thread::yield_now();
-    }
-
-    // Stage 6: Spawn user shell
-    libstd::io::print("Loader: launching user shell osh\n");
-    match Command::new("osh", "system/bin/osh").spawn() {
-        Ok(pid) => {
-            libstd::io::print("Loader: osh launched successfully, entering idle loop\n");
-            let _ = pid;
-        }
-        Err(e) => {
-            libstd::io::print("Loader: failed to spawn osh\n");
-            let _ = e;
-        }
-    }
+    // 2. Focus 100% on lighting up the console debug print!
+    kprintln!("Loader: CapsuleOS Pangu Userboot Loader Active");
 
     loop {
-        libstd::thread::yield_now();
+        libcapsule::syscalls::yield_cpu();
     }
+}
+
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {}
+}
+
+#[no_mangle]
+pub extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    unsafe {
+        let mut i = 0;
+        while i < n {
+            *dest.add(i) = *src.add(i);
+            i += 1;
+        }
+    }
+    dest
+}
+
+#[no_mangle]
+pub extern "C" fn memmove(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    unsafe {
+        if src < dest as *const u8 {
+            let mut i = n;
+            while i > 0 {
+                i -= 1;
+                *dest.add(i) = *src.add(i);
+            }
+        } else {
+            let mut i = 0;
+            while i < n {
+                *dest.add(i) = *src.add(i);
+                i += 1;
+            }
+        }
+    }
+    dest
+}
+
+#[no_mangle]
+pub extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
+    unsafe {
+        let mut i = 0;
+        while i < n {
+            let a = *s1.add(i);
+            let b = *s2.add(i);
+            if a != b {
+                return if a < b { -1 } else { 1 };
+            }
+            i += 1;
+        }
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn memset(s: *mut u8, c: i32, n: usize) -> *mut u8 {
+    unsafe {
+        let mut i = 0;
+        while i < n {
+            *s.add(i) = c as u8;
+            i += 1;
+        }
+    }
+    s
 }

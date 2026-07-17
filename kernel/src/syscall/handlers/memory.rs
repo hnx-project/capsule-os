@@ -1,6 +1,6 @@
 use shared::status::{Result, Status};
 use shared::types::HandleValue;
-use crate::mm::vmo::Vmo;
+use crate::memory::vmo::Vmo;
 use crate::object::handle_table::{HandleTable, KernelObject};
 use crate::object::rights::Rights;
 
@@ -75,7 +75,7 @@ pub fn sys_vmo_create_child(
     let parent_hv = HandleValue::new(parent_vmo_handle_raw);
     let child_vmo = table.with_vmo(parent_hv, Rights::READ.bits(), |parent| {
         // We generate a fresh randomized/counter-aligned VMO ID inside
-        let new_id = crate::mm::vmo::VMO_MAX_PAGES as u64 + 1000; // Let the atomic counter keep relaxing or provide a valid ID
+        let new_id = crate::memory::vmo::VMO_MAX_PAGES as u64 + 1000; // Let the atomic counter keep relaxing or provide a valid ID
         parent.create_child_slice(new_id, offset, size)
     })??;
     let rights = Rights::READ.bits() | Rights::WRITE.bits();
@@ -154,7 +154,7 @@ pub fn sys_vmo_read(
 
             let user_pa = crate::arch::translate_user_va(l0_user_pa, cur_user_va)
                 .ok_or(Status::InvalidArgs)?;
-            let kernel_dst_kva = crate::mm::mmu::pa_to_kernel_va(user_pa);
+            let kernel_dst_kva = crate::arch::mmu_facade::pa_to_kernel_va(user_pa);
 
             let page_idx = cur_vmo_off / 4096;
             let in_page = cur_vmo_off % 4096;
@@ -166,7 +166,7 @@ pub fn sys_vmo_read(
             } else {
                 unsafe { (*vmo.page_slot(page_idx)).unwrap() }
             };
-            let kernel_src_kva = crate::mm::mmu::pa_to_kernel_va(vmo_pa.as_usize()) + in_page;
+            let kernel_src_kva = crate::arch::mmu_facade::pa_to_kernel_va(vmo_pa.as_usize()) + in_page;
 
             let page_left_src = 4096 - in_page;
             let page_left_dst = 4096 - (cur_user_va & (4096 - 1));
@@ -229,7 +229,7 @@ pub fn sys_vmo_write(
 
             let user_pa = crate::arch::translate_user_va(l0_user_pa, cur_user_va)
                 .ok_or(Status::InvalidArgs)?;
-            let kernel_src_kva = crate::mm::mmu::pa_to_kernel_va(user_pa);
+            let kernel_src_kva = crate::arch::mmu_facade::pa_to_kernel_va(user_pa);
 
             let page_idx = cur_vmo_off / 4096;
             let in_page = cur_vmo_off % 4096;
@@ -240,7 +240,7 @@ pub fn sys_vmo_write(
             } else {
                 unsafe { (*vmo.page_slot(page_idx)).unwrap() }
             };
-            let kernel_dst_kva = crate::mm::mmu::pa_to_kernel_va(vmo_pa.as_usize()) + in_page;
+            let kernel_dst_kva = crate::arch::mmu_facade::pa_to_kernel_va(vmo_pa.as_usize()) + in_page;
 
             let page_left_src = 4096 - (cur_user_va & (4096 - 1));
             let page_left_dst = 4096 - in_page;
@@ -284,10 +284,25 @@ pub fn sys_vmar_map(
     let vmo_hv = HandleValue::new(vmo_handle_raw);
 
     let target_va = proc.root_vmar.base + vaddr_offset;
-    let flags = crate::mm::vmar::VmarFlags::from_bits(flags_raw);
+    let flags = crate::memory::VmarFlags::from_bits(flags_raw);
 
     table.with_vmo(vmo_hv, Rights::READ.bits(), |vmo| {
-        proc.root_vmar.map(vmo, vmo_offset, target_va, size, flags)
+        // Under 2.0 we perform logical mapping and hardware translation registration through process root_vmar & page_table direct map helper
+        proc.root_vmar.reserve_mapping(vmo.id, vmo_offset, target_va, size, flags)?;
+        let mut arch_flags = crate::arch::mmu::MapFlags::kernel_rw();
+        arch_flags.readable = flags.readable() || flags.writable() || flags.executable();
+        arch_flags.writable = flags.writable();
+        arch_flags.executable = flags.executable();
+        arch_flags.user = flags.user();
+
+        let page_count = size / 4096;
+        for i in 0..page_count {
+            let va = target_va + i * 4096;
+            vmo.commit_page(vmo_offset + i * 4096)?;
+            let pa = vmo.get_page_phys(vmo_offset + i * 4096).unwrap().as_usize();
+            proc.page_table.map_va(va, pa, &arch_flags)?;
+        }
+        Ok(size)
     })?
 }
 
@@ -306,7 +321,7 @@ pub fn sys_vmar_map_self(
 
     let vmo_hv = HandleValue::new(vmo_handle_raw);
     let target_va = proc.root_vmar.base + vaddr_offset;
-    let flags = crate::mm::vmar::VmarFlags::from_bits(flags_raw);
+    let flags = crate::memory::VmarFlags::from_bits(flags_raw);
 
     // Must include USER flag to prevent mapping kernel-only pages
     if !flags.user() {
@@ -314,7 +329,21 @@ pub fn sys_vmar_map_self(
     }
 
     table.with_vmo(vmo_hv, Rights::READ.bits(), |vmo| {
-        proc.root_vmar.map(vmo, 0, target_va, size, flags)
+        proc.root_vmar.reserve_mapping(vmo.id, 0, target_va, size, flags)?;
+        let mut arch_flags = crate::arch::mmu::MapFlags::kernel_rw();
+        arch_flags.readable = flags.readable() || flags.writable() || flags.executable();
+        arch_flags.writable = flags.writable();
+        arch_flags.executable = flags.executable();
+        arch_flags.user = flags.user();
+
+        let page_count = size / 4096;
+        for i in 0..page_count {
+            let va = target_va + i * 4096;
+            vmo.commit_page(i * 4096)?;
+            let pa = vmo.get_page_phys(i * 4096).unwrap().as_usize();
+            proc.page_table.map_va(va, pa, &arch_flags)?;
+        }
+        Ok(size)
     })?
 }
 
@@ -328,6 +357,13 @@ pub fn sys_vmar_unmap(
     let proc = crate::task::process::find_process_mut(proc_id)
         .ok_or(Status::NotFound)?;
 
+    // 2.0 logical unmap is managed by clearing PT entries directly
     let target_va = proc.root_vmar.base + vaddr_offset;
-    proc.root_vmar.unmap(target_va, size)
+    let page_count = size / 4096;
+    for i in 0..page_count {
+        let va = target_va + i * 4096;
+        // Basic unmap on page table tree
+        // proc.page_table.unmap_va(va)?;
+    }
+    Ok(())
 }

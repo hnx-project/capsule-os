@@ -2,8 +2,8 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::ptr;
 
-use crate::mm::phys::{self, PhysAddr};
-use crate::mm::mmu::pa_to_kernel_va;
+use crate::arch::aarch64::phys::{self, PhysAddr};
+use crate::arch::mmu_facade::pa_to_kernel_va;
 
 const CLASS_SIZES: [usize; 7] = [32, 64, 128, 256, 512, 1024, 2048];
 const PAGE_SIZE: usize = 4096;

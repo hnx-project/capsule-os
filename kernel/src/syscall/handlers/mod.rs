@@ -2,7 +2,6 @@ pub mod process;
 pub mod memory;
 pub mod ipc;
 pub mod vfs;
-pub mod posix;
 
 use shared::status::Status;
 
@@ -38,7 +37,7 @@ pub fn sys_write(fd: usize, ptr: usize, len: usize) -> usize {
                 user_va
             };
 
-            let kernel_va = crate::mm::mmu::pa_to_kernel_va(pa);
+            let kernel_va = crate::arch::mmu_facade::pa_to_kernel_va(pa);
             let byte = unsafe { *(kernel_va as *const u8) };
             if byte == b'\n' {
                 crate::arch::console_putchar(b'\r');

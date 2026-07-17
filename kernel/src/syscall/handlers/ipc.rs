@@ -21,12 +21,12 @@ pub(crate) fn safe_copy_from_user(l0_pa: usize, src_user_va: usize, len: usize, 
         // page).  The `page_offset` is already accounted for inside
         // `pa` because `translate_user_va` walked the user page table
         // down to the l3 entry that owns the byte at `va`.
-        let kernel_va = crate::mm::mmu::pa_to_kernel_va(pa);
+        let kernel_va = crate::arch::mmu_facade::pa_to_kernel_va(pa);
         let chunk_len = core::cmp::min(len - copied, 4096 - (va & 0xfff));
         // WATCH: check if we're touching the watched L3 page
         #[cfg(target_arch = "aarch64")]
         {
-            let watched = crate::mm::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
+            let watched = crate::arch::aarch64::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
             if watched != 0 && pa >= watched && pa < watched + 4096 {
                 crate::log_error!("WATCH", "safe_copy_from_user READ/COPY from watched page PA={:#x} va={:#x} len={} chunk={} l0_pa={:#x}",
                     pa, va, len, chunk_len, l0_pa);
@@ -57,11 +57,11 @@ pub(crate) fn safe_copy_to_user(l0_pa: usize, src: &[u8], dest_user_va: usize, l
         // intra-page offset to `pa_to_kernel_va(pa)`.  `pa` already
         // accounts for it, and adding again would land us in the wrong
         // physical page.
-        let kernel_va = crate::mm::mmu::pa_to_kernel_va(pa);
+        let kernel_va = crate::arch::mmu_facade::pa_to_kernel_va(pa);
         let chunk_len = core::cmp::min(len - copied, 4096 - (va & 0xfff));
         #[cfg(target_arch = "aarch64")]
         {
-            let watched = crate::mm::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
+            let watched = crate::arch::aarch64::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
             if watched != 0 && pa >= watched && pa < watched + 4096 {
                 crate::log_error!("WATCH", "safe_copy_to_user WRITE to watched page PA={:#x} va={:#x} len={} chunk={} l0_pa={:#x}",
                     pa, va, len, chunk_len, l0_pa);

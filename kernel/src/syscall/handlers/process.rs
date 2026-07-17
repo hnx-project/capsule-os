@@ -1,5 +1,5 @@
-use crate::mm::vmar::VmarFlags;
-use crate::mm::vmo::Vmo;
+use crate::memory::vmar::VmarFlags;
+use crate::memory::vmo::Vmo;
 use crate::object::handle_table::{HandleTable, KernelObject};
 use crate::object::rights::Rights;
 use crate::task::process::{CWD_MAX, ProcessState};
@@ -103,13 +103,9 @@ pub fn sys_exit(code: i32) -> ! {
     // ever makes it return when no thread is runnable, we want the
     // CPU to park instead of busy-looping.
     loop {
-        #[cfg(target_arch = "aarch64")]
         unsafe {
-            core::arch::asm!("wfe");
-        }
-        #[cfg(target_arch = "riscv64")]
-        unsafe {
-            core::arch::asm!("wfi");
+            use crate::arch::ArchHardware;
+            crate::arch::CurrentArch::wait_for_interrupt();
         }
     }
 }
@@ -376,12 +372,11 @@ pub fn sys_spawn(
     // Hardening translation verification for direct map access to eliminate TLB/Cache mismatch EL1 Data Aborts
     #[cfg(target_arch = "aarch64")]
     if let Some(resolved_pa) = crate::arch::aarch64::mmu::translate_user_va(caller_l0_pa, path_ptr) {
-        let kva = crate::mm::mmu::pa_to_kernel_va(resolved_pa);
+         let kva = crate::arch::mmu_facade::pa_to_kernel_va(resolved_pa);
         // Evict/Clean user rodata page to Point of Coherency (PoC) to make sure main memory has correct values
         unsafe {
-            core::arch::asm!("dc civac, {0}", in(reg) kva, options(nomem, nostack));
-            core::arch::asm!("dsb ish", options(nomem, nostack));
-            core::arch::asm!("isb", options(nomem, nostack));
+            use crate::arch::ArchHardware;
+            <crate::arch::aarch64::Aarch64Hardware as ArchHardware>::clean_and_invalidate_cache_range(kva, 4096);
         }
     }
 
@@ -521,8 +516,8 @@ pub fn sys_thread_create(
     thread.process_id = pid;
     // Ensure the thread's handle_table pointer points to high-half KVA
     let ht_raw = &proc.handle_table as *const HandleTable as usize;
-    let ht_kva = if ht_raw < crate::mm::mmu::KERNEL_OFFSET {
-        crate::mm::mmu::pa_to_kernel_va(ht_raw)
+    let ht_kva = if ht_raw < crate::arch::mmu_facade::KERNEL_OFFSET {
+        crate::arch::mmu_facade::pa_to_kernel_va(ht_raw)
     } else {
         ht_raw
     };

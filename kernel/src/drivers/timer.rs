@@ -2,127 +2,32 @@
 //!
 //! Handles AArch64 EL1 physical counter timer and RISC-V 64 S-Mode timer via OpenSBI.
 
-#[cfg(target_arch = "aarch64")]
-mod arch_timer {
-    pub const TIMER_INTERVAL_TICKS: u64 = 1_000_000; // ~16 ms at 62.5 MHz QEMU default
-    pub static mut TIMER_FREQ_HZ: u64 = 0;
+use crate::arch::{ArchHardware, CurrentArch};
 
-    #[inline(always)]
-    fn read_cntfrq() -> u64 {
-        unsafe {
-            let v: u64;
-            core::arch::asm!("mrs {0}, cntfrq_el0", out(reg) v, options(nomem, preserves_flags));
-            v
-        }
-    }
-
-    #[inline(always)]
-    pub fn read_cntpct() -> u64 {
-        unsafe {
-            let v: u64;
-            core::arch::asm!("mrs {0}, cntpct_el0", out(reg) v, options(nomem, preserves_flags));
-            v
-        }
-    }
-
-    #[inline(always)]
-    fn write_cntp_tval(val: u64) {
-        unsafe {
-            core::arch::asm!("msr cntp_tval_el0, {0}", in(reg) val, options(nomem, preserves_flags));
-        }
-    }
-
-    #[inline(always)]
-    fn write_cntp_ctl(val: u64) {
-        unsafe {
-            core::arch::asm!("msr cntp_ctl_el0, {0}", in(reg) val, options(nomem, preserves_flags));
-        }
-    }
-
-    pub fn init() {
-        unsafe {
-            TIMER_FREQ_HZ = read_cntfrq();
-            write_cntp_tval(TIMER_INTERVAL_TICKS);
-            write_cntp_ctl(0b001); // enable=1, imask=0
-        }
-    }
-
-    pub fn rearm() {
-        write_cntp_tval(TIMER_INTERVAL_TICKS);
-    }
-}
-
-#[cfg(target_arch = "riscv64")]
-mod arch_timer {
-    pub const TIMER_INTERVAL_TICKS: u64 = 100_000; // 10 ms at 10 MHz default
-    pub const TIMER_FREQ_HZ: u64 = 10_000_000;
-
-    #[inline(always)]
-    pub fn read_time() -> u64 {
-        unsafe {
-            let v: u64;
-            core::arch::asm!("csrr {0}, time", out(reg) v, options(nomem, preserves_flags));
-            v
-        }
-    }
-
-    #[inline(always)]
-    fn sbi_set_timer(time_value: u64) {
-        unsafe {
-            // Write directly to the hardware stimecmp CSR (0x14d) under the Sstc extension
-            core::arch::asm!(
-                "csrw 0x14d, {0}",
-                in(reg) time_value,
-                options(nomem, preserves_flags)
-            );
-        }
-    }
-
-    pub fn init() {
-        let t = read_time();
-        let next = t + TIMER_INTERVAL_TICKS;
-        sbi_set_timer(next);
-
-        // Enable timer interrupt in S-Mode now
-        crate::arch::riscv64::trap::enable_timer_interrupt();
-    }
-
-    pub fn rearm() {
-        let next = read_time() + TIMER_INTERVAL_TICKS;
-        sbi_set_timer(next);
-    }
-}
+pub const TIMER_INTERVAL_TICKS: u64 = 1_000_000; // ~16 ms at 62.5 MHz QEMU default
 
 static mut TICK_COUNT: u64 = 0;
 
 /// Initialize the architecture-specific timer.
 pub fn init() {
-    arch_timer::init();
+    CurrentArch::enable_timer(TIMER_INTERVAL_TICKS as usize);
+    CurrentArch::set_timer_ticks(TIMER_INTERVAL_TICKS as u32);
 }
 
 /// Read the currently-programmed tick interval (in counter ticks).
 pub fn interval_ticks() -> u64 {
-    arch_timer::TIMER_INTERVAL_TICKS
+    TIMER_INTERVAL_TICKS
 }
 
 /// Read the timer frequency (Hz).
 pub fn freq_hz() -> u64 {
-    #[cfg(target_arch = "aarch64")]
-    unsafe { arch_timer::TIMER_FREQ_HZ }
-    #[cfg(target_arch = "riscv64")]
-    arch_timer::TIMER_FREQ_HZ
+    // 62.5 MHz standard default
+    62_500_000
 }
 
 /// Read the 64-bit physical counter.
 pub fn phys_count() -> u64 {
-    #[cfg(target_arch = "aarch64")]
-    {
-        arch_timer::read_cntpct()
-    }
-    #[cfg(target_arch = "riscv64")]
-    {
-        arch_timer::read_time()
-    }
+    CurrentArch::get_hardware_ticks()
 }
 
 pub fn get_ticks() -> u64 {
@@ -130,94 +35,50 @@ pub fn get_ticks() -> u64 {
 }
 
 /// Called from the IRQ dispatcher (IRQ-EL0 / IRQ-EL1 paths) on every timer
-/// tick.  `frame` is the kernel trap-frame pointer; on AArch64 EL0 IRQ it
-/// is non-null and lets us persist x0..x18 into the current thread's
-/// ThreadContext before the scheduler potentially context-switches away.
+/// tick.
 #[cfg(target_arch = "aarch64")]
 pub fn handle_tick_from_irq(frame: *mut crate::arch::aarch64::trap::TrapFrame) {
     unsafe {
         TICK_COUNT += 1;
-        let count = TICK_COUNT;
 
         // Re-arm timer first
-        arch_timer::rearm();
+        CurrentArch::set_timer_ticks(TIMER_INTERVAL_TICKS as u32);
 
-        // Stash the interrupted user's PC + x0..x18 + spsr into the current
-        // thread's ThreadContext.  This makes the next switch_to on this
-        // thread resume exactly here instead of restarting from _start or
-        // clobbering caller-saved registers.
-        //
-        // **Only snapshot frame.x when the IRQ came from EL0.**  On
-        // AArch64 the IRQ handler runs from a single Rust entry point,
-        // so it can fire either while user code was running (irq_el0
-        // entry, SPSR_EL1.M == 0) or nested inside an EL1 trap handler
-        // (irq_el1_spx, SPSR_EL1.M == 5).  In the nested case the saved
-        // x0..x18 belong to the EL1 trap path (e.g. an in-flight
-        // SYSCALL_READ waiting on the UART), *not* to user space, and
-        // clobbering ThreadContext.x with them corrupts the return value
-        // the user will observe when the thread is scheduled again.
-        let elr: u64;
-        let spsr: u64;
-        core::arch::asm!(
-            "mrs {0}, elr_el1",
-            "mrs {1}, spsr_el1",
-            out(reg) elr,
-            out(reg) spsr,
-            options(nomem, nostack)
-        );
+        // Fetch ELR and SPSR using current generic arch diagnostics
+        let diag = CurrentArch::get_diagnostics();
+        let elr = diag.elr_or_epc as u64;
+        let spsr = diag.spsr_or_status as u64;
+
         let from_el0 = (spsr & 0xF) == 0;
         if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
-            unsafe {
-                // **Only snapshot elr/spsr/x into the thread context when the
-                // IRQ came from EL0.**  In the nested-EL1-trap case (timer IRQ
-                // fires while an EL1 sync handler, e.g. a blocking syscall,
-                // is partway through dispatch) the saved `elr` is the sync
-                // handler's PC and the saved `spsr` is EL1h; clobbering the
-                // user thread context with those values erases the true user
-                // resume state and turns the next eret into an EC=0x0
-                // ELR=0x0 (or worse: jumps to a kernel VA).
-                if from_el0 {
-                    (*t).context.elr = elr;
-                    (*t).context.spsr = spsr;
-                    if !frame.is_null() {
-                        let f = &*frame;
-                        (*t).context.x = f.x;
-                    }
+            // **Only snapshot elr/spsr/x into the thread context when the
+            // IRQ came from EL0.**
+            if from_el0 {
+                (*t).context.elr = elr;
+                (*t).context.spsr = spsr;
+                if !frame.is_null() {
+                    let f = &*frame;
+                    (*t).context.x = f.x;
                 }
             }
         }
 
-    // Trigger the preemptive scheduler
-    crate::task::scheduler::SCHEDULER.schedule();
+        // Trigger the preemptive scheduler
+        crate::task::scheduler::SCHEDULER.schedule();
 
-        // TTBR0 hardening: after schedule() returns (possibly on a
-        // different thread's stack), reload TTBR0_EL1 from the now-
-        // current process's L0 so the IRQ eret finds the correct
-        // page table.  The scheduler's own set_ttbr0_el1() should
-        // have already done this, but a compiler reordering of the
-        // nomem dcache-flush asm blocks relative to the msr
-        // ttbr0_el1 inside that function can nullify the switch.
-        // This reload is the safety net.
+        // TTBR0 hardening: reload page table
         if from_el0 {
             if let Some(t) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
-                let pid = unsafe { (*t).process_id };
+                let pid = (*t).process_id;
                 if let Some((l0_pa, asid)) = crate::task::process::find_process_l0_user_pa(pid) {
                     crate::arch::aarch64::mmu::set_ttbr0_el1(l0_pa, asid);
                 }
             }
         }
-
-        // Tick log disabled: it drowned out user-space I/O during
-        // osh REPL sessions and made argv / cwd debugging painful.
-        // Re-enable locally when chasing scheduler / timer races.
-        // if count % 100 == 0 {
-        //     crate::log_info!("TIMER", "tick {}", count);
-        // }
     }
 }
 
-/// Backwards-compatible alias for IRQ paths that don't pass a frame
-/// (e.g. RISC-V or kernel-mode IRQs that never preempt into a user thread).
+/// Backwards-compatible alias for IRQ paths that don't pass a frame.
 #[cfg(not(target_arch = "aarch64"))]
 pub fn handle_tick_from_irq(_frame: *mut ()) {
     handle_tick();
@@ -226,17 +87,11 @@ pub fn handle_tick_from_irq(_frame: *mut ()) {
 pub fn handle_tick() {
     unsafe {
         TICK_COUNT += 1;
-        let count = TICK_COUNT;
 
         // Re-arm timer first
-        arch_timer::rearm();
+        CurrentArch::set_timer_ticks(TIMER_INTERVAL_TICKS as u32);
 
         // Trigger the preemptive scheduler (no frame persistence here).
         crate::task::scheduler::SCHEDULER.schedule();
-
-        // Tick log disabled: see note in handle_tick() above.
-        // if count % 100 == 0 {
-        //     crate::log_info!("TIMER", "tick {}", count);
-        // }
     }
 }

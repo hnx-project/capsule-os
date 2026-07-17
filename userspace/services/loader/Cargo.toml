@@ -8,12 +8,8 @@ name = "loader"
 path = "src/main.rs"
 
 [dependencies]
-libstd = { path = "../../../libraries/libstd", package = "libstd" }
 libcapsule = { path = "../../../libraries/libcapsule", package = "libcapsule" }
 shared = { path = "../../../kernel/shared" }
-
-# [build]
-# rustflags = ["-C", "link-arg=-Tloader.ld"]
 
 [features]
 capsule = []

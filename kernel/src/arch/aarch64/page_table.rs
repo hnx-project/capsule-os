@@ -1,11 +1,9 @@
-use core::arch::asm;
-
 use shared::status::{Result, Status};
+use crate::arch::ArchHardware;
+use crate::arch::mmu_facade::{MemAttr, PAGE_SIZE, pa_to_kernel_va};
+use crate::arch::aarch64::phys::{self, PhysAddr};
 
-use crate::mm::mmu::{MemAttr, PAGE_SIZE, pa_to_kernel_va};
-use crate::mm::phys::{self, PhysAddr};
-
-// ── AArch64 PTE constants (mirrored from arch::aarch64::mmu) ──────
+// ── AArch64 PTE constants ──────────────────────────────────────────
 const PTE_VALID: u64 = 1 << 0;
 const PTE_TYPE_BLOCK: u64 = 1;
 const PTE_TYPE_TABLE: u64 = 3;
@@ -26,9 +24,12 @@ const PTE_UXN: u64 = 1 << 53;
 // ── VA index helpers ───────────────────────────────────────────────
 #[inline(always)]
 fn va_l0_index(va: usize) -> usize { (va >> 39) & 0x1FF }
-fn va_l1_index(va: usize) -> usize { (va >> 30) & 0x1FF }
-fn va_l2_index(va: usize) -> usize { (va >> 21) & 0x1FF }
-fn va_l3_index(va: usize) -> usize { (va >> 12) & 0x1FF }
+#[inline(always)]
+pub fn va_l1_index(va: usize) -> usize { (va >> 30) & 0x1FF }
+#[inline(always)]
+pub fn va_l2_index(va: usize) -> usize { (va >> 21) & 0x1FF }
+#[inline(always)]
+pub fn va_l3_index(va: usize) -> usize { (va >> 12) & 0x1FF }
 
 #[inline(always)]
 fn pa_to_pte_addr(pa: usize) -> u64 { (pa as u64) & 0x0000_FFFF_FFFF_F000 }
@@ -36,7 +37,7 @@ fn pa_to_pte_addr(pa: usize) -> u64 { (pa as u64) & 0x0000_FFFF_FFFF_F000 }
 fn mmu_active() -> bool { phys::mmu_is_active() }
 
 // ── Low-level PTE helpers ──────────────────────────────────────────
-unsafe fn read_pte(table_pa: usize, idx: usize) -> u64 {
+pub unsafe fn read_pte(table_pa: usize, idx: usize) -> u64 {
     let ptr = if mmu_active() {
         pa_to_kernel_va(table_pa) as *mut u64
     } else {
@@ -51,40 +52,24 @@ unsafe fn write_pte(table_pa: usize, idx: usize, entry: u64) {
     } else {
         table_pa as *mut u64
     };
-    if table_pa == 0x40254000 || table_pa == 0x4023d000 || table_pa == 0x4027c000 || table_pa == 0x40267000 || table_pa == 0x40255000 {
-        crate::log_error!("WATCH", "PAGE_TABLE_RS write_pte(table_pa={:#x}, idx={}, entry={:#x})", table_pa, idx, entry);
-    }
-    {
-        let w = crate::mm::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
-        if w != 0 && table_pa == w {
-            crate::log_error!("WATCH", "PAGE_TABLE_RS write_pte DYNAMIC WATCH (table_pa={:#x}, idx={}, entry={:#x})", table_pa, idx, entry);
-        }
-    }
     core::ptr::write_volatile(ptr.add(idx), entry);
     if mmu_active() {
         let line_va = pa_to_kernel_va(table_pa) + idx * 8;
-        asm!("dc civac, {0}", in(reg) line_va, options(nomem, nostack));
-        asm!("dsb ish", options(nomem, nostack));
+        unsafe {
+            <crate::arch::aarch64::Aarch64Hardware as ArchHardware>::clean_and_invalidate_cache_range(line_va, 8);
+        }
     }
 }
 
 unsafe fn flush_table_page(table_pa: usize) {
     if !mmu_active() { return; }
     let base = pa_to_kernel_va(table_pa);
-    let mut ctr: u64;
-    asm!("mrs {0}, ctr_el0", out(reg) ctr, options(nomem, nostack));
-    let dlog2 = (ctr >> 16) & 0xf;
-    let d_step = 4usize << dlog2;
-    let mut cur = base & !(d_step - 1);
-    let end = base + PAGE_SIZE;
-    while cur < end {
-        asm!("dc civac, {0}", in(reg) cur, options(nomem, nostack));
-        cur += d_step;
+    unsafe {
+        <crate::arch::aarch64::Aarch64Hardware as ArchHardware>::clean_and_invalidate_cache_range(base, PAGE_SIZE);
     }
-    asm!("dsb ish", options(nomem, nostack));
 }
 
-fn pte_attr_bits(flags: &crate::arch::aarch64::mmu::MapFlags) -> u64 {
+fn pte_attr_bits(flags: &crate::arch::mmu::MapFlags) -> u64 {
     let mut bits: u64 = 0;
     bits |= match flags.mem_attr {
         MemAttr::NormalCacheable => PTE_NORMAL_WB,
@@ -99,15 +84,17 @@ fn pte_attr_bits(flags: &crate::arch::aarch64::mmu::MapFlags) -> u64 {
     } else if !flags.writable {
         bits |= PTE_AP_USER;
     }
+
     if !flags.executable {
         bits |= PTE_XN;
         bits |= PTE_UXN;
     }
+
+    bits |= PTE_AF;
     bits
 }
 
-// ── PageTableTree ──────────────────────────────────────────────────
-
+// ── PageTableTree (AArch64-specific raw hardware mappings) ─────────
 #[derive(Debug)]
 pub struct PageTableTree {
     l0_pa: usize,
@@ -128,8 +115,6 @@ impl PageTableTree {
         }
     }
 
-    /// Allocate L0 + L1 page-table pages and write L0[0] → L1.
-    /// Tracks both pages automatically.
     pub fn allocate_root(&mut self) -> Result<()> {
         if self.has_root {
             return Err(Status::AlreadyExists);
@@ -143,26 +128,12 @@ impl PageTableTree {
 
             let l0_kva = pa_to_kernel_va(l0) as *mut u64;
             let l1_entry = pa_to_pte_addr(l1) | PTE_VALID | PTE_TYPE_TABLE;
-            let clean_entry = l1_entry & 0x07FF_FFFF_FFFF_FFFFu64;
+            let clean_entry = l1_entry & 0x0000_FFFF_FFFF_F003u64;
 
-            if l0 == 0x40254000 || l0 == 0x4023d000 || l0 == 0x4027c000 || l0 == 0x40267000 || l0 == 0x40255000 {
-                crate::log_error!("WATCH", "PAGE_TABLE_RS allocate_root l0={:#x}, l1={:#x}, clean_entry={:#x}", l0, l1, clean_entry);
-            }
-            if l1 == 0x40254000 || l1 == 0x4023d000 || l1 == 0x4027c000 || l1 == 0x40267000 || l1 == 0x40255000 {
-                crate::log_error!("WATCH", "PAGE_TABLE_RS allocate_root FOUND: l1={:#x} (l0={:#x}, clean_entry={:#x})", l1, l0, clean_entry);
-            }
-            {
-                let w = crate::mm::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
-                if w != 0 && l0 == w {
-                    crate::log_error!("WATCH", "PAGE_TABLE_RS allocate_root DYNAMIC WATCH l0={:#x}, l1={:#x}", l0, l1);
-                }
-                if w != 0 && l1 == w {
-                    crate::log_error!("WATCH", "PAGE_TABLE_RS allocate_root DYNAMIC WATCH l1={:#x}, l0={:#x}", l1, l0);
-                }
-            }
             core::ptr::write_volatile(l0_kva, clean_entry);
-            asm!("dc cvac, {0}", in(reg) l0_kva as usize, options(nomem, nostack));
-            asm!("dsb ish", options(nomem, nostack));
+            unsafe {
+                <crate::arch::aarch64::Aarch64Hardware as ArchHardware>::clean_cache_range(l0_kva as usize, 8);
+            }
 
             self.l0_pa = l0;
             self.tracked[0] = l0;
@@ -174,9 +145,6 @@ impl PageTableTree {
         Ok(())
     }
 
-    /// Set the root L0 PA directly (used by PROC_MGMT_CREATE_PROCESS
-    /// where the caller has already allocated the root).
-    /// Tracks the root page.
     pub fn set_root_raw(&mut self, l0_pa: usize) {
         self.l0_pa = l0_pa;
         self.has_root = true;
@@ -188,9 +156,6 @@ impl PageTableTree {
     pub fn page_count(&self) -> usize { self.count }
     pub fn has_root(&self) -> bool { self.has_root }
 
-    /// Track a page table page.  Silently ignores duplicates and
-    /// full-table overflows (same policy as the old manual tracking).
-    /// Also registers with the global live-PT-page guard in phys.
     pub fn track(&mut self, pa: usize) {
         if self.count >= 64 { return; }
         for i in 0..self.count {
@@ -198,11 +163,9 @@ impl PageTableTree {
         }
         self.tracked[self.count] = pa;
         self.count += 1;
-        crate::mm::phys::register_pt_page(pa);
+        crate::arch::aarch64::phys::register_pt_page(pa);
     }
 
-    /// Copy the high-half kernel entries (L0 indices 256..512) from
-    /// a parent page-table root into this tree.
     pub fn clone_high_half(&mut self, parent_l0_pa: usize) {
         if !self.has_root { return; }
         unsafe {
@@ -211,22 +174,15 @@ impl PageTableTree {
             for idx in 256..512 {
                 let entry = core::ptr::read_volatile(src.add(idx));
                 if entry != 0 {
-                    if self.l0_pa == 0x40254000 {
-                        crate::log_error!("WATCH", "clone_high_half writing to l0_pa=0x40254000");
-                    }
-                    if self.l0_pa == 0x40255000 {
-                        crate::log_error!("WATCH", "clone_high_half writing to l0_pa=0x40255000");
-                    }
                     core::ptr::write_volatile(dst.add(idx), entry);
                 }
             }
-            asm!("dc cvac, {0}", in(reg) dst as usize, options(nomem, nostack));
-            asm!("dsb ish", options(nomem, nostack));
+            unsafe {
+                <crate::arch::aarch64::Aarch64Hardware as ArchHardware>::clean_cache_range(dst as usize, 512 * 8);
+            }
         }
     }
 
-    /// Copy the identity L1[1] entry from a parent tree's L1 page
-    /// (the 1–2 GiB identity block used for kernel direct-map).
     pub fn clone_identity_block(&mut self, parent_l0_pa: usize) {
         if !self.has_root { return; }
         unsafe {
@@ -241,9 +197,7 @@ impl PageTableTree {
             let my_entry_0 = core::ptr::read_volatile(my_l0_kva.add(0));
             if my_entry_0 == 0 { return; }
             let my_l1_pa = (my_entry_0 & 0x0000_FFFF_FFFF_F000) as usize;
-            if my_l1_pa == 0x40254000 || my_l1_pa == 0x4023d000 || my_l1_pa == 0x4027c000 || my_l1_pa == 0x40267000 || my_l1_pa == 0x40255000 {
-                crate::log_error!("WATCH", "clone_identity_block: my_l1_pa={:#x} (l0_pa={:#x}, parent_l1_pa={:#x})", my_l1_pa, self.l0_pa, parent_l1_pa);
-            }
+            if my_l1_pa == 0 { return; }
             let my_l1_kva = pa_to_kernel_va(my_l1_pa) as *mut u64;
 
             for i in 0..3 {
@@ -256,9 +210,7 @@ impl PageTableTree {
         }
     }
 
-    /// Map a single 4 KiB page into this tree's page-table hierarchy.
-    /// Allocates intermediate L1/L2/L3 pages as needed and tracks them.
-    pub fn map_va(&mut self, va: usize, pa: usize, flags: &crate::arch::aarch64::mmu::MapFlags) -> Result<()> {
+    pub fn map_va(&mut self, va: usize, pa: usize, flags: &crate::arch::mmu::MapFlags) -> Result<()> {
         if va & 0xFFF != 0 || pa & 0xFFF != 0 {
             return Err(Status::InvalidArgs);
         }
@@ -278,7 +230,7 @@ impl PageTableTree {
                 let new_l1 = phys::alloc_pt_page()?.as_usize();
                 flush_table_page(new_l1);
                 let entry = pa_to_pte_addr(new_l1) | PTE_VALID | PTE_TYPE_TABLE;
-                let clean_entry = entry & 0x07FF_FFFF_FFFF_FFFFu64;
+                let clean_entry = entry & 0x0000_FFFF_FFFF_F003u64;
                 write_pte(l0_pa, l0_idx, clean_entry);
                 self.track(new_l1);
                 new_l1
@@ -294,7 +246,7 @@ impl PageTableTree {
                 let new_l2 = phys::alloc_pt_page()?.as_usize();
                 flush_table_page(new_l2);
                 let entry = pa_to_pte_addr(new_l2) | PTE_VALID | PTE_TYPE_TABLE;
-                let clean_entry = entry & 0x07FF_FFFF_FFFF_FFFFu64;
+                let clean_entry = entry & 0x0000_FFFF_FFFF_F003u64;
                 write_pte(l1_pa, l1_idx, clean_entry);
                 self.track(new_l2);
                 new_l2
@@ -310,7 +262,7 @@ impl PageTableTree {
                 let new_l3 = phys::alloc_pt_page()?.as_usize();
                 flush_table_page(new_l3);
                 let entry = pa_to_pte_addr(new_l3) | PTE_VALID | PTE_TYPE_TABLE;
-                let clean_entry = entry & 0x07FF_FFFF_FFFF_FFFFu64;
+                let clean_entry = entry & 0x0000_FFFF_FFFF_F003u64;
                 write_pte(l2_pa, l2_idx, clean_entry);
                 self.track(new_l3);
                 new_l3
@@ -322,28 +274,20 @@ impl PageTableTree {
                       | PTE_TYPE_PAGE
                       | pte_attr_bits(flags);
             write_pte(l3_pa, l3_idx, entry);
-            if l3_pa == 0x40254000 || l3_pa == 0x4023d000 || l3_pa == 0x4027c000 || l3_pa == 0x40267000 || l3_pa == 0x40255000 {
-                crate::log_error!("WATCH", "PT_RS map_va WROTE PAGE to l3_pa={:#x}, l3_idx={}, entry={:#x} (va={:#x}, pa={:#x})", l3_pa, l3_idx, entry, va, pa);
-            }
             if mmu_active() {
                 let line_va = pa_to_kernel_va(l3_pa) + l3_idx * 8;
-                asm!("dc civac, {0}", in(reg) line_va, options(nomem, nostack));
-                asm!("dsb ish", options(nomem, nostack));
+                unsafe {
+                    <crate::arch::aarch64::Aarch64Hardware as ArchHardware>::clean_and_invalidate_cache_range(line_va, 8);
+                }
             }
 
-            asm!(
-                "dsb ishst",
-                "tlbi vaae1, {0}",
-                "dsb ish",
-                "isb",
-                in(reg) (va >> 12),
-                options(nomem, nostack)
-            );
+            unsafe {
+                <crate::arch::aarch64::Aarch64Hardware as ArchHardware>::flush_tlb();
+            }
         }
         Ok(())
     }
 
-    /// Walk the page table to translate a user VA to a physical address.
     pub fn translate_va(&self, va: usize) -> Option<usize> {
         if !self.has_root { return None; }
         unsafe {
@@ -379,8 +323,6 @@ impl PageTableTree {
         }
     }
 
-    /// Free every tracked page-table page.
-    /// Caller is responsible for TLB invalidation.
     pub unsafe fn free_tree(&mut self) {
         if !self.has_root { return; }
         for idx in (0..self.count).rev() {
@@ -395,12 +337,6 @@ impl PageTableTree {
         self.has_root = false;
     }
 
-    /// Walk the full page-table tree from L0 and verify invariants:
-    ///   - Every page-table page reachable from L0 is in `tracked[]`.
-    ///   - Every page in `tracked[]` is reachable from L0.
-    ///   - No block entries exist at L0.
-    ///   - L3 page entries have bit 1 set (page, not block).
-    /// Returns `true` if the tree is consistent.
     pub fn validate(&self) -> bool {
         if !self.has_root {
             return true;
@@ -436,14 +372,14 @@ impl PageTableTree {
                 for l1_idx in 0..512 {
                     let l1e = read_pte(l1_pa, l1_idx);
                     if l1e & PTE_VALID == 0 { continue; }
-                    if l1e & 0b10 == 0 { continue; } // block entry at L1 (1 GiB, e.g. identity)
+                    if l1e & 0b10 == 0 { continue; }
                     let l2_pa = (l1e & 0x0000_FFFF_FFFF_F000) as usize;
                     track_reachable(l2_pa);
 
                     for l2_idx in 0..512 {
                         let l2e = read_pte(l2_pa, l2_idx);
                         if l2e & PTE_VALID == 0 { continue; }
-                        if l2e & 0b10 == 0 { continue; } // block entry at L2 (2 MiB)
+                        if l2e & 0b10 == 0 { continue; }
                         let l3_pa = (l2e & 0x0000_FFFF_FFFF_F000) as usize;
                         track_reachable(l3_pa);
 
@@ -459,7 +395,6 @@ impl PageTableTree {
                 }
             }
 
-            // Every tracked page must be reachable.
             for i in 0..self.count {
                 let pa = self.tracked[i];
                 if pa != 0 {
@@ -478,7 +413,6 @@ impl PageTableTree {
                 }
             }
 
-            // Every reachable page must be tracked.
             for i in 0..reachable_count {
                 let pa = reachable[i];
                 let mut found = false;
@@ -500,16 +434,13 @@ impl PageTableTree {
     }
 }
 
-// ── Internal shatter helpers ───────────────────────────────────────
-
 impl PageTableTree {
-    /// Shatter an L1 block entry into 512 × 2 MiB L2 block entries.
     unsafe fn shatter_l1_block(&mut self, l1_pa: usize, l1_idx: usize, original: u64) -> Result<usize> {
         let new_l2_pa = phys::alloc_pt_page()?.as_usize();
         self.track(new_l2_pa);
 
         let block_base_pa = (original & 0x0000_FFFF_FFFF_F000) as usize;
-        let mut block_attr = original & 0xFFF0_0000_0000_0FFF;
+        let mut block_attr = original & 0x000F_0000_0000_0FFF;
         block_attr |= PTE_USER;
         block_attr &= !PTE_XN;
         block_attr &= !PTE_UXN;
@@ -520,24 +451,21 @@ impl PageTableTree {
                       | PTE_TYPE_BLOCK
                       | block_attr;
             write_pte(new_l2_pa, i, entry);
-            if new_l2_pa == 0x40254000 || new_l2_pa == 0x4023d000 || new_l2_pa == 0x4027c000 || new_l2_pa == 0x40267000 || new_l2_pa == 0x40255000 {
-                crate::log_error!("WATCH", "PT_RS shatter_l1_block WROTE TO 0x40253000 NEW L2 new_l2_pa={:#x}, i={}, entry={:#x}", new_l2_pa, i, entry);
-            }
         }
 
         let l1_entry = pa_to_pte_addr(new_l2_pa) | PTE_VALID | PTE_TYPE_TABLE;
-        write_pte(l1_pa, l1_idx, l1_entry);
+        let clean_l1_entry = l1_entry & 0x0000_FFFF_FFFF_F003u64;
+        write_pte(l1_pa, l1_idx, clean_l1_entry);
         flush_table_page(new_l2_pa);
         Ok(new_l2_pa)
     }
 
-    /// Shatter an L2 block entry into 512 × 4 KiB L3 page entries.
     unsafe fn shatter_l2_block(&mut self, l2_pa: usize, l2_idx: usize, original: u64) -> Result<usize> {
         let new_l3_pa = phys::alloc_pt_page()?.as_usize();
         self.track(new_l3_pa);
 
         let block_pa = (original & 0x0000_FFFF_FFFF_F000) as usize;
-        let mut block_attr = original & 0xFFF0_0000_0000_0FFF;
+        let mut block_attr = original & 0x000F_0000_0000_0FFF;
         block_attr |= PTE_AP_USER;
         block_attr &= !PTE_XN;
         block_attr &= !PTE_UXN;
@@ -551,8 +479,67 @@ impl PageTableTree {
         }
 
         let l2_entry = pa_to_pte_addr(new_l3_pa) | PTE_VALID | PTE_TYPE_TABLE;
-        write_pte(l2_pa, l2_idx, l2_entry);
+        let clean_l2_entry = l2_entry & 0x0000_FFFF_FFFF_F003u64;
+        write_pte(l2_pa, l2_idx, clean_l2_entry);
         flush_table_page(new_l3_pa);
         Ok(new_l3_pa)
+    }
+}
+
+impl crate::arch::ArchPageTable for PageTableTree {
+    fn new() -> Self {
+        Self::new()
+    }
+
+    fn allocate_root(&mut self) -> Result<()> {
+        Self::allocate_root(self)
+    }
+
+    fn set_root_raw(&mut self, l0_pa: usize) {
+        Self::set_root_raw(self, l0_pa);
+    }
+
+    fn has_root(&self) -> bool {
+        self.has_root
+    }
+
+    fn l0_pa(&self) -> usize {
+        self.l0_pa
+    }
+
+    fn track(&mut self, pa: usize) {
+        Self::track(self, pa);
+    }
+
+    fn validate(&self) -> bool {
+        Self::validate(self)
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    fn set_generation(&mut self, gen: u64) {
+        self.generation = gen;
+    }
+
+    unsafe fn free_tree(&mut self) {
+        Self::free_tree(self);
+    }
+
+    fn map_va(&mut self, va: usize, pa: usize, flags: &crate::arch::mmu::MapFlags) -> Result<()> {
+        Self::map_va(self, va, pa, flags)
+    }
+
+    fn translate_va(&self, va: usize) -> Option<usize> {
+        Self::translate_va(self, va)
+    }
+
+    fn clone_high_half(&mut self, src_l0_pa: usize) {
+        Self::clone_high_half(self, src_l0_pa);
+    }
+
+    fn clone_identity_block(&mut self, src_l0_pa: usize) {
+        Self::clone_identity_block(self, src_l0_pa);
     }
 }

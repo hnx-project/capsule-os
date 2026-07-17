@@ -65,8 +65,8 @@
 use core::arch::asm;
 
 use crate::fdt::BootInfo;
-use crate::mm::mmu::{ArchMmu, PAGE_SIZE};
-use crate::mm::phys;
+use crate::arch::mmu_facade::{ArchMmu, PAGE_SIZE, MemAttr};
+use crate::arch::phys;
 use shared::status::Result;
 
 const PTE_V: u64 = 1 << 0;
@@ -142,7 +142,7 @@ unsafe fn write_4k_page(l2_pa: usize, idx: usize, pa: usize, device: bool) {
 /// Page-mapping flags consumed by `map_page`.
 #[derive(Clone, Copy, Debug)]
 pub struct MapFlags {
-    pub mem_attr: crate::mm::mmu::MemAttr,
+    pub mem_attr: MemAttr,
     pub readable: bool,
     pub writable: bool,
     pub executable: bool,
@@ -154,19 +154,19 @@ pub struct MapFlags {
 impl MapFlags {
     pub const fn kernel_rw() -> Self {
         Self {
-            mem_attr: crate::mm::mmu::MemAttr::NormalCacheable,
+            mem_attr: MemAttr::NormalCacheable,
             readable: true, writable: true, executable: false, user: false,
         }
     }
     pub const fn kernel_ro() -> Self {
         Self {
-            mem_attr: crate::mm::mmu::MemAttr::NormalCacheable,
+            mem_attr: MemAttr::NormalCacheable,
             readable: true, writable: false, executable: false, user: false,
         }
     }
     pub const fn kernel_rx() -> Self {
         Self {
-            mem_attr: crate::mm::mmu::MemAttr::NormalCacheable,
+            mem_attr: MemAttr::NormalCacheable,
             readable: true, writable: false, executable: true, user: false,
         }
     }
@@ -175,7 +175,7 @@ impl MapFlags {
     pub const fn user_rx() -> Self { Self::kernel_rx() }
     pub const fn device_rw() -> Self {
         Self {
-            mem_attr: crate::mm::mmu::MemAttr::Device,
+            mem_attr: MemAttr::Device,
             readable: true, writable: true, executable: false, user: false,
         }
     }
@@ -186,7 +186,7 @@ fn pte_attr_bits(flags: MapFlags) -> u64 {
     if flags.readable   { bits |= PTE_R; }
     if flags.writable   { bits |= PTE_W; }
     if flags.executable { bits |= PTE_X; }
-    if matches!(flags.mem_attr, crate::mm::mmu::MemAttr::Device) {
+    if matches!(flags.mem_attr, MemAttr::Device) {
         bits |= PTE_PBMT_IO;
     }
     bits
@@ -376,7 +376,7 @@ pub fn enable_inner(ram_base: usize, ram_size: usize, uart_base: usize) -> Resul
         //     options(nomem, nostack),
         // );
     }
-    crate::mm::phys::mark_mmu_active();
+    crate::arch::phys::mark_mmu_active();
     Ok(())
 }
 

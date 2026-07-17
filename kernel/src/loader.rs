@@ -3,7 +3,7 @@ use shared::launcher::ServiceDescriptor;
 use crate::task::Process;
 use crate::object::handle_table::KernelObject;
 use crate::object::rights::Rights;
-use crate::mm::vmo::Vmo;
+use crate::memory::vmo::Vmo;
 
 /// Unified Service Launcher for early kernel-space boot stage.
 pub struct ServiceLauncher;
@@ -26,22 +26,35 @@ impl ServiceLauncher {
         }
 
         // CANARY: check PID 1's L3 page is still intact after launch.
-        // Uses the dynamic WATCH_PA if set, otherwise falls back to a
-        // page-table walk from PID 1's L0.
         #[cfg(target_arch = "aarch64")]
         unsafe {
-            let watched = crate::mm::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
-            let check_pa = if watched != 0 {
-                watched
-            } else {
-                0x40255000 // legacy fallback
-            };
-            use crate::mm::mmu::pa_to_kernel_va;
-            let l3_kva = pa_to_kernel_va(check_pa) as *const u64;
-            for ci in 0..4 {
-                let val = core::ptr::read_volatile(l3_kva.add(ci));
-                if val & 3 != 3 {
-                    crate::log_error!("CANARY", "PID 1 L3[{}]={:#x} (expected valid page desc) pa={:#x} after launching PID {}", ci, val, check_pa, pid);
+            if let Some(proc) = crate::task::process::find_process_mut(1) {
+                let pt = &proc.page_table;
+                if pt.has_root() {
+                    let check_va = 0x92000000;
+                    let l0_idx = (check_va >> 39) & 0x1FF;
+                    let l0e = crate::arch::aarch64::page_table::read_pte(pt.l0_pa(), l0_idx);
+                    if l0e & 1 != 0 {
+                        let l1_pa = (l0e & 0x0000_FFFF_FFFF_F000) as usize;
+                        let l1_idx = (check_va >> 30) & 0x1FF;
+                        let l1e = crate::arch::aarch64::page_table::read_pte(l1_pa, l1_idx);
+                        if l1e & 1 != 0 {
+                            let l2_pa = (l1e & 0x0000_FFFF_FFFF_F000) as usize;
+                            let l2_idx = (check_va >> 21) & 0x1FF;
+                            let l2e = crate::arch::aarch64::page_table::read_pte(l2_pa, l2_idx);
+                            if l2e & 1 != 0 {
+                                let l3_pa = (l2e & 0x0000_FFFF_FFFF_F000) as usize;
+                                use crate::arch::mmu_facade::pa_to_kernel_va;
+                                let l3_kva = pa_to_kernel_va(l3_pa) as *const u64;
+                                for ci in 0..4 {
+                                    let val = core::ptr::read_volatile(l3_kva.add(ci));
+                                    if val & 3 != 3 {
+                                        crate::log_error!("CANARY", "PID 1 L3[{}]={:#x} (expected valid page desc) pa={:#x} after launching PID {}", ci, val, l3_pa, pid);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

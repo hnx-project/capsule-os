@@ -1,6 +1,6 @@
 use shared::status::{Result, Status};
-use crate::mm::mmu::pa_to_kernel_va;
-use crate::mm::phys;
+use crate::arch::mmu_facade::pa_to_kernel_va;
+use crate::arch::aarch64::phys;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 extern "C" {
@@ -247,14 +247,14 @@ static mut PAGE_CACHE: PageCache = PageCache::new();
 #[inline(always)]
  unsafe fn page_ptr(pa: usize) -> *mut u8 {
     if pa == 0x40254000 {
-        crate::log_error!("WATCH", "phys::page_ptr called for PA=0x40254000");
+        crate::log_debug!("WATCH", "phys::page_ptr called for PA=0x40254000");
     }
     if pa == 0x40255000 {
-        crate::log_error!("WATCH", "phys::page_ptr called for PA=0x40255000");
+        crate::log_debug!("WATCH", "phys::page_ptr called for PA=0x40255000");
     }
     let watched = WATCH_PA.load(Ordering::Relaxed);
     if watched != 0 && pa == watched {
-        crate::log_error!("WATCH", "phys::page_ptr called for dynamic WATCH PA={:#x}", pa);
+        crate::log_debug!("WATCH", "phys::page_ptr called for dynamic WATCH PA={:#x}", pa);
     }
     if MMU_ACTIVE.load(Ordering::Acquire) { pa_to_kernel_va(pa) as *mut u8 } else { pa as *mut u8 }
 }
@@ -347,11 +347,11 @@ pub fn alloc_page(tag: PageTag) -> Result<PhysAddr> {
         }
 
         if pa >= 0x40251000 && pa < 0x40259000 {
-            crate::log_error!("WATCH", "alloc_page cursor in range PA={:#x} tag={:?}", pa, tag);
+            crate::log_debug!("WATCH", "alloc_page cursor in range PA={:#x} tag={:?}", pa, tag);
         }
         let watched = WATCH_PA.load(Ordering::Relaxed);
         if watched != 0 && pa >= watched && pa < watched + 4096 {
-            crate::log_error!("WATCH", "alloc_page cursor at dynamic WATCH PA={:#x} tag={:?}", pa, tag);
+            crate::log_debug!("WATCH", "alloc_page cursor at dynamic WATCH PA={:#x} tag={:?}", pa, tag);
         }
 
         // [FIX] Tag guard BEFORE compare_exchange: if the page is already
@@ -383,17 +383,17 @@ pub fn alloc_page(tag: PageTag) -> Result<PhysAddr> {
             FREE_PAGES_COUNT.fetch_sub(1, Ordering::AcqRel);
 
             if pa == 0x40254000 {
-                crate::log_error!("WATCH", "phys::alloc_page called for PA=0x40254000 tag={:?}", tag);
+                crate::log_debug!("WATCH", "phys::alloc_page called for PA=0x40254000 tag={:?}", tag);
             }
             if pa == 0x40255000 {
-                crate::log_error!("WATCH", "phys::alloc_page called for PA=0x40255000 tag={:?}", tag);
+                crate::log_debug!("WATCH", "phys::alloc_page called for PA=0x40255000 tag={:?}", tag);
             }
             let watched = WATCH_PA.load(Ordering::Relaxed);
             if watched != 0 && pa == watched {
-                crate::log_error!("WATCH", "phys::alloc_page called for dynamic WATCH PA={:#x} tag={:?}", pa, tag);
+                crate::log_debug!("WATCH", "phys::alloc_page called for dynamic WATCH PA={:#x} tag={:?}", pa, tag);
             }
             if watched != 0 && pa >= watched && pa < watched + 4096 {
-                crate::log_error!("WATCH", "phys::alloc_page called INSIDE dynamic WATCH page PA={:#x} tag={:?}", pa, tag);
+                crate::log_debug!("WATCH", "phys::alloc_page called INSIDE dynamic WATCH page PA={:#x} tag={:?}", pa, tag);
             }
             let old_tag = unsafe { PAGE_TAGS[pfn] };
             if old_tag != PageTag::Free as u8 {
@@ -445,17 +445,17 @@ pub fn alloc_page(tag: PageTag) -> Result<PhysAddr> {
 pub fn free_page(addr: PhysAddr) -> Status {
     let pa = addr.as_usize();
     if pa == 0x40254000 {
-        crate::log_error!("WATCH", "phys::free_page called for PA=0x40254000 (stacktrace follows)");
+        crate::log_debug!("WATCH", "phys::free_page called for PA=0x40254000 (stacktrace follows)");
     }
     if pa == 0x40255000 {
-        crate::log_error!("WATCH", "phys::free_page called for PA=0x40255000 (stacktrace follows)");
+        crate::log_debug!("WATCH", "phys::free_page called for PA=0x40255000 (stacktrace follows)");
     }
     let watched = WATCH_PA.load(Ordering::Relaxed);
     if watched != 0 && pa == watched {
-        crate::log_error!("WATCH", "phys::free_page called for dynamic WATCH PA={:#x} (stacktrace follows)", pa);
+        crate::log_debug!("WATCH", "phys::free_page called for dynamic WATCH PA={:#x} (stacktrace follows)", pa);
     }
     if watched != 0 && pa >= watched && pa < watched + 4096 {
-        crate::log_error!("WATCH", "phys::free_page called INSIDE dynamic WATCH page PA={:#x}", pa);
+        crate::log_debug!("WATCH", "phys::free_page called INSIDE dynamic WATCH page PA={:#x}", pa);
     }
     let pfn = pa_to_pfn(pa);
     let old_tag = unsafe { PAGE_TAGS[pfn] };

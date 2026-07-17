@@ -1,8 +1,9 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 use shared::status::Result;
-use crate::mm::mmu::pa_to_kernel_va;
-use crate::mm::mmu::PAGE_SIZE;
-use crate::mm::phys::{self, PhysAddr};
+use crate::arch::mmu_facade::pa_to_kernel_va;
+use crate::arch::mmu::PAGE_SIZE;
+use crate::arch::phys::{self, PhysAddr};
+use crate::arch::ArchContext;
 
 pub const KERNEL_STACK_PAGES: usize = 4;
 pub const KERNEL_STACK_SIZE: usize = KERNEL_STACK_PAGES * PAGE_SIZE;
@@ -26,30 +27,7 @@ impl Default for Priority {
     }
 }
 
-#[repr(C, align(16))]
-#[derive(Debug, Default, Clone, Copy)]
-pub struct ThreadContext {
-    pub x: [u64; 19],   // x0..x18 caller-saved (persisted across context switches)
-    pub r: [u64; 12],   // x19..x30 callee-saved
-    pub sp: u64,        // kernel SP (sp_el1)
-    pub user_sp: u64,   // user SP (sp_el0)
-    pub elr: u64,       // user PC to eret to on resume
-    pub spsr: u64,      // saved PSTATE (saved copy of user SPSR on trap)
-    pub process_id: u64,          // PID, for TTBR0_EL1 in assembly
-    pub l0_user_pa: u64,          // L0 PA, for TTBR0_EL1 in assembly
-    pub page_table_gen: u64,      // generation stamp from PageTableTree (stale-handle detection)
-}
-
-const _ASSERT_LAYOUT: () = {
-    if core::mem::size_of::<[u64; 19]>() != 152 { panic!("x size mismatch"); }
-    if core::mem::size_of::<[u64; 12]>() != 96 { panic!("r size mismatch"); }
-    if core::mem::offset_of!(ThreadContext, sp) != 248 { panic!("sp offset mismatch"); }
-    if core::mem::offset_of!(ThreadContext, user_sp) != 256 { panic!("user_sp offset mismatch"); }
-    if core::mem::offset_of!(ThreadContext, elr) != 264 { panic!("elr offset mismatch"); }
-    if core::mem::offset_of!(ThreadContext, spsr) != 272 { panic!("spsr offset mismatch"); }
-    if core::mem::offset_of!(ThreadContext, process_id) != 280 { panic!("process_id offset mismatch"); }
-    if core::mem::offset_of!(ThreadContext, l0_user_pa) != 288 { panic!("l0_user_pa offset mismatch"); }
-};
+pub type ThreadContext = <crate::arch::CurrentArch as crate::arch::ArchHardware>::Context;
 
 #[derive(Debug)]
 pub struct Thread {
@@ -87,11 +65,9 @@ pub enum ThreadState {
 
 #[no_mangle]
 pub extern "C" fn thread_bootstrap() -> ! {
-    // 1. Enable interrupts globally
+    // 1. Enable interrupts globally via architecture trap handle
     #[cfg(target_arch = "aarch64")]
     crate::arch::aarch64::trap::enable_irqs();
-    #[cfg(target_arch = "riscv64")]
-    crate::arch::riscv64::trap::enable_irqs();
 
     // 2. Fetch the actual entry point and execute it
     unsafe {
@@ -101,12 +77,10 @@ pub extern "C" fn thread_bootstrap() -> ! {
             "br x19",
             options(noreturn)
         );
-        #[cfg(target_arch = "riscv64")]
-        core::arch::asm!(
-            "mv a0, s0",
-            "jr s0",
-            options(noreturn)
-        );
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            loop {}
+        }
     }
 }
 
@@ -119,20 +93,7 @@ impl Thread {
         let kernel_stack_va = pa_to_kernel_va(stack_pa0.as_usize());
         let stack_top = kernel_stack_va + KERNEL_STACK_SIZE;
 
-        let mut ctx = ThreadContext::default();
-        ctx.sp = stack_top as u64;
-        ctx.elr = thread_bootstrap as usize as u64; // Set initial target PC to bootstrap
-        ctx.r[0] = entry as usize as u64;            // Save actual entry point in r[0] (x19 or s0)
-
-        #[cfg(target_arch = "aarch64")]
-        {
-            ctx.spsr = 0x005;  // EL1h, IRQs unmasked
-            ctx.r[11] = thread_bootstrap as usize as u64; // Set LR (x30) to bootstrap
-        }
-        #[cfg(target_arch = "riscv64")]
-        {
-            ctx.spsr = 0x102;  // S-Mode, SIE=1, SPP=1
-        }
+        let ctx = ThreadContext::new_kernel(entry as usize, stack_top);
 
         Ok(Thread {
             id: THREAD_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
@@ -165,26 +126,7 @@ impl Thread {
         let kernel_stack_va = pa_to_kernel_va(stack_pa0.as_usize());
         let kernel_stack_top = kernel_stack_va + KERNEL_STACK_SIZE;
 
-        let mut ctx = ThreadContext::default();
-        // Force high-half mapping virtual address for kernel stack (sp_el1)
-        let high_kernel_stack_top = if kernel_stack_top < 0xffff_8000_0000_0000usize {
-            kernel_stack_top | 0xffff_8000_0000_0000usize
-        } else {
-            kernel_stack_top
-        };
-        ctx.sp = high_kernel_stack_top as u64; // Kernel stack for interrupts
-        ctx.user_sp = stack_top as u64; // initial user-mode SP (sp_el0)
-        ctx.elr = entry as u64; // user entry point - first switch will eret to here
-        // SPSR M[3:0] = 0b0000 (EL0t) so eret drops into AArch64 user mode.
-        // Also enable IRQs (clear mask bits: F=0, I=0, A=0, D=0)
-        ctx.spsr = 0x000;
-        ctx.r[0] = entry as u64;
-        ctx.r[1] = stack_top as u64;
-
-        #[cfg(target_arch = "aarch64")]
-        {
-            ctx.r[11] = user_eret_stub as usize as u64;
-        }
+        let ctx = ThreadContext::new_user(entry, stack_top, kernel_stack_top);
 
         Ok(Thread {
             id: THREAD_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
@@ -217,19 +159,7 @@ impl Thread {
         let kernel_stack_va = pa_to_kernel_va(stack_pa0.as_usize());
         let stack_top = kernel_stack_va + KERNEL_STACK_SIZE;
 
-        let mut ctx = ThreadContext::default();
-        ctx.sp = stack_top as u64;
-        ctx.elr = thread_bootstrap as usize as u64;
-        ctx.r[0] = entry as usize as u64;
-
-        #[cfg(target_arch = "aarch64")]
-        {
-            ctx.spsr = 0x3c0; // EL0t, all interrupts (D, A, I, F) masked initially to prevent premature interrupt traps during user startup bootstrap!
-        }
-        #[cfg(target_arch = "riscv64")]
-        {
-            ctx.spsr = 0x102;
-        }
+        let ctx = ThreadContext::new_kernel(entry as usize, stack_top);
 
         Ok(Thread {
             id: THREAD_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
@@ -262,24 +192,7 @@ impl Thread {
         let kernel_stack_va = pa_to_kernel_va(stack_pa0.as_usize());
         let kernel_stack_top = kernel_stack_va + KERNEL_STACK_SIZE;
 
-        let mut ctx = ThreadContext::default();
-        // Force high-half mapping virtual address for kernel stack (sp_el1)
-        let high_kernel_stack_top = if kernel_stack_top < 0xffff_8000_0000_0000usize {
-            kernel_stack_top | 0xffff_8000_0000_0000usize
-        } else {
-            kernel_stack_top
-        };
-        ctx.sp = high_kernel_stack_top as u64;
-        ctx.user_sp = stack_top as u64;
-        ctx.elr = entry as u64;
-        ctx.spsr = 0x000;
-        ctx.r[0] = entry as u64;
-        ctx.r[1] = stack_top as u64;
-
-        #[cfg(target_arch = "aarch64")]
-        {
-            ctx.r[11] = user_eret_stub as usize as u64;
-        }
+        let ctx = ThreadContext::new_user(entry, stack_top, kernel_stack_top);
 
         Ok(Thread {
             id: THREAD_ID_COUNTER.fetch_add(1, Ordering::Relaxed),

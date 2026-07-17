@@ -80,6 +80,9 @@ const INIT_BIN_NAME: &str = "osh-respawn";
 /// `current_pid` is the `process_id` of the dying caller (or 0
 /// when no caller is known, in which case this is a no-op).
 pub fn respawn_init_if_anchor(current_pid: u64) {
+    // Development Debug: Disabled per debugging needs to observe true loader lifetime.
+    return;
+
     if current_pid != 1 {
         return;
     }

@@ -18,10 +18,26 @@
 
 use core::arch::asm;
 
-use crate::fdt::BootInfo;
-use crate::mm::mmu::{ArchMmu, KERNEL_OFFSET, MemAttr, PAGE_SIZE, pa_to_kernel_va};
-use crate::mm::phys;
+use crate::arch::aarch64::phys;
 use shared::status::Result;
+
+pub const PAGE_SIZE: usize = 4096;
+pub const KERNEL_OFFSET: usize = 0xFFFF_8000_0000_0000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemAttr {
+    NormalCacheable,
+    Device,
+}
+
+#[inline(always)]
+pub fn pa_to_kernel_va(pa: usize) -> usize {
+    let watched = crate::arch::aarch64::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
+    if watched != 0 && pa >= watched && pa < watched + 4096 {
+        crate::log_debug!("WATCH", "pa_to_kernel_va called for PA={:#x} (watched={:#x})", pa, watched);
+    }
+    pa.wrapping_add(KERNEL_OFFSET)
+}
 
 pub const PTE_VALID: u64 = 1 << 0;
 pub const PTE_TYPE_BLOCK: u64 = 1;       // bits[1:0] = 01
@@ -63,7 +79,7 @@ fn pa_to_pte_addr(pa: usize) -> u64 { (pa as u64) & 0x0000_FFFF_FFFF_F000 }
 /// and frees every page-table page.  Block descriptors (1 GiB at L1,
 /// 2 MiB at L2) are skipped because they are shared boot mappings.
 pub fn free_page_table_tree(l0_pa: usize) {
-    use crate::mm::phys::{PhysAddr, free_page};
+    use crate::arch::aarch64::phys::{PhysAddr, free_page};
     // Only walk user-space half (L0 indices 0..256).
     // Indices 256..511 are shared kernel entries copied from boot.
     for l0_idx in 0..256 {
@@ -103,12 +119,12 @@ unsafe fn write_l1_block(table_pa: usize, idx: usize, pa: usize, attr: MemAttr) 
         | PTE_XN;
     let ptr = (table_pa as *mut u64).add(idx);
     if table_pa == 0x40254000 || table_pa == 0x4023d000 || table_pa == 0x4027c000 || table_pa == 0x40267000 || table_pa == 0x40255000 {
-        crate::log_error!("WATCH", "MMU_RS write_l1_block(table_pa={:#x}, idx={}, pa={:#x}, entry={:#x})", table_pa, idx, pa, entry);
+        crate::log_debug!("WATCH", "MMU_RS write_l1_block(table_pa={:#x}, idx={}, pa={:#x}, entry={:#x})", table_pa, idx, pa, entry);
     }
     {
-        let w = crate::mm::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
+        let w = crate::arch::aarch64::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
         if w != 0 && table_pa == w {
-            crate::log_error!("WATCH", "MMU_RS write_l1_block DYNAMIC WATCH (table_pa={:#x}, idx={}, pa={:#x}, entry={:#x})", table_pa, idx, pa, entry);
+            crate::log_debug!("WATCH", "MMU_RS write_l1_block DYNAMIC WATCH (table_pa={:#x}, idx={}, pa={:#x}, entry={:#x})", table_pa, idx, pa, entry);
         }
     }
     core::ptr::write_volatile(ptr, entry);
@@ -125,8 +141,8 @@ unsafe fn write_l1_block(table_pa: usize, idx: usize, pa: usize, attr: MemAttr) 
 /// mapping (MMU off) keeps the raw PA path.
 unsafe fn write_l0_table(l0_pa: usize, idx: usize, l1_pa: usize) {
     let entry = pa_to_pte_addr(l1_pa) | PTE_VALID | PTE_TYPE_TABLE;
-    let ptr = if crate::mm::phys::mmu_is_active() {
-        crate::mm::mmu::pa_to_kernel_va(l0_pa) as *mut u64
+    let ptr = if crate::arch::aarch64::phys::mmu_is_active() {
+        pa_to_kernel_va(l0_pa) as *mut u64
     } else {
         l0_pa as *mut u64
     };
@@ -134,7 +150,7 @@ unsafe fn write_l0_table(l0_pa: usize, idx: usize, l1_pa: usize) {
 }
 
 pub unsafe fn read_pte(table_pa: usize, idx: usize) -> u64 {
-    let ptr = if crate::mm::phys::mmu_is_active() {
+    let ptr = if crate::arch::aarch64::phys::mmu_is_active() {
         pa_to_kernel_va(table_pa) as *mut u64
     } else {
         table_pa as *mut u64
@@ -143,18 +159,18 @@ pub unsafe fn read_pte(table_pa: usize, idx: usize) -> u64 {
 }
 
 unsafe fn write_pte(table_pa: usize, idx: usize, entry: u64) {
-    let ptr = if crate::mm::phys::mmu_is_active() {
+    let ptr = if crate::arch::aarch64::phys::mmu_is_active() {
         pa_to_kernel_va(table_pa) as *mut u64
     } else {
         table_pa as *mut u64
     };
     if table_pa == 0x40254000 || table_pa == 0x4023d000 || table_pa == 0x4027c000 || table_pa == 0x40267000 || table_pa == 0x40255000 {
-        crate::log_error!("WATCH", "MMU_RS write_pte(table_pa={:#x}, idx={}, entry={:#x})", table_pa, idx, entry);
+        crate::log_debug!("WATCH", "MMU_RS write_pte(table_pa={:#x}, idx={}, entry={:#x})", table_pa, idx, entry);
     }
     {
-        let w = crate::mm::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
+        let w = crate::arch::aarch64::phys::WATCH_PA.load(core::sync::atomic::Ordering::Relaxed);
         if w != 0 && table_pa == w {
-            crate::log_error!("WATCH", "MMU_RS write_pte DYNAMIC WATCH (table_pa={:#x}, idx={}, entry={:#x})", table_pa, idx, entry);
+            crate::log_debug!("WATCH", "MMU_RS write_pte DYNAMIC WATCH (table_pa={:#x}, idx={}, entry={:#x})", table_pa, idx, entry);
         }
     }
     core::ptr::write_volatile(ptr.add(idx), entry);
@@ -167,7 +183,7 @@ unsafe fn write_pte(table_pa: usize, idx: usize, entry: u64) {
     // `dc civac` with a `dsb ish` here at the lowest possible level
     // -- every PTE writer gets the maintenance for free, and the
     // page-level TLB invalidation in `map_page` still works on top.
-    if crate::mm::phys::mmu_is_active() {
+    if crate::arch::aarch64::phys::mmu_is_active() {
         let line_va = pa_to_kernel_va(table_pa) + idx * 8;
         core::arch::asm!("dc civac, {0}", in(reg) line_va, options(nomem, nostack));
         core::arch::asm!("dsb ish", options(nomem, nostack));
@@ -367,7 +383,7 @@ unsafe fn shatter_l1_block(l1_pa: usize, l1_idx: usize, original: u64) -> Result
                   | block_attr;
         write_pte(new_l2_pa, i, entry);
         if new_l2_pa == 0x40254000 || new_l2_pa == 0x4023d000 || new_l2_pa == 0x4027c000 || new_l2_pa == 0x40267000 || new_l2_pa == 0x40255000 {
-            crate::log_error!("WATCH", "MMU_RS shatter_l1_block WROTE TO 0x40253000 NEW L2 new_l2_pa={:#x}, i={}, entry={:#x}", new_l2_pa, i, entry);
+            crate::log_debug!("WATCH", "MMU_RS shatter_l1_block WROTE TO 0x40253000 NEW L2 new_l2_pa={:#x}, i={}, entry={:#x}", new_l2_pa, i, entry);
         }
     }
 
@@ -389,7 +405,7 @@ unsafe fn shatter_l1_block(l1_pa: usize, l1_idx: usize, original: u64) -> Result
 /// zeroes to the MMU on the first walk.
 #[inline(always)]
 unsafe fn flush_table_page(table_pa: usize) {
-    if !crate::mm::phys::mmu_is_active() { return; }
+    if !crate::arch::aarch64::phys::mmu_is_active() { return; }
     let base = pa_to_kernel_va(table_pa);
     let mut ctr: u64;
     core::arch::asm!("mrs {0}, ctr_el0", out(reg) ctr, options(nomem, nostack));
@@ -467,7 +483,7 @@ pub fn map_page(va: usize, pa: usize, flags: MapFlags) -> Result<()> {
             return Err(shared::status::Status::NotAllowed);
         } else {
             // Allocate L1.
-            let new_l1 = phys::alloc_pt_page()?.as_usize();
+            let new_l1 = crate::arch::aarch64::phys::alloc_pt_page()?.as_usize();
             crate::task::process::current_process_register_page_table(new_l1);
             // CRITICAL FIX: Ensure the Table Descriptor has UXNTable (bit 60), PXNTable (bit 61), 
             // and APTable (bits 62:61) set to 0. This allows lower levels (EL0 user) to fully execute code.
@@ -486,7 +502,7 @@ pub fn map_page(va: usize, pa: usize, flags: MapFlags) -> Result<()> {
             // Block entry -> shatter to L2 table.
             shatter_l1_block(l1_pa, l1_idx, l1e)?
         } else {
-            let new_l2 = phys::alloc_pt_page()?.as_usize();
+            let new_l2 = crate::arch::aarch64::phys::alloc_pt_page()?.as_usize();
             crate::task::process::current_process_register_page_table(new_l2);
             // CRITICAL FIX: Ensure UXNTable / PXNTable / APTable are zeroed out on this Table Descriptor
             let entry = pa_to_pte_addr(new_l2) | PTE_VALID | PTE_TYPE_TABLE;
@@ -504,7 +520,7 @@ pub fn map_page(va: usize, pa: usize, flags: MapFlags) -> Result<()> {
             // Block entry -> shatter to L3 table.
             shatter_l2_block(l2_pa, l2_idx, l2e)?
         } else {
-            let new_l3 = phys::alloc_pt_page()?.as_usize();
+            let new_l3 = crate::arch::aarch64::phys::alloc_pt_page()?.as_usize();
             crate::task::process::current_process_register_page_table(new_l3);
             // CRITICAL FIX: Ensure UXNTable / PXNTable / APTable are zeroed out on this Table Descriptor
             let entry = pa_to_pte_addr(new_l3) | PTE_VALID | PTE_TYPE_TABLE;
@@ -525,7 +541,7 @@ pub fn map_page(va: usize, pa: usize, flags: MapFlags) -> Result<()> {
         // sees the new value rather than a stale cache line.  Without
         // this, the write-back cache can hold the new entry while the
         // MMU continues to use an older cached translation until eviction.
-        if crate::mm::phys::mmu_is_active() {
+        if crate::arch::aarch64::phys::mmu_is_active() {
             let line_va = pa_to_kernel_va(l3_pa) + l3_idx * 8;
             unsafe {
                 core::arch::asm!("dc civac, {0}", in(reg) line_va, options(nomem, nostack));
@@ -562,7 +578,7 @@ pub fn map_page_under_l0(l0_pa: usize, va: usize, pa: usize, flags: MapFlags) ->
         } else if l0e & PTE_VALID != 0 {
             return Err(shared::status::Status::NotAllowed);
         } else {
-            let new_l1 = phys::alloc_pt_page()?.as_usize();
+            let new_l1 = crate::arch::aarch64::phys::alloc_pt_page()?.as_usize();
             flush_table_page(new_l1);
             let entry = pa_to_pte_addr(new_l1) | PTE_VALID | PTE_TYPE_TABLE;
             let clean_entry = entry & 0x07FF_FFFF_FFFF_FFFFu64;
@@ -578,7 +594,7 @@ pub fn map_page_under_l0(l0_pa: usize, va: usize, pa: usize, flags: MapFlags) ->
         } else if l1e & PTE_VALID != 0 {
             shatter_l1_block(l1_pa, l1_idx, l1e)?
         } else {
-            let new_l2 = phys::alloc_pt_page()?.as_usize();
+            let new_l2 = crate::arch::aarch64::phys::alloc_pt_page()?.as_usize();
             flush_table_page(new_l2);
             let entry = pa_to_pte_addr(new_l2) | PTE_VALID | PTE_TYPE_TABLE;
             let clean_entry = entry & 0x07FF_FFFF_FFFF_FFFFu64;
@@ -594,7 +610,7 @@ pub fn map_page_under_l0(l0_pa: usize, va: usize, pa: usize, flags: MapFlags) ->
         } else if l2e & PTE_VALID != 0 {
             shatter_l2_block(l2_pa, l2_idx, l2e)?
         } else {
-            let new_l3 = phys::alloc_pt_page()?.as_usize();
+            let new_l3 = crate::arch::aarch64::phys::alloc_pt_page()?.as_usize();
             flush_table_page(new_l3);
             let entry = pa_to_pte_addr(new_l3) | PTE_VALID | PTE_TYPE_TABLE;
             let clean_entry = entry & 0x07FF_FFFF_FFFF_FFFFu64;
@@ -609,7 +625,7 @@ pub fn map_page_under_l0(l0_pa: usize, va: usize, pa: usize, flags: MapFlags) ->
                   | PTE_TYPE_PAGE
                   | pte_attr_bits(flags);
         write_pte(l3_pa, l3_idx, entry);
-        if crate::mm::phys::mmu_is_active() {
+        if crate::arch::aarch64::phys::mmu_is_active() {
             let line_va = pa_to_kernel_va(l3_pa) + l3_idx * 8;
             unsafe {
                 core::arch::asm!("dc civac, {0}", in(reg) line_va, options(nomem, nostack));
@@ -692,7 +708,7 @@ pub fn set_ttbr0_el1(l0_pa: usize, asid: u16) {
         // so the compiler cannot reorder the dcache flush past the
         // TTBR0 write.  Two separate `nomem` asm blocks are free to
         // be reordered by LLVM, making the TLBI sequence a no-op.
-        let l0_kva = crate::mm::mmu::pa_to_kernel_va(l0_pa);
+        let l0_kva = pa_to_kernel_va(l0_pa);
         let mut ctr: u64;
         core::arch::asm!("mrs {0}, ctr_el0", out(reg) ctr, options(nomem, nostack));
         let dlog2 = (ctr >> 16) & 0xf;
@@ -769,17 +785,16 @@ pub fn dump_pte_walk(va: usize) {
     }
 }
 
-pub fn build_and_enable(boot: &BootInfo) -> Result<()> {
-    let _ = boot;
-    unsafe { enable_inner(boot.ram_base, boot.ram_size, boot.uart_base) }
+pub fn build_and_enable(ram_base: usize, ram_size: usize, uart_base: usize) -> Result<()> {
+    unsafe { enable_inner(ram_base, ram_size, uart_base) }
 }
 
 pub fn enable_inner(ram_base: usize, ram_size: usize, _uart_base: usize) -> Result<()> {
     unsafe {
         // Allocate 3 pages: L0, L1_ID (identity), L1_HIGH (high-half mirror of RAM).
-        let l0_pa = phys::alloc_pt_page()?.as_usize();
-        let l1_id_pa = phys::alloc_pt_page()?.as_usize();
-        let l1_high_pa = phys::alloc_pt_page()?.as_usize();
+        let l0_pa = crate::arch::aarch64::phys::alloc_pt_page()?.as_usize();
+        let l1_id_pa = crate::arch::aarch64::phys::alloc_pt_page()?.as_usize();
+        let l1_high_pa = crate::arch::aarch64::phys::alloc_pt_page()?.as_usize();
 
         // Identity: 2 GiB blocks covering UART (low 1 GiB) and full 1 GiB of potential RAM.
         write_l1_block(l1_id_pa, 0, 0x0000_0000, MemAttr::Device);
@@ -852,7 +867,7 @@ pub fn enable_inner(ram_base: usize, ram_size: usize, _uart_base: usize) -> Resu
 
         let _ = ram_size;
     }
-    crate::mm::phys::mark_mmu_active();
+    crate::arch::aarch64::phys::mark_mmu_active();
     Ok(())
 }
 
@@ -889,9 +904,14 @@ impl AArch64AddressSpace {
     pub fn table(&self) -> &AArch64PageTable { &self._t }
 }
 
+pub trait ArchMmu {
+    fn enable_with(boot: &crate::fdt::BootInfo);
+    fn flush_tlb_all();
+}
+
 impl ArchMmu for AArch64Mmu {
-    fn enable_with(boot: &BootInfo) {
-        let _ = build_and_enable(boot);
+    fn enable_with(boot: &crate::fdt::BootInfo) {
+        let _ = build_and_enable(boot.ram_base, boot.ram_size, boot.uart_base);
     }
     fn flush_tlb_all() {
         unsafe {

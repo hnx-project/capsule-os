@@ -1,6 +1,8 @@
-use crate::mm::vmar::Vmar;
+use crate::memory::Vmar;
+use crate::memory::Memory;
 use crate::object::handle_table::HandleTable;
 use crate::vfs::pipe::{PipeId, PipeRole};
+use crate::arch::ArchHardware;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use shared::status::{Result, Status};
 
@@ -41,7 +43,7 @@ pub struct Process {
     pub root_vmar: Vmar,
     pub handle_table: HandleTable,
     pub thread_count: usize,
-    pub page_table: crate::mm::page_table::PageTableTree,
+    pub page_table: <crate::arch::CurrentArch as crate::arch::ArchHardware>::PageTable,
     pub cwd: [u8; CWD_MAX],
     pub cwd_len: usize,
     /// Per-process file descriptor table; index 0/1/2 stay reserved
@@ -80,15 +82,12 @@ pub struct Process {
     /// `syscall_dispatch`'s way out (with the process's previous
     /// IRQ state held) or immediately at `raise(2)` time.
     pub pending_signals: u32,
-    /// AArch64 ASID bound to this process.  Encoded into `TTBR0_EL1`
-    /// bits [55:48] by `set_ttbr0_el1` so the TLB can be invalidated
-    /// per-process instead of globally.  `ASID_KERNEL` (= 0) while the
-    /// slot has not yet been initialised by `init_in_place`.
-    pub asid: u16,
+    /// Architecture-specific address space ID (ASID).
+    pub asid: <crate::arch::CurrentArch as crate::arch::ArchHardware>::AddressSpaceId,
     /// List of VMOs owned by this process. This guarantees that all physical memory
     /// pages allocated for the process's stack, code, and data segments remain
     /// permanently reserved under explicit object ownership.
-    pub vmos: [Option<crate::mm::vmo::Vmo>; 32],
+    pub vmos: [Option<crate::memory::vmo::Vmo>; 32],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,38 +99,30 @@ pub enum ProcessState {
 }
 
 impl Process {
-    pub const fn new_dummy() -> Self {
-        Process {
-            id: 0,
-            name: "",
-            state: ProcessState::Initial,
-            root_vmar: Vmar::new_dummy(),
-            handle_table: HandleTable::new_dummy(),
-            thread_count: 0,
-            page_table: crate::mm::page_table::PageTableTree::new(),
-            cwd: [0u8; CWD_MAX],
-            cwd_len: 0,
-            exit_status: None,
-            parent_pid: 0,
-            sig_handlers: [0u8; 32],
-            pending_signals: 0u32,
-            fd_table: [const { None }; FD_TABLE_SIZE],
-            next_fd: USER_FD_BASE,
-            #[cfg(target_arch = "aarch64")]
-            asid: crate::arch::aarch64::asid::ASID_KERNEL,
-            #[cfg(not(target_arch = "aarch64"))]
-            asid: 0,
-            vmos: [const { None }; 32],
+        pub fn new_dummy() -> Self {
+            Process {
+                id: 0,
+                name: "",
+                state: ProcessState::Initial,
+                root_vmar: Vmar::new_dummy(),
+                handle_table: HandleTable::new_dummy(),
+                thread_count: 0,
+                page_table: <<crate::arch::CurrentArch as crate::arch::ArchHardware>::PageTable as crate::arch::ArchPageTable>::new(),
+                cwd: [0u8; CWD_MAX],
+                cwd_len: 0,
+                exit_status: None,
+                parent_pid: 0,
+                sig_handlers: [0u8; 32],
+                pending_signals: 0u32,
+                fd_table: [const { None }; FD_TABLE_SIZE],
+                next_fd: USER_FD_BASE,
+                asid: <crate::arch::CurrentArch as crate::arch::ArchHardware>::kernel_asid(),
+                vmos: [const { None }; 32],
+            }
         }
-    }
 
     pub fn init_in_place(&mut self, name: &'static str) -> Result<()> {
-        let slot = VMAR_BASE_SLOT.fetch_add(1, Ordering::Relaxed);
-
-        #[cfg(target_arch = "aarch64")]
-        let vmar_base = 0x9000_0000usize + slot * 0x1000_0000usize;
-        #[cfg(target_arch = "riscv64")]
-        let vmar_base = 0x9000_0000usize + slot * 0x1000_0000usize;
+        let vmar_base = 0x0usize; // 2.0 时代进程间独享 L0 隔离，基准地址全盘归零大一统！
 
         let root_vmar = Vmar::create(vmar_base, 256 * 1024 * 1024)?;
 
@@ -147,7 +138,7 @@ impl Process {
         self.root_vmar = root_vmar;
         self.handle_table = handle_table;
         self.thread_count = 0;
-        self.page_table = crate::mm::page_table::PageTableTree::new();
+        self.page_table = <<crate::arch::CurrentArch as crate::arch::ArchHardware>::PageTable as crate::arch::ArchPageTable>::new();
         self.cwd = cwd;
         self.cwd_len = cwd_len;
         self.exit_status = None;
@@ -158,20 +149,8 @@ impl Process {
         self.next_fd = USER_FD_BASE;
         self.vmos = [const { None }; 32];
 
-        #[cfg(target_arch = "aarch64")]
-        {
-            // Allocate an ASID for this process.  The allocator
-            // returns an ID from the 8-bit space (1..=255) and bumps
-            // its internal counter on wrap, but the actual TLB flush
-            // is the caller's responsibility at the next
-            // `set_ttbr0_el1` boundary.
-            self.asid = crate::arch::aarch64::asid::alloc()
-                .unwrap_or(crate::arch::aarch64::asid::ASID_KERNEL);
-        }
-        #[cfg(not(target_arch = "aarch64"))]
-        {
-            self.asid = 0;
-        }
+        self.asid = <crate::arch::CurrentArch as crate::arch::ArchHardware>::alloc_asid()
+            .unwrap_or_else(|| <crate::arch::CurrentArch as crate::arch::ArchHardware>::kernel_asid());
 
         Ok(())
     }
@@ -229,8 +208,8 @@ impl Process {
         parent_pid: u64,
         out_pid: &mut u64,
     ) -> Result<()> {
-        use crate::mm::vmar::VmarFlags;
-        use crate::mm::vmo::Vmo;
+        use crate::memory::VmarFlags;
+        use crate::memory::vmo::Vmo;
         use crate::task::thread::{Thread, ThreadState};
 
         let parser = ohlink_format::parser::OHLK_Parser::new(binary_bytes).map_err(|e| {
@@ -246,29 +225,26 @@ impl Process {
         proc.parent_pid = parent_pid;
 
         let mut old_ttbr0: usize = 0;
-        #[cfg(target_arch = "aarch64")]
         unsafe {
-            let mut ttbr0_reg: u64;
-            core::arch::asm!("mrs {0}, ttbr0_el1", out(reg) ttbr0_reg, options(nomem, nostack));
-            old_ttbr0 = (ttbr0_reg & 0x0000_FFFF_FFFF_F000) as usize;
+            let active_l0_pa = crate::arch::CurrentArch::get_active_page_table();
+            old_ttbr0 = active_l0_pa;
 
             proc.page_table.allocate_root()?;
 
             // Map the UART device physical page (0x09000000) under the process L0.
-            let uart_flags = crate::arch::aarch64::mmu::MapFlags::device_rw_user();
+            let uart_flags = crate::arch::mmu::MapFlags::device_rw_user();
             if let Err(e) = proc.page_table.map_va(0x09000000, 0x09000000, &uart_flags) {
                 crate::kprintln!("WARNING: Failed to map UART under user L0: {:?}", e);
             }
 
             // Map GIC CPU Interface page under user L0.
-            let gic_flags = crate::arch::aarch64::mmu::MapFlags::device_rw_user();
+            let gic_flags = crate::arch::mmu::MapFlags::device_rw_user();
             if let Err(e) = proc.page_table.map_va(0x08010000, 0x08010000, &gic_flags) {
                 crate::kprintln!("WARNING: Failed to map GIC under user L0: {:?}", e);
             }
 
             // Copy the high-half kernel entries (L0[256..512]) and identity
             // L1 block from the current TTBR0 (parent) into the new tree.
-            let active_l0_pa = (ttbr0_reg & 0x0000_FFFF_FFFF_F000) as usize;
             if active_l0_pa != 0 {
                 proc.page_table.clone_high_half(active_l0_pa);
                 proc.page_table.clone_identity_block(active_l0_pa);
@@ -277,12 +253,14 @@ impl Process {
         let mut lowest_vaddr: usize = usize::MAX;
         let pt = &mut proc.page_table;
 
-        #[cfg(target_arch = "aarch64")]
-        let irq_flags = crate::arch::trap::local_irq_save();
+        let irq_flags = unsafe { crate::arch::CurrentArch::local_irq_save() };
 
         if !pt.validate() {
             crate::log_error!("LAUNCHER", "PT-VALIDATE FAILED after root setup pid={}", proc.id);
         }
+
+        let entry_point_abs = header.entry_point as usize;
+        let mut calculated_entry: Option<usize> = None;
 
         for idx in 0..header.header_count {
             let entry_meta = match parser.get_entry(idx) {
@@ -300,13 +278,19 @@ impl Process {
             let virt_addr = entry_meta.virtual_address as usize;
             let size = entry_meta.mem_size as usize;
 
+            crate::log_info!("LAUNCHER", "SEGMENT[{}]: virt_addr={:#x}, size={}, ty={}", idx, virt_addr, size, ty);
+
             if virt_addr < lowest_vaddr {
                 lowest_vaddr = virt_addr;
             }
 
             let mut flags_raw = entry_meta.flags;
             if ty == 1 {
-                flags_raw &= !2;
+                // TYPE_TEXT: 代码段强制赋予 用户态只读 + 可执行 (RX, User)
+                flags_raw = VmarFlags::READ.bits() | VmarFlags::EXECUTE.bits() | VmarFlags::USER.bits();
+            } else if ty == 2 || ty == 3 || ty == 4 {
+                // 数据段/只读数据段/BSS: 强制赋予 用户态读写 + 不可执行 (RW, NX, User)
+                flags_raw = VmarFlags::READ.bits() | VmarFlags::WRITE.bits() | VmarFlags::USER.bits();
             }
 
             let aligned_vaddr = virt_addr & !(4096 - 1);
@@ -315,6 +299,14 @@ impl Process {
 
             let target_va = proc.root_vmar.base + aligned_vaddr;
             let flags = VmarFlags::from_bits(flags_raw);
+
+            // 如果 entry_point 处于该段的原始链接空间范围内
+            if entry_point_abs >= virt_addr && entry_point_abs < virt_addr + size {
+                let offset_in_segment = entry_point_abs - virt_addr;
+                // 段内相对偏移重定位
+                let final_pc = proc.root_vmar.base + virt_addr + offset_in_segment;
+                calculated_entry = Some(final_pc);
+            }
 
             let mut vmo = Vmo::create_with_size(aligned_size)?;
             vmo.commit_all()?;
@@ -328,8 +320,21 @@ impl Process {
             }
 
             proc.root_vmar
-                .map_under_l0(&mut vmo, 0, target_va, aligned_size, flags, pt)?;
-            #[cfg(target_arch = "aarch64")]
+                .reserve_mapping(vmo.id, 0, target_va, aligned_size, flags)?;
+
+            let m_flags = if ty == 1 {
+                crate::arch::mmu::MapFlags::user_rx()
+            } else {
+                crate::arch::mmu::MapFlags::user_rw()
+            };
+
+            let page_count = aligned_size / 4096;
+            for i in 0..page_count {
+                let page_va = target_va + i * 4096;
+                let page_pa = vmo.get_page_phys(i * 4096).unwrap().as_usize();
+                pt.map_va(page_va, page_pa, &m_flags)?;
+            }
+
             {
                 // To maintain full cache coherency, we must clean D-cache and invalidate I-cache
                 // of each allocated physical page using the kernel's high-half direct-map alias virtual addresses (KVA),
@@ -338,8 +343,10 @@ impl Process {
                 for i in 0..page_count {
                     let vmo_off = i * 4096;
                     if let Some(pa) = vmo.get_page_phys(vmo_off) {
-                        let kva = crate::mm::mmu::pa_to_kernel_va(pa.as_usize());
-                        crate::arch::aarch64::mmu::sync_instruction_cache(kva, 4096);
+                        let kva = crate::arch::mmu_facade::pa_to_kernel_va(pa.as_usize());
+                        unsafe {
+                            <crate::arch::CurrentArch as crate::arch::ArchHardware>::sync_instruction_cache(kva, 4096);
+                        }
                     }
                 }
             }
@@ -349,26 +356,10 @@ impl Process {
             crate::log_error!("LAUNCHER", "PT-VALIDATE FAILED after OHLINK segments pid={}", proc.id);
         }
 
-        // Compute the user-mode entry VA.  The OHLINK header carries the
-        // ELF `e_entry` verbatim — an absolute virtual address in the
-        // slot the binary was originally linked for (0x90xxxxxx for
-        // the loader, 0xA0xxxxxx for devmgr, 0xB0xxxxxx for the
-        // respawned init, etc.).  Each process is now loaded into its
-        // own vmar slot starting at `proc.root_vmar.base`, so the
-        // entry has to be *relocated* by stripping the original slot
-        // bits and adding the new base.
-        //
-        // The historical formula was
-        //   user_entry = vmar_base + lowest_vaddr + (e_entry - lowest_vaddr)
-        // which only works when `lowest_vaddr == 0` AND `e_entry` is
-        // already slot-relative.  Neither is true for our ELFs, so
-        // the kernel was computing `0x120212788` for the loader's
-        // `e_entry = 0x90212788` and the resulting user thread jumped
-        // to unmapped memory on its first SVC, killing the boot
-        // anchor with EC=0x24 (data abort) at ELR = vmar_base + 0x2128
-        // and FAR = vmar_base + 0x2000000 + 0x3d68 (the user stack).
-        let user_entry_offset = header.entry_point as usize & 0x0FFF_FFFF;
-        let user_entry = proc.root_vmar.base + user_entry_offset;
+        // 完美的段相对偏移重定位自愈入口计算，后备为原始偏移
+        let user_entry = calculated_entry.unwrap_or_else(|| {
+            proc.root_vmar.base + entry_point_abs
+        });
 
         let stack_size = 16 * 1024;
         let mut stack_vmo = Vmo::create_with_size(stack_size)?;
@@ -380,14 +371,21 @@ impl Process {
             VmarFlags::READ.bits() | VmarFlags::WRITE.bits() | VmarFlags::USER.bits(),
         );
 
-        proc.root_vmar.map_under_l0(
-            &mut stack_vmo,
+        proc.root_vmar.reserve_mapping(
+            stack_vmo.id,
             0,
             stack_va,
             stack_size,
             stack_flags,
-            pt,
         )?;
+        for i in 0..(stack_size / 4096) {
+            let va = stack_va + i * 4096;
+            let pa = stack_vmo.get_page_phys(i * 4096).unwrap().as_usize();
+            let mut s_flags = crate::arch::mmu::MapFlags::kernel_rw();
+            s_flags.user = true;
+            s_flags.writable = true;
+            pt.map_va(va, pa, &s_flags)?;
+        }
 
         if !pt.validate() {
             crate::log_error!("LAUNCHER", "PT-VALIDATE FAILED after stack mapping pid={}", proc.id);
@@ -437,29 +435,38 @@ impl Process {
         // already mapped via `proc.root_vmar.map` above, so
         // we do not need to re-walk the page table; we go
         // through the kernel-side alias directly.
-        #[cfg(target_arch = "aarch64")]
         {
             let touch_va = stack_top - 16;
             if let Some(touch_pa) = pt.translate_va(touch_va) {
-                let touch_kernel_va = crate::mm::mmu::pa_to_kernel_va(touch_pa) as *mut u64;
+                let touch_kernel_va = crate::arch::mmu_facade::pa_to_kernel_va(touch_pa) as *mut u64;
                 unsafe {
                     core::ptr::write_volatile(touch_kernel_va, 0u64);
-                    core::arch::asm!("dsb ish", options(nomem, nostack));
+                    crate::arch::CurrentArch::memory_barrier();
                 }
             }
         }
 
-        use crate::mm::mmu::ArchMmu;
-        #[cfg(target_arch = "aarch64")]
-        crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
+        unsafe {
+            crate::arch::CurrentArch::flush_tlb();
+        }
 
-        let user_entry = proc.root_vmar.base + user_entry_offset;
+        crate::log_info!("LAUNCHER", "LAUNCHING: user_entry={:#x}, vmar_base={:#x}, header.entry={:#x}", user_entry, proc.root_vmar.base, header.entry_point);
 
         let mut thread = Thread::new_user(name, user_entry, stack_top)?;
         thread.process_id = pid;
         thread.context.process_id = pid;
-        thread.context.l0_user_pa = pt.l0_pa() as u64;
+        
+        thread.context.l0_user_pa = <crate::arch::CurrentArch as crate::arch::ArchHardware>::pack_ttbr(pt.l0_pa() as u64, proc.asid);
+
         thread.context.page_table_gen = pt.generation;
+
+        // 强行将刚刚写入的线程寄存器和页表上下文同步清出 Data-Cache，保障调度器 100% 绝对物理可见！
+        unsafe {
+            crate::arch::CurrentArch::clean_and_invalidate_cache_range(
+                &thread.context as *const _ as usize,
+                core::mem::size_of_val(&thread.context),
+            );
+        }
 
         // Strict SPSR Lock: enforce EL0t privilege level with IRQs fully unmasked (spsr=0x000)
         // to prevent timer preempt or exception handler from corrupting the register context
@@ -470,8 +477,8 @@ impl Process {
         // Ensure the thread's handle_table pointer points to high-half KVA
         // instead of raw physical/identity address, so it survives TTBR0 page-table switches!
         let ht_raw = &proc.handle_table as *const HandleTable as usize;
-        let ht_kva = if ht_raw < crate::mm::mmu::KERNEL_OFFSET {
-            crate::mm::mmu::pa_to_kernel_va(ht_raw)
+        let ht_kva = if ht_raw < crate::arch::mmu_facade::KERNEL_OFFSET {
+            crate::arch::mmu_facade::pa_to_kernel_va(ht_raw)
         } else {
             ht_raw
         };
@@ -599,7 +606,6 @@ impl Process {
         // it is the cheapest possible because the cost is one
         // cache-line evict: a few ns on physical hardware, less
         // on QEMU.
-        #[cfg(target_arch = "aarch64")]
         {
             // `stack_top` is computed right above this point and
             // is the post-argv sp when argc > 0 and the raw
@@ -611,17 +617,9 @@ impl Process {
             // 16-byte aligned address that is GUARANTEED to be
             // inside the stack region: `stack_top - 16`.
             let sp_top_aligned = (stack_top - 16) & !0xFusize;
-            if let Some(sp_top_pa_resolved) = pt.translate_va(sp_top_aligned) {
+            if let Some(_sp_top_pa_resolved) = pt.translate_va(sp_top_aligned) {
                 unsafe {
-                    core::arch::asm!(
-                        "and x9, {sp_va}, #~0xfff",
-                        "dc ivac, x9",
-                        "ic ivau, x9",
-                        "dsb sy",
-                        "isb",
-                        sp_va = in(reg) sp_top_aligned,
-                        options(nomem, nostack)
-                    );
+                    crate::arch::CurrentArch::invalidate_stack_line(sp_top_aligned);
                 }
             } else {
                 crate::log_warn!(
@@ -677,84 +675,16 @@ impl Process {
         // the kernel side so subsequent state changes propagate.
         #[cfg(target_arch = "aarch64")]
         let _post_add_barrier = unsafe {
-            // Sync instruction cache over the entire user VA range
-            // the kernel just populated (codeseg + stack + data,
-            // bounded by `proc.root_vmar.base + 0x4000000` -- the
-            // 64 MiB slot we hand each process).  An over-wide
-            // sync is cheap on aarch64 (PoU icache invalidation
-            // is a single `dc cvau` + `ic ivau` per cache line)
-            // and safer than under-shooting into a partial TLB
-            // invalidation that leaves a stale icache line behind.
-            // 64 MiB covers vmar_base + 64 MiB, which is larger
-            // than any EL0 image we currently ship.
-            let icache_sync_end = proc.root_vmar.base + 0x0400_0000;
-            crate::arch::aarch64::mmu::sync_instruction_cache(
-                proc.root_vmar.base,
-                icache_sync_end - proc.root_vmar.base,
+            // 全局 CPU I-Cache Invalidate:
+            // 采用全局冲刷 (ic ialluis) 配合最高强度系统屏障，100% 根除所有 CPU 别名 I-Cache 残留与流水线脏取指！
+            core::arch::asm!(
+                "ic ialluis",
+                "dsb sy",
+                "isb",
+                options(nomem, nostack)
             );
-            // Final ISB so the next kernel instruction (the
-            // `set_ttbr0_el1(old_ttbr0)` below, and the *kernel's*
-            // `ret` from this function) sees the freshly-invalidated
-            // icache.  Without the ISB the kernel can keep
-            // speculatively executing through the same stale
-            // icache hash until the next exception boundary, and
-            // the swap-restore below can race the actual eret.
-            core::arch::asm!("isb", options(nomem, nostack));
 
-            // **B1.5.1 strict-ordering barrier (KERNEL_HEALTH.md A2).**
-            //
-            // The QEMU-TCG smoke continues to hit
-            //     `EL0-FAULT EC=0x24 ESR=0x9200004f
-            //      FAR=0x92003ff0 thread=#1 pid=1`
-            // even after B1.1-B1.5 closed the AP-bits layer.
-            // B1.4 hex dump confirmed the L3 PTE for that FAR is
-            // a valid, user-RW entry (`AP[2:1]=11`, AF=1) and
-            // the backing page `PA=0x404e4000` is freshly
-            // allocated, zeroed, and cache-flushed.  The fault is
-            // therefore *not* an unbacked page; it is a
-            // page-table-walk-side fault at level 0/1/2/3 with
-            // FSC=0x0f ("Synchronous External Abort"), which on
-            // AArch64 happens when the L3 PTE's PA points at a
-            // physical address the system bus has not yet
-            // committed to a coherent state, or when the data
-            // cache + TLB sit in a state where the MMU walker
-            // fetches a *different* PA than the kernel wrote.
-            //
-            // The hypothesis we are pursuing is the second one:
-            // the launch path has a window where the *next*
-            // schedule tick (loader -> idle/other threads) can
-            // re-route the page-table walk through a stale TLB
-            // entry left over by the new L0's contents.  Even
-            // though `flush_tlb_all` runs at every `set_ttbr0_el1`
-            // call below, the TLB can be re-filled under us
-            // across a *different* ASID that the loader /
-            // devmgr / init chain does not yet own.  The
-            // conservative fix: invalidate **every** TLB entry
-            // regardless of ASID with `tlbi vaae1is, xzr`, then
-            // barrier the whole system with `dsb sy` so that
-            // every store before is observable to the table
-            // walker's first access.
-            //
-            // `vaae1is` with `xzr` (the zero register) is the
-            // ARMv8 spelling for "invalidate by VA in all ASIDs,
-            // EL1" -- it discards *all* TLB entries that match
-            // the address pattern across every ASID.  On QEMU-
-            // TCG (which does not yet model ASIDs, see TODO.md
-            // H1 ASID-table) this collapses to the same as
-            // `tlbi vmalle1`, but the IS variant requires an ISB
-            // before the first TLB-fill event after the
-            // invalidation -- which is exactly what we want for
-            // eret-into-the-new-thread correctness.
-            //
-            // `dsb sy` is the strongest data-write barrier on
-            // aarch64: every store the issuing core made before
-            // this instruction must reach the memory system
-            // before the next instruction completes.  Without it
-            // the data cache can hold the page-table writes in
-            // a write buffer, the `tlbi vaae1is` finishes before
-            // the write buffer drains, and the subsequent
-            // eret-driven page-table walk reads a stale cache
-            // line and faults on SError 0x0f.
+            // Invalidate TLB for all ASIDs to prevent any translation leftovers
             core::arch::asm!(
                 "tlbi vaae1is, xzr",
                 "dsb sy",
@@ -762,8 +692,13 @@ impl Process {
                 options(nomem, nostack)
             );
 
-            // POST-LAUNCH stack PTE verification: confirm all 4 stack
-            // pages have valid L3 PTEs immediately after mapping.
+            ()
+        };
+
+        // POST-LAUNCH stack PTE verification: confirm all 4 stack
+        // pages have valid L3 PTEs immediately after mapping.
+        #[cfg(target_arch = "aarch64")]
+        {
             for i in 0..4 {
                 let check_va = stack_va + i * 4096;
                 match pt.translate_va(check_va) {
@@ -803,94 +738,19 @@ impl Process {
                     }
                 }
             }
-            ()
-        };
+        }
 
-        #[cfg(target_arch = "aarch64")]
         if !pt.validate() {
             crate::log_error!("LAUNCHER", "PT-VALIDATE FAILED at post-launch pid={}", proc.id);
         }
 
-        // **Restore the caller-side TTBR0_EL1** before returning to the
+        // **Restore the caller-side page table** before returning to the
         // kernel context, but ONLY when there is a sensible previous
-        // page table to return to.  `set_ttbr0_el1(l0_user_pa)` above
-        // swapped the MMU's user page table to the freshly-allocated
-        // per-process l0, and `safe_copy_to_user` calls inside this
-        // function relied on that swap to translate user VAs to PA.
-        // Leaving the new process's l0 live on ttbr0 makes the next user
-        // thread we switch into translate its VAs through the wrong
-        // table — yielding an EC=0x0 ELR=0x0 trap the moment eret tries
-        // to execute at a PC that doesn't belong to *that* process.
-        //
-        // During the very first call from `kernel_main` (loader
-        // bootstrap) `old_ttbr0` is the boot value (typically 0); we
-        // can't point ttbr0 at a zero pa, so in that case we instead
-        // **keep** the new process's l0 live — the loader is the very
-        // next thread we'll eret into, so this is what we want anyway.
-        #[cfg(target_arch = "aarch64")]
+        // page table to return to.
         unsafe {
-            if old_ttbr0 != 0 {
-                use crate::mm::mmu::ArchMmu;
-                crate::arch::aarch64::mmu::AArch64Mmu::flush_tlb_all();
-                // `old_ttbr0` is the raw register value we read with
-                // `mrs ttbr0_el1` earlier -- it already carries the
-                // kernel-side ASID in bits [55:48].  Re-write the
-                // register verbatim (with the same packed barrier
-                // sequence as `set_ttbr0_el1`) so we don't accidentally
-                // strip the ASID half and downgrade to a "no-ASID"
-                // translation regime on the way back out.
-                core::arch::asm!(
-                    "msr ttbr0_el1, {val}",
-                    "isb",
-                    "tlbi vmalle1is",
-                    "dsb ish",
-                    "isb",
-                    val = in(reg) old_ttbr0 as u64,
-                    options(nomem, nostack)
-                );
-            } else {
-                // Loader bootstrap: there is no prior TTBR0 to restore
-                // to.  Install the *new* process's TTBR0 with its
-                // freshly-allocated ASID so the very first `eret` into
-                // the loader's entry point walks under the correct
-                // translation regime.
-                let new_asid = proc.asid;
-                crate::arch::aarch64::mmu::set_ttbr0_el1(pt.l0_pa(), new_asid);
-            }
+            <crate::arch::CurrentArch as crate::arch::ArchHardware>::restore_user_page_table(old_ttbr0, pt.l0_pa(), proc.asid);
+            <crate::arch::CurrentArch as crate::arch::ArchHardware>::local_irq_restore(irq_flags);
         }
-
-        // FINAL CANARY: dump PID 1's L3 page right before return,
-        // AND set the global dynamic WATCH_PA so subsequent WATCH
-        // statements catch writes to this page even when the PA
-        // shifts between runs.
-        #[cfg(target_arch = "aarch64")]
-        unsafe {
-            let c_l0_idx = crate::arch::aarch64::mmu::va_l0_index(stack_va);
-            let c_l1_idx = crate::arch::aarch64::mmu::va_l1_index(stack_va);
-            let c_l2_idx = crate::arch::aarch64::mmu::va_l2_index(stack_va);
-            let c_l0e = crate::arch::aarch64::mmu::read_pte(pt.l0_pa(), c_l0_idx);
-            let c_l1_pa = (c_l0e & 0x0000_FFFF_FFFF_F000) as usize;
-            let c_l1e = crate::arch::aarch64::mmu::read_pte(c_l1_pa, c_l1_idx);
-            let c_l2_pa = (c_l1e & 0x0000_FFFF_FFFF_F000) as usize;
-            let c_l2e = crate::arch::aarch64::mmu::read_pte(c_l2_pa, c_l2_idx);
-            let c_l3_pa = (c_l2e & 0x0000_FFFF_FFFF_F000) as usize;
-            if c_l3_pa != 0 {
-                let vals: [u64; 8] = core::ptr::read_volatile(
-                    crate::mm::mmu::pa_to_kernel_va(c_l3_pa) as *const [u64; 8]
-                );
-                crate::log_error!("LAUNCHER", "FINAL-CANARY pid={} l3_pa={:#x} L3[0..7]={:#x} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x}",
-                    proc.id, c_l3_pa, vals[0], vals[1], vals[2], vals[3], vals[4], vals[5], vals[6], vals[7]);
-                // Set dynamic WATCH for PID 1 only (the known corruption target).
-                // For other processes we'd overwrite PID 1's WATCH address.
-                if proc.id == 1 {
-                    crate::mm::phys::WATCH_PA.store(c_l3_pa, core::sync::atomic::Ordering::Release);
-                    crate::log_error!("WATCH", "FINAL-CANARY set WATCH_PA={:#x} for pid={}", c_l3_pa, proc.id);
-                }
-            }
-        }
-
-        #[cfg(target_arch = "aarch64")]
-        crate::arch::trap::local_irq_restore(irq_flags);
 
         Ok(())
     }
@@ -1031,20 +891,9 @@ impl Drop for Process {
             self.id
         );
 
-        #[cfg(target_arch = "aarch64")]
-        {
-            // Flush all TLB entries for this process ASID
-            unsafe {
-                core::arch::asm!(
-                    "dsb ish",
-                    "tlbi vmalle1is",
-                    "dsb sy",
-                    "isb",
-                    options(nomem, nostack)
-                );
-            }
+        unsafe {
+            <crate::arch::CurrentArch as crate::arch::ArchHardware>::flush_tlb();
+            self.page_table.free_tree();
         }
-
-        unsafe { self.page_table.free_tree(); }
     }
 }
