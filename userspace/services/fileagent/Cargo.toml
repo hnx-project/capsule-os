@@ -1,0 +1,16 @@
+[package]
+name = "hnx-fileagent"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "fileagent"
+path = "src/main.rs"
+
+[dependencies]
+capsule_runtime = { path = "../../../libraries/capsule_runtime" }
+libcapsule = { path = "../../../libraries/libcapsule", package = "libcapsule" }
+shared = { path = "../../../kernel/shared" }
+
+[features]
+capsule = []

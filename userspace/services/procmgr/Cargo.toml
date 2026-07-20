@@ -1,0 +1,16 @@
+[package]
+name = "hnx-procmgr"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "procmgr"
+path = "src/main.rs"
+
+[dependencies]
+libstd = { path = "../../../libraries/libstd", package = "libstd" }
+libcapsule = { path = "../../../libraries/libcapsule", package = "libcapsule" }
+libc = { path = "../../../libraries/libc", package = "libc" }
+
+[features]
+capsule = []

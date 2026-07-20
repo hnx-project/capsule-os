@@ -18,6 +18,7 @@ Thumbs.db
 
 # Logs
 *.log
+session-*.md
 
 # Rust
 *.rlib
@@ -31,6 +32,11 @@ Thumbs.db
 # QEMU
 qemu_pids/
 *.img
-*.dtb
 *.ohc
 *.ohlib
+kernel/files/
+
+# Debug artifacts (EL0-FAULT captures, panic HTML dumps, etc.)
+cat-test-debug*.html
+*-debug.html
+debug-*.html

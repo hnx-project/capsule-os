@@ -1,0 +1,8 @@
+[build]
+target = "aarch64-unknown-none"
+
+[target.aarch64-unknown-none]
+linker = "rust-lld"
+
+[target.riscv64imac-unknown-none-elf]
+linker = "rust-lld"

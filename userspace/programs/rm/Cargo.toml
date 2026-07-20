@@ -1,0 +1,16 @@
+[package]
+name = "hnx-rm"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = ["host"]
+host = []
+capsule = []
+
+[[bin]]
+name = "rm"
+path = "src/main.rs"
+
+[dependencies]
+libstd = { workspace = true }

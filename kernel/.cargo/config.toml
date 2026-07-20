@@ -1,0 +1,9 @@
+cargo-features = ["profile-rustflags"]
+
+[build]
+target-dir = "build/target"
+
+
+[target.aarch64-unknown-none]
+linker = "rust-lld"
+rustflags = ["-A", "warnings"]

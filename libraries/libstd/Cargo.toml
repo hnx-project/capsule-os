@@ -1,0 +1,16 @@
+[package]
+name = "libstd"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+name = "libstd"
+
+[dependencies]
+libc = { path = "../libc" }
+libcapsule = { path = "../libcapsule", package = "libcapsule" }
+shared = { path = "../../kernel/shared" }
+
+[features]
+default = []

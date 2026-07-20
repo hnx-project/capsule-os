@@ -1,0 +1,12 @@
+[package]
+name = "ohlink-read"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ohlink-read"
+path = "src/main.rs"
+
+[dependencies]
+ohlink-format = { path = "../ohlink-format" }
+clap = { version = "4.5", features = ["derive"] }

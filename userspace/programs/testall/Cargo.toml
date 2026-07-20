@@ -1,0 +1,17 @@
+[package]
+name = "hnx-testall"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = ["host"]
+host = []
+capsule = []
+
+[[bin]]
+name = "testall"
+path = "src/main.rs"
+
+[dependencies]
+libc = { workspace = true }
+libcapsule = { path = "../../../libraries/libcapsule", package = "libcapsule" }

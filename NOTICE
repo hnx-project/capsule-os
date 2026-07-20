@@ -1,0 +1,49 @@
+CapsuleOS
+Copyright 2026 TinchyChin
+
+This product includes software developed by TinchyChin and the
+HNX-Project community (https://gitcode.com/hnx-project/capsule-os).
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+================================================================================
+
+Subtree-attributed third-party projects
+---------------------------------------
+
+CapsuleOS is structured as a Git-subtree monorepo.  The following
+projects are vendored as subtrees and remain under their original
+licenses.  Their license texts and NOTICE files travel with the
+respective subdirectories; consult them directly for the canonical
+attribution and copyright statements.
+
+* `bootloader/` — capsule-bootloader
+* `kernel/`     — hnx-core
+* `tools/ohlink-cc/` — ohlink-format, rustc_codegen_ohlink,
+  ohlink-linker
+
+If you redistribute CapsuleOS in a form that bundles or links any of
+the above, you must retain and forward the corresponding license
+texts and NOTICE files per Apache-2.0 §4(d).
+
+================================================================================
+
+Trademark
+---------
+
+"CapsuleOS", "Pangu", and the HNX-Project name are the maintainer's
+identifiers for this software.  Apache-2.0 §6 reserves trademark
+rights to the Licensor; redistribution under the License does not
+grant permission to use these marks in product names or marketing
+material without the maintainer's prior written consent.  Contact
+tinchychin97@gmail.com for trademark enquiries.

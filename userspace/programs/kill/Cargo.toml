@@ -1,0 +1,16 @@
+[package]
+name = "hnx-kill"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = ["host"]
+host = []
+capsule = []
+
+[[bin]]
+name = "kill"
+path = "src/main.rs"
+
+[dependencies]
+libstd = { workspace = true }

@@ -1,0 +1,18 @@
+[package]
+name = "hnx-osh"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = ["host"]
+host = []
+capsule = ["dep:libstd"]
+
+[[bin]]
+name = "osh"
+path = "src/main.rs"
+
+[dependencies]
+libc = { path = "../../../libraries/libc", package = "libc" }
+libstd = { path = "../../../libraries/libstd", package = "libstd", optional = true }
+libcapsule = { path = "../../../libraries/libcapsule", package = "libcapsule" }

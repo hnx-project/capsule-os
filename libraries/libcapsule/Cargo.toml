@@ -1,0 +1,12 @@
+[package]
+name = "libcapsule"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+name =  "capsule"
+
+
+[dependencies]
+shared = { path = "../../kernel/shared" }

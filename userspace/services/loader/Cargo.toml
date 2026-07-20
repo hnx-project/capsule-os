@@ -1,14 +1,16 @@
 [package]
 name = "hnx-loader"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 
 [[bin]]
 name = "loader"
 path = "src/main.rs"
 
 [dependencies]
-hnx-libc = { path = "../../libc" }
+capsule_runtime = { path = "../../../libraries/capsule_runtime" }
+libcapsule = { path = "../../../libraries/libcapsule", package = "libcapsule" }
+shared = { path = "../../../kernel/shared" }
 
-# [build]
-# rustflags = ["-C", "link-arg=-Tloader.ld"]
+[features]
+capsule = []

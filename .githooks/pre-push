@@ -1,0 +1,56 @@
+#!/bin/bash
+
+# Clear visual formatting colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Allowed branches for releasing Tags (Regex pattern)
+ALLOWED_RELEASE_BRANCHES="^(main|release/.+|release)$"
+
+# Git pre-push hook receives details about the push from stdin:
+# <local ref> <local sha1> <remote ref> <remote sha1>
+while read -r local_ref local_sha remote_ref remote_sha; do
+    # Check if we are pushing a Tag
+    if [[ "$local_ref" =~ ^refs/tags/(.*)$ ]]; then
+        tag_name="${BASH_REMATCH[1]}"
+        commit_sha="$local_sha"
+
+        # Check which branches contain the tag's commit
+        # git branch -r --contains: lists remote branches
+        # git branch --contains: lists local branches
+        # We merge both local and remote branches containing this commit.
+        contained_branches=$( (git branch --contains "$commit_sha" 2>/dev/null; git branch -r --contains "$commit_sha" 2>/dev/null) | sed 's/^[ *]*//' | sort -u)
+
+        is_valid_release=false
+        matched_branch=""
+
+        while read -r branch; do
+            if [ -z "$branch" ]; then
+                continue
+            fi
+            # Strip remote prefix (e.g., origin/develop -> develop, remotes/origin/main -> main)
+            clean_branch=$(echo "$branch" | sed -E 's|^remotes/[^/]*/||; s|^origin/||')
+            
+            if [[ "$clean_branch" =~ $ALLOWED_RELEASE_BRANCHES ]]; then
+                is_valid_release=true
+                matched_branch="$clean_branch"
+                break
+            fi
+        done <<< "$contained_branches"
+
+        if [ "$is_valid_release" = false ]; then
+            echo -e "❌ ${RED}[Git Hook] Push Rejected: Tag '$tag_name' cannot be pushed from this context!${NC}"
+            echo -e "   ${YELLOW}Reason:${NC} The commit '$commit_sha' tagged as '$tag_name' is not contained in any valid release branch."
+            echo -e "   ${YELLOW}Allowed Release Branches:${NC} '${GREEN}main${NC}' or '${GREEN}release/*${NC}'"
+            echo -e "   ${YELLOW}Current branches containing this commit:${NC}"
+            echo "$contained_branches" | sed 's/^/     - /'
+            echo -e "   ${BLUE}💡 Please merge your commit into '${NC}${GREEN}main${NC}${BLUE}' before creating or pushing this Tag!${NC}"
+            exit 1
+        fi
+    fi
+done
+
+exit 0

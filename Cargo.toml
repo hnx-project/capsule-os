@@ -1,13 +1,42 @@
+[workspace.package]
+version = "1.0.0-beta"
+edition = "2021"
+
+[workspace.dependencies]
+libc = { path = "libraries/libc" }
+libstd = { path = "libraries/libstd" }
+libcapsule = { path = "libraries/libcapsule" }
+
 [workspace]
 members = [
     "bootloader",
     "tools/xtask",
+    "tools/ohlink-toolchain/crates/ohlink-format",
+    "tools/ohlink-toolchain/crates/ohlink-linker",
+    "tools/ohlink-toolchain/crates/ohlink-read",
+    # libraries | CapsuleOS runtime contract
+    "libraries/libc",
+    "libraries/libstd",
+    "libraries/libcapsule",
+    "libraries/capsule_runtime",
     # userspace | capsuleOS
-    "userspace/libc",
-    "userspace/services/vfs",
+    "userspace/services/devmgr",
+    "userspace/services/fileagent",
     "userspace/services/loader",
-    "userspace/services/init",
-    "userspace/programs/shell",
+    "userspace/services/procmgr",
+    # "userspace/services/init",
+    "userspace/programs/osh",
+    "userspace/programs/ls",
+    "userspace/programs/cat",
+    "userspace/programs/mkdir",
+    "userspace/programs/touch",
+    "userspace/programs/rm",
+    "userspace/programs/rmdir",
+    "userspace/programs/ps",
+    "userspace/programs/kill",
+    "userspace/programs/testall",
+    # testloader — 调试期间专用
+    # "userspace/programs/testloader",
 ]
 
 resolver = "2"

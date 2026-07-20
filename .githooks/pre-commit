@@ -1,0 +1,57 @@
+#!/bin/bash
+
+# Clear visual formatting colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;36m'
+NC='\033[0m' # No Color
+
+echo -e "🛡️  ${BLUE}[Git Hook] Running pre-commit sanity checks...${NC}"
+
+# 1. Verify branch naming convention
+current_branch=$(git symbolic-ref --short HEAD 2>/dev/null)
+if [ -n "$current_branch" ] && [ "$current_branch" != "main" ] && [ "$current_branch" != "develop" ]; then
+    if [[ ! "$current_branch" =~ ^(feat|fix|refactor|docs|style|perf|test|chore)/.+ ]]; then
+        echo -e "❌ ${RED}[Git Hook] Error: Invalid branch name '$current_branch'!${NC}"
+        echo -e "   Branch names must match the prefix pattern: ${YELLOW}feat/*, fix/*, refactor/*, docs/*, style/*, perf/*, test/*, or chore/*${NC}"
+        exit 1
+    fi
+fi
+
+# 2. Verify version duplication against git tags
+# Extract version from xtask.toml
+if [ -f xtask.toml ]; then
+    new_version=$(grep -E '^\s*version\s*=' xtask.toml | head -n 1 | sed -E 's/.*version\s*=\s*"(.*)".*/\1/')
+    if [ -n "$new_version" ]; then
+        if git rev-parse "v$new_version" >/dev/null 2>&1; then
+            echo -e "❌ ${RED}[Git Hook] Error: Version '$new_version' already exists as a Git Tag 'v$new_version'!${NC}"
+            echo -e "   Please bump the version in ${YELLOW}xtask.toml${NC} before committing."
+            exit 1
+        fi
+    fi
+fi
+
+# 3. Perform pre-commit compilation build check via xtask
+echo -e "🛠️  ${BLUE}[Git Hook] Performing target compilation sanity build...${NC}"
+if command -v xtask &> /dev/null; then
+    xtask code build --arch aarch64 > /dev/null 2>&1
+    BUILD_STATUS=$?
+else
+    # Compile and run local binary if xtask is not installed globally yet
+    cargo build --package xtask --release > /dev/null 2>&1
+    if [ -f build/target/release/xtask ]; then
+        build/target/release/xtask code build --arch aarch64 > /dev/null 2>&1
+        BUILD_STATUS=$?
+    else
+        BUILD_STATUS=1
+    fi
+fi
+
+if [ $BUILD_STATUS -ne 0 ]; then
+    echo -e "❌ ${RED}[Git Hook] Error: Compilation failed! Run 'xtask code build --arch aarch64' to diagnose compiler issues.${NC}"
+    exit 1
+fi
+
+echo -e "✨ ${GREEN}[Git Hook] All pre-commit checks passed successfully!${NC}"
+exit 0

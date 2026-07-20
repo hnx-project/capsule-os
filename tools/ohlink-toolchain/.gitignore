@@ -1,0 +1,10 @@
+# Cargo build artifacts
+/target/
+
+# Local configuration and system files
+.DS_Store
+**/.DS_Store
+Cargo.lock
+
+# OHLINK output files
+**/*.ohlk

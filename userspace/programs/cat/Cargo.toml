@@ -1,0 +1,16 @@
+[package]
+name = "hnx-cat"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = ["host"]
+host = []
+capsule = []
+
+[[bin]]
+name = "cat"
+path = "src/main.rs"
+
+[dependencies]
+libstd = { workspace = true }
