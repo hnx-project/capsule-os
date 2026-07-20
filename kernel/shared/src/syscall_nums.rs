@@ -199,7 +199,25 @@ pub const PROC_MGMT_RELEASE_PT: u32 = 4;
 
 pub const SYSCALL_SERVICE_SPAWN: u32 = 115;
 
+/// Query hardware device topology from the kernel.
+///
+/// Copies a serialised device-table into the caller-supplied buffer.
+/// The buffer is filled with a sequence of `DeviceInfoRecord` entries
+/// (40 bytes each).  The first 4 bytes of the buffer are a `u32` count
+/// of valid records.  Returns the total number of bytes written, or a
+/// negative `Status` on error.
+pub const SYSCALL_DEVICE_INFO: u32 = 121;
+
+/// Privileged MMIO read: validated against known device base addresses,
+/// performed by the kernel on the caller's behalf.  Returns a `u32` value
+/// read from `base + offset` (volatile, device-endian-native).
+pub const SYSCALL_MMIO_READ: u32 = 122;
+
+/// Privileged MMIO write: validated and performed by the kernel.
+/// Writes `value` as a `u32` to `base + offset` (volatile).
+pub const SYSCALL_MMIO_WRITE: u32 = 123;
+
 /// One past the last valid syscall number.  Any `syscall_num >= SYSCALL_NR`
 /// is reserved by the ABI for future extensions and must not be accepted by
 /// the dispatcher — see `kernel/src/syscall/mod.rs`.
-pub const SYSCALL_NR: u32 = 123;
+pub const SYSCALL_NR: u32 = 125;

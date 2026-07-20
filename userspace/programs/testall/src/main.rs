@@ -1,8 +1,10 @@
 #![cfg_attr(not(feature = "host"), no_std)]
 #![cfg_attr(not(feature = "host"), no_main)]
 
+extern crate libc;
 extern crate libcapsule;
 
+mod dev;
 mod vfs;
 
 use libcapsule::kprintln;
@@ -37,15 +39,18 @@ pub fn main() -> i32 {
 
     kprintln!("===== All Test Suite =====");
 
-    // Standard POSIX Connect Test: verify we can open/close /dev/tty via standard libc
-    let fd = vfs::posix_open("/dev/tty");
-    if fd < 0 {
-        kprintln!("[FAIL] connect");
-        return 1;
-    }
-    let _ = vfs::posix_close(fd);
-    t.run("connect", true);
+    // Device manager tests (direct svc.dev IPC)
+    t.run("dev_connect", dev::test_dev_connect());
+    t.run("dev_probe", dev::test_dev_probe());
+    t.run("dev_list", dev::test_dev_list());
+    t.run("dev_info_pl011", dev::test_dev_info_pl011());
+    t.run("dev_open_close", dev::test_dev_open_close());
+    t.run("dev_open_nonexist", dev::test_dev_open_nonexist());
+    t.run("dev_read_uart", dev::test_dev_read_uart());
+    t.run("dev_write_uart", dev::test_dev_write_uart());
 
+    // VFS filesystem tests (via POSIX libc → fileagent svc.vfs IPC)
+    t.run("connect", vfs::test_connect());
     t.run("create_file", vfs::test_create_file());
     t.run("read_file", vfs::test_read_file());
     t.run("mkdir", vfs::test_mkdir());
@@ -57,6 +62,12 @@ pub fn main() -> i32 {
     t.run("stat_root", vfs::test_stat_root());
     t.run("stat_file", vfs::test_stat_file());
     t.run("tty", vfs::test_tty());
+
+    // POSIX device tests (posix_open → fileagent → devmgr)
+    t.run("dev_open_pl011", vfs::test_dev_open_pl011());
+    t.run("dev_open_nonexist2", vfs::test_dev_open_nonexist());
+    t.run("dev_read_pl011", vfs::test_dev_read_pl011());
+    t.run("dev_write_pl011", vfs::test_dev_write_pl011());
 
     kprintln!("{}/{} passed", t.passed, t.total);
 

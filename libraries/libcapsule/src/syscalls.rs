@@ -150,6 +150,57 @@ pub fn yield_cpu() -> isize {
     syscall!(shared::syscall_nums::SYSCALL_YIELD, 0, 0, 0, 0, 0, 0) as isize
 }
 
+pub fn device_info(buf: &mut [u8]) -> shared::status::Result<usize> {
+    let ret = syscall!(
+        shared::syscall_nums::SYSCALL_DEVICE_INFO,
+        buf.as_mut_ptr() as usize,
+        buf.len(),
+        0,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(shared::status::Status::from_raw(ret as i32))
+    } else {
+        Ok(ret)
+    }
+}
+
+pub fn mmio_read(base: usize, offset: usize) -> Result<u32> {
+    let ret = syscall!(
+        shared::syscall_nums::SYSCALL_MMIO_READ,
+        base,
+        offset,
+        0,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret as u32)
+    }
+}
+
+pub fn mmio_write(base: usize, offset: usize, value: u32) -> Result<()> {
+    let ret = syscall!(
+        shared::syscall_nums::SYSCALL_MMIO_WRITE,
+        base,
+        offset,
+        value as usize,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(())
+    }
+}
+
 pub fn vmo_create(size: usize) -> Result<usize> {
     let ret = syscall!(
         shared::syscall_nums::SYSCALL_VMO_CREATE,

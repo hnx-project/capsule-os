@@ -192,6 +192,7 @@ pub fn main() -> i32 {
                         sessions[i] = Some(vfs::Session {
                             server_chan: session_chan,
                             fds: [const { None }; 16],
+                            devmgr_chan: 0,
                         });
                         session_idx = Some(i);
                         break;
@@ -212,6 +213,11 @@ pub fn main() -> i32 {
                             Err(Status::PeerClosed) | Err(_) => {
                                 let _ = syscalls::close(session_chan);
                                 let sessions = vfs::sessions_mut();
+                                if let Some(ref sess) = sessions[idx] {
+                                    if sess.devmgr_chan != 0 {
+                                        let _ = syscalls::close(sess.devmgr_chan);
+                                    }
+                                }
                                 sessions[idx] = None;
                                 break;
                             }

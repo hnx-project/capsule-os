@@ -1,6 +1,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+pub mod device_info;
 pub mod launcher;
 pub mod status;
 pub mod syscall_nums;

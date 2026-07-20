@@ -67,6 +67,28 @@ pub fn syscall_dispatch(
         return res;
     }
 
-    // 3. 均未匹配，返回不受支持
+    // 3. Device info query (no handle table needed, read-only)
+    if syscall_num == SYSCALL_DEVICE_INFO {
+        return match handlers::device::sys_device_info(arg0, arg1) {
+            Ok(n) => n,
+            Err(e) => e.to_raw(),
+        };
+    }
+
+    // 3b. Privileged MMIO access (validated against known device bases)
+    if syscall_num == SYSCALL_MMIO_READ {
+        return match handlers::mmio::sys_mmio_read(arg0, arg1) {
+            Ok(v) => v as usize,
+            Err(e) => e.to_raw(),
+        };
+    }
+    if syscall_num == SYSCALL_MMIO_WRITE {
+        return match handlers::mmio::sys_mmio_write(arg0, arg1, arg2 as u32) {
+            Ok(()) => 0,
+            Err(e) => e.to_raw(),
+        };
+    }
+
+    // 4. 均未匹配，返回不受支持
     Status::NotAllowed.to_raw()
 }

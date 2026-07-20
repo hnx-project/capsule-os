@@ -1,7 +1,18 @@
 use libc;
+use libcapsule::syscalls;
+
+pub fn test_connect() -> bool {
+    match syscalls::channel_lookup("svc.vfs") {
+        Ok(ch) => {
+            let _ = syscalls::close(ch);
+            true
+        }
+        Err(_) => false,
+    }
+}
 
 pub fn posix_open(path: &str) -> i32 {
-    let flags = if path == "/no_such_file" || path == "/dev/tty" || path == "/tmp" { 0 } else { 0x40 };
+    let flags = if path == "/no_such_file" || path == "/dev/tty" || path == "/tmp" || path.starts_with("/dev/") { 0 } else { 0x40 };
     libc::open_str(path, flags, 0)
 }
 
@@ -144,5 +155,41 @@ pub fn test_tty() -> bool {
     if ok {
         posix_close(fd);
     }
+    ok
+}
+
+pub fn test_dev_open_pl011() -> bool {
+    let fd = posix_open("/dev/pl011");
+    if fd < 0 {
+        return false;
+    }
+    posix_close(fd) == 0
+}
+
+pub fn test_dev_open_nonexist() -> bool {
+    posix_open("/dev/no_such_device") < 0
+}
+
+pub fn test_dev_read_pl011() -> bool {
+    let fd = posix_open("/dev/pl011");
+    if fd < 0 {
+        return false;
+    }
+    let mut buf = [0u8; 4];
+    let n = posix_read(fd, &mut buf);
+    let ok = n == 4;
+    posix_close(fd);
+    ok
+}
+
+pub fn test_dev_write_pl011() -> bool {
+    let fd = posix_open("/dev/pl011");
+    if fd < 0 {
+        return false;
+    }
+    let data = [0x00u8, 0x00, 0x00, 0x00];
+    let n = posix_write(fd, &data);
+    let ok = n == 4;
+    posix_close(fd);
     ok
 }

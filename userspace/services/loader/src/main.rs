@@ -26,6 +26,13 @@ pub fn main() -> i32 {
         Err(e) => kprintln!("Loader: [ERROR] Failed to spawn 'fileagent': {:?}", e),
     }
 
+    // 2b. Spawn 'devmgr' (Device Manager)
+    kprintln!("Loader: Spawning 'devmgr' service...");
+    match bootstrap_service.spawn_service("devmgr") {
+        Ok(handle) => kprintln!("Loader: [SUCCESS] 'devmgr' spawned, handle={}", handle),
+        Err(e) => kprintln!("Loader: [ERROR] Failed to spawn 'devmgr': {:?}", e),
+    }
+
     // 3. Spawn 'testall' (VFS Test Suite)
     kprintln!("Loader: Spawning 'testall'...");
     match bootstrap_program.spawn_program("testall") {

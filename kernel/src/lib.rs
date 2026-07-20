@@ -55,6 +55,10 @@ pub static mut DTB_POINTER: *const u8 = core::ptr::null();
 pub static mut BOOTFS_PHYS_ADDR: usize = 0;
 pub static mut BOOTFS_PHYS_SIZE: usize = 0;
 
+static mut DEVICE_INFO_BOOT: core::mem::MaybeUninit<crate::fdt::BootInfo> =
+    core::mem::MaybeUninit::new(crate::fdt::BootInfo::empty());
+static mut DEVICE_INFO_VALID: bool = false;
+
 #[no_mangle]
 pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size: usize) {
     unsafe {
@@ -65,6 +69,11 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
 
     match fdt::parse(dtb_ptr) {
         Ok(boot) => {
+            unsafe {
+                DEVICE_INFO_BOOT.write(boot);
+                DEVICE_INFO_VALID = true;
+            }
+            let boot = unsafe { &*DEVICE_INFO_BOOT.as_ptr() };
             if boot.uart_type.as_str() == "pl011" {
                 drivers::uart::init_pl011(boot.uart_base);
             } else if boot.uart_type.as_str() == "ns16550" {

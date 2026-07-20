@@ -2,6 +2,8 @@ pub mod process;
 pub mod memory;
 pub mod ipc;
 pub mod vfs;
+pub mod device;
+pub mod mmio;
 
 use shared::status::Status;
 
