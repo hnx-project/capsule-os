@@ -586,7 +586,7 @@ pub fn get_parsed_version(config: &Config) -> ParsedVersion {
     let mut patch = "0".to_string();
     let mut git_success = false;
 
-    let match_pattern = format!("{}*", codename);
+    let match_pattern = "v*".to_string();
     if let Ok(output) = Command::new("git")
         .args(["describe", "--tags", "--long", "--match", &match_pattern])
         .output()
@@ -598,8 +598,9 @@ pub fn get_parsed_version(config: &Config) -> ParsedVersion {
             if parts.len() >= 3 {
                 patch = parts[parts.len() - 2].to_string();
                 let tag_info = &parts[..parts.len() - 2];
-                if tag_info.len() >= 2 {
-                    let version_parts: Vec<&str> = tag_info[1].split('.').collect();
+                if tag_info.len() >= 1 {
+                    let clean_ver = tag_info[0].trim_start_matches('v');
+                    let version_parts: Vec<&str> = clean_ver.split('.').collect();
                     if version_parts.len() >= 1 {
                         if let Ok(maj) = version_parts[0].parse::<u32>() {
                             major = maj;
@@ -610,9 +611,11 @@ pub fn get_parsed_version(config: &Config) -> ParsedVersion {
                             minor = min;
                         }
                     }
-                    if tag_info.len() >= 3 {
-                        tag = tag_info[2..].join("-");
-                    }
+                }
+                if tag_info.len() >= 2 {
+                    tag = tag_info[1..].join("-");
+                } else {
+                    tag = "release".to_string();
                 }
                 git_success = true;
             }
