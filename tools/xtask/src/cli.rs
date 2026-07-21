@@ -29,6 +29,12 @@ pub enum CodeSubcommands {
             help = "The target architecture (aarch64)"
         )]
         arch: String,
+        #[arg(
+            long,
+            default_value = "virt",
+            help = "The target platform profile (virt, rpi)"
+        )]
+        platform: String,
     },
     #[command(about = "Compile all architectures and launch CapsuleOS inside QEMU emulator")]
     Run {
@@ -38,6 +44,12 @@ pub enum CodeSubcommands {
             help = "The target architecture (aarch64)"
         )]
         arch: String,
+        #[arg(
+            long,
+            default_value = "virt",
+            help = "The target platform profile (virt, rpi)"
+        )]
+        platform: String,
         #[arg(
             long,
             help = "Start QEMU in suspended state, listening on TCP port 1234 for GDB connection"

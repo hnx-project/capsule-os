@@ -53,11 +53,11 @@ fn main() {
                     }
                 }
             }
-            CodeSubcommands::Build { arch } => {
-                let plat = match Platform::from_config(arch, &config) {
+            CodeSubcommands::Build { arch, platform } => {
+                let plat = match Platform::from_config(arch, platform, &config) {
                     Some(p) => p,
                     None => {
-                        eprintln!("Unsupported architecture: {}", arch);
+                        eprintln!("Unsupported architecture/platform: {}/{}", arch, platform);
                         std::process::exit(1);
                     }
                 };
@@ -66,11 +66,11 @@ fn main() {
                     std::process::exit(1);
                 }
             }
-            CodeSubcommands::Run { arch, gdb } => {
-                let plat = match Platform::from_config(arch, &config) {
+            CodeSubcommands::Run { arch, platform, gdb } => {
+                let plat = match Platform::from_config(arch, platform, &config) {
                     Some(p) => p,
                     None => {
-                        eprintln!("Unsupported architecture: {}", arch);
+                        eprintln!("Unsupported architecture/platform: {}/{}", arch, platform);
                         std::process::exit(1);
                     }
                 };

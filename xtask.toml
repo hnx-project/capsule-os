@@ -20,7 +20,7 @@ bootstrap = [
 ]
 linker = { path = "tools/ohlink-toolchain/Cargo.toml", package = "ohlink-linker" }
 
-[platform.aarch64]
+[platform.aarch64.profiles.virt]
 rust_target = "aarch64-unknown-none"
 userspace_target = "libraries/targets/aarch64-unknown-capsule.json"
 kernel_entry = "1074266112"
@@ -31,7 +31,7 @@ ohc_addr = "0x40700000"
 boot_addr = "0x44000000"
 rootfs_addr = "0x46000000"
 
-[platform.aarch64.qemu]
+[platform.aarch64.profiles.virt.qemu]
 bin = "qemu-system-aarch64"
 args = [
     "-M", "virt,secure=off",
@@ -53,6 +53,17 @@ dtb_dump_args = [
     "-machine", "dumpdtb=/tmp/qemu_raw.dtb",
     "-display", "none"
 ]
+
+[platform.aarch64.profiles.rpi]
+rust_target = "aarch64-unknown-none"
+userspace_target = "libraries/targets/aarch64-unknown-capsule.json"
+kernel_entry = "1074266112"
+ld_emulation = "aarch64elf"
+linker_script = "kernel/linker/kernel_aarch64.ld"
+dtb_addr = "0x42000000"
+ohc_addr = "0x44010000"
+boot_addr = "0x44000000"
+rootfs_addr = "0x46000000"
 
 [[subprojects]]
 name = "userspace-apps"
@@ -98,6 +109,6 @@ bin_output = "build/target/{rust_target}/release/capsule-bootloader.bin"
 output_dir = "build/dist/distribution"
 image_name_template = "{project_name}-{codename}-{version}-{arch}-{date}.img"
 stages = [
-    { input = "build/target/{rust_target}/release/capsule-bootloader.bin", pad_to = 65536 },
+    { input = "build/target/{rust_target}/release/capsule-bootloader.bin", pad_to = 131072 },
     { input = "build/dist/kernel/hnxcore" }
 ]

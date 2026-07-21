@@ -1,6 +1,107 @@
-use std::io;
+use std::io::{self, Read, Write, Seek, SeekFrom};
 use std::path::Path;
 use std::process::Command;
+
+pub struct PartitionSlice<'a> {
+    inner: &'a mut std::fs::File,
+    start_offset: u64,
+    size: u64,
+    current_pos: u64,
+}
+
+impl<'a> PartitionSlice<'a> {
+    pub fn new(inner: &'a mut std::fs::File, start_offset: u64, size: u64) -> io::Result<Self> {
+        let mut slice = Self {
+            inner,
+            start_offset,
+            size,
+            current_pos: 0,
+        };
+        slice.seek(SeekFrom::Start(0))?;
+        Ok(slice)
+    }
+}
+
+impl<'a> Read for PartitionSlice<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.current_pos >= self.size {
+            return Ok(0);
+        }
+        let remaining = self.size - self.current_pos;
+        let max_read = buf.len().min(remaining as usize);
+        self.inner.seek(SeekFrom::Start(self.start_offset + self.current_pos))?;
+        let bytes_read = self.inner.read(&mut buf[..max_read])?;
+        self.current_pos += bytes_read as u64;
+        Ok(bytes_read)
+    }
+}
+
+impl<'a> Write for PartitionSlice<'a> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.current_pos >= self.size {
+            return Ok(0);
+        }
+        let remaining = self.size - self.current_pos;
+        let max_write = buf.len().min(remaining as usize);
+        self.inner.seek(SeekFrom::Start(self.start_offset + self.current_pos))?;
+        let bytes_written = self.inner.write(&buf[..max_write])?;
+        self.current_pos += bytes_written as u64;
+        Ok(bytes_written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl<'a> Seek for PartitionSlice<'a> {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        let new_pos = match pos {
+            SeekFrom::Start(offset) => offset as i64,
+            SeekFrom::End(offset) => self.size as i64 + offset,
+            SeekFrom::Current(offset) => self.current_pos as i64 + offset,
+        };
+        if new_pos < 0 || new_pos > self.size as i64 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Seek out of partition bounds",
+            ));
+        }
+        self.current_pos = new_pos as u64;
+        Ok(self.current_pos)
+    }
+}
+
+type RpiDir<'a, 'b> = fatfs::Dir<'b, fatfs::StdIoWrapper<PartitionSlice<'a>>, fatfs::ChronoTimeProvider, fatfs::LossyOemCpConverter>;
+
+fn copy_file_to_fat32<'a, 'b>(root_dir: &RpiDir<'a, 'b>, src_path: &str, dst_name: &str) -> Result<(), String> {
+    let mut dst_file = root_dir.create_file(dst_name)
+        .map_err(|e| format!("Failed to create file {} in virtual FAT: {:?}", dst_name, e))?;
+    let data = std::fs::read(src_path)
+        .map_err(|e| format!("Failed to read source file {}: {}", src_path, e))?;
+    dst_file.write_all(&data)
+        .map_err(|e| format!("Failed to write {} data to virtual FAT: {:?}", dst_name, e))?;
+    Ok(())
+}
+
+fn copy_dir_to_fat32_recursive<'a, 'b>(src_dir: &Path, parent_dir: &RpiDir<'a, 'b>) -> Result<(), String> {
+    for entry in std::fs::read_dir(src_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let file_name = entry.file_name().to_string_lossy().into_owned();
+        if path.is_dir() {
+            let sub_dir = parent_dir.create_dir(&file_name)
+                .map_err(|e| format!("Failed to create dir {} in virtual FAT: {:?}", file_name, e))?;
+            copy_dir_to_fat32_recursive(&path, &sub_dir)?;
+        } else {
+            let mut dst_file = parent_dir.create_file(&file_name)
+                .map_err(|e| format!("Failed to create file {} in virtual FAT: {:?}", file_name, e))?;
+            let data = std::fs::read(&path).map_err(|e| e.to_string())?;
+            dst_file.write_all(&data).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
 
 use crate::config::{Config, Subproject, UserCrate};
 use crate::output::run_silent;
@@ -447,6 +548,189 @@ fn print_build_summary(config: &Config, plat: &Platform) {
 }
 
 fn generate_dist_image(config: &Config, plat: &Platform, v: &ParsedVersion) -> Result<(), String> {
+    if plat.profile == "rpi" {
+        // Step 1: Create build output directory and dynamic firmware cache
+        std::fs::create_dir_all(&config.distribution.output_dir)
+            .map_err(|e| format!("Failed to create distribution directory: {}", e))?;
+        
+        let cache_dir = "build/dist/rpi_firmware_cache";
+        std::fs::create_dir_all(cache_dir).map_err(|e| format!("Failed to create cache dir: {}", e))?;
+
+        // Download official Broadcom firmware dynamically from stable GitHub URL
+        const RPI_FIRMWARE_URLS: &[(&str, &str)] = &[
+            ("bootcode.bin", "https://github.com/raspberrypi/firmware/raw/master/boot/bootcode.bin"),
+            ("start.elf", "https://github.com/raspberrypi/firmware/raw/master/boot/start.elf"),
+            ("fixup.dat", "https://github.com/raspberrypi/firmware/raw/master/boot/fixup.dat"),
+            ("start4.elf", "https://github.com/raspberrypi/firmware/raw/master/boot/start4.elf"),
+            ("fixup4.dat", "https://github.com/raspberrypi/firmware/raw/master/boot/fixup4.dat"),
+        ];
+
+        for (name, url) in RPI_FIRMWARE_URLS {
+            let cached_path = format!("{}/{}", cache_dir, name);
+            if !Path::new(&cached_path).exists() {
+                println!("{}  Downloading{} {} boot firmware dynamically from GitHub...", BOLD_CYAN, RESET, name);
+                let mut cmd = Command::new("curl");
+                cmd.args(["-L", url, "-o", &cached_path]);
+                let result = run_silent(&mut cmd, || {});
+                if !result.success {
+                    return Err(format!("Failed to download official boot firmware: {}", name));
+                }
+            }
+        }
+
+        // Build dual-in-one kernel8.img (bootloader padded to 128KB + kernel hnxcore)
+        let mut kernel8_data = Vec::new();
+        let bootloader_path = "build/target/aarch64-unknown-none/release/capsule-bootloader.bin";
+        let mut boot_data = std::fs::read(bootloader_path).map_err(|e| {
+            format!("Failed to read bootloader: {}", e)
+        })?;
+        if boot_data.len() > 131072 {
+            return Err(format!("Bootloader size exceeds 128KB: {}", boot_data.len()));
+        }
+        boot_data.resize(131072, 0);
+        kernel8_data.extend_from_slice(&boot_data);
+
+        let kernel_path = "build/dist/kernel/hnxcore";
+        let kernel_data = std::fs::read(kernel_path).map_err(|e| {
+            format!("Failed to read kernel: {}", e)
+        })?;
+        kernel8_data.extend_from_slice(&kernel_data);
+
+        // Step 2: Create raw physical SD disk image file
+        let date_output = Command::new("date")
+            .arg("+%Y%m%d")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|_| "20260715".to_string());
+
+        let version_string = format!("{}.{}.{}-{}", v.major, v.minor, v.patch, v.tag);
+
+        let img_name = config
+            .distribution
+            .image_name_template
+            .replace("{project_name}", &v.os_name)
+            .replace("{codename}", &v.codename)
+            .replace("{version}", &version_string)
+            .replace("{arch}", "rpi-aarch64")
+            .replace("{date}", &date_output);
+
+        let img_path = format!("{}/{}", config.distribution.output_dir, img_name);
+
+        println!(
+            "{}  Formatting{} Raspberry Pi Bootable SD Image: {}",
+            BOLD_CYAN, RESET, img_path
+        );
+
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&img_path)
+            .map_err(|e| format!("Failed to create physical disk image: {}", e))?;
+
+        let total_sectors = 65536u64; // 32 MB partition image
+        file.set_len(total_sectors * 512)
+            .map_err(|e| format!("Failed to allocate physical disk size: {}", e))?;
+
+        // Write Master Boot Record (MBR) table at Sector 0
+        let mut mbr = [0u8; 512];
+        mbr[510] = 0x55;
+        mbr[511] = 0xAA;
+
+        let part_offset = 446;
+        mbr[part_offset] = 0x80; // Active / Bootable partition
+        mbr[part_offset + 1] = 0x00; // CHS start head
+        mbr[part_offset + 2] = 0x02; // CHS start sector
+        mbr[part_offset + 3] = 0x00; // CHS start cylinder
+        mbr[part_offset + 4] = 0x0C; // Partition type: FAT32 with LBA
+        mbr[part_offset + 5] = 0xFE; // CHS end head
+        mbr[part_offset + 6] = 0x3F; // CHS end sector
+        mbr[part_offset + 7] = 0x02; // CHS end cylinder
+
+        let start_lba = 2048u32; // starts at LBA sector 2048 (1MB offset)
+        mbr[part_offset + 8..part_offset + 12].copy_from_slice(&start_lba.to_le_bytes());
+
+        let num_sectors = 63488u32; // 65536 - 2048 sectors
+        mbr[part_offset + 12..part_offset + 16].copy_from_slice(&num_sectors.to_le_bytes());
+
+        file.write_all(&mbr)
+            .map_err(|e| format!("Failed to write MBR block: {}", e))?;
+
+        // Step 3: Write, format and mount the virtual FAT partition slice
+        let start_offset = 2048u64 * 512;
+        let partition_size = 63488u64 * 512;
+
+        let mut partition_slice = PartitionSlice::new(&mut file, start_offset, partition_size)
+            .map_err(|e| format!("Failed to slice MBR partition: {}", e))?;
+
+        let format_opts = fatfs::FormatVolumeOptions::new()
+            .volume_label(*b"BOOTFS     ")
+            .drive_num(0x80);
+
+        let mut format_wrapper = fatfs::StdIoWrapper::new(&mut partition_slice);
+        fatfs::format_volume(&mut format_wrapper, format_opts)
+            .map_err(|e| format!("Failed to programmatically format FAT32 partition: {:?}", e))?;
+
+        partition_slice.seek(SeekFrom::Start(0))
+            .map_err(|e| format!("Failed to seek to partition start: {}", e))?;
+
+        let mount_wrapper = fatfs::StdIoWrapper::new(partition_slice);
+        let fs = fatfs::FileSystem::new(mount_wrapper, fatfs::FsOptions::new())
+            .map_err(|e| format!("Failed to mount FAT filesystem: {:?}", e))?;
+
+        let root_dir = fs.root_dir();
+
+        // Step 4: Write all standard bootpack files recursively inside the virtual partition
+        for (name, _) in RPI_FIRMWARE_URLS {
+            let cached_path = format!("{}/{}", cache_dir, name);
+            copy_file_to_fat32(&root_dir, &cached_path, name)?;
+        }
+
+        // Write config.txt
+        let config_txt_content = "\
+# CapsuleOS Raspberry Pi Zero 2 W / 3 / 4 config.txt
+enable_uart=1
+arm_64bit=1
+kernel=kernel8.img
+kernel_address=0x44000000
+initramfs rootfs.img 0x46000000
+";
+        let mut cfg_file = root_dir.create_file("config.txt").map_err(|e| e.to_string())?;
+        cfg_file.write_all(config_txt_content.as_bytes()).map_err(|e| e.to_string())?;
+
+        // Write dual-in-one kernel8.img
+        let mut k8_file = root_dir.create_file("kernel8.img").map_err(|e| e.to_string())?;
+        k8_file.write_all(&kernel8_data).map_err(|e| e.to_string())?;
+
+        // Write rootfs.img
+        let rootfs_src = "kernel/files/rootfs.img";
+        if Path::new(rootfs_src).exists() {
+            let mut rfs_file = root_dir.create_file("rootfs.img").map_err(|e| e.to_string())?;
+            let rfs_data = std::fs::read(rootfs_src).map_err(|e| e.to_string())?;
+            rfs_file.write_all(&rfs_data).map_err(|e| e.to_string())?;
+        }
+
+        // Write DTB folder
+        let dtb_src = "dtb";
+        if Path::new(dtb_src).exists() {
+            let dtb_dir = root_dir.create_dir("dtb").map_err(|e| e.to_string())?;
+            copy_dir_to_fat32_recursive(Path::new(dtb_src), &dtb_dir)?;
+        }
+
+        if let Ok(meta) = std::fs::metadata(&img_path) {
+            let size_mb = meta.len() as f64 / 1024.0 / 1024.0;
+            println!(
+                "  {}Generated{} Bootable SD Image: {} [{:.1} MB]",
+                BOLD_GREEN, RESET, img_path, size_mb
+            );
+            println!("  => Dynamic firmware files successfully downloaded & injected.");
+            println!("  => Write this single .img file to your SD card using Raspberry Pi Imager or Rufus to boot!");
+        }
+
+        return Ok(());
+    }
+
     let date_output = Command::new("date")
         .arg("+%Y%m%d")
         .output()

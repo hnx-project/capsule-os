@@ -1,5 +1,6 @@
 pub struct Platform {
     pub arch: String,
+    pub profile: String,
     pub rust_target: String,
     pub userspace_target: String,
     pub kernel_entry: String,
@@ -15,10 +16,12 @@ pub struct Platform {
 }
 
 impl Platform {
-    pub fn from_config(arch: &str, config: &crate::config::Config) -> Option<Self> {
-        let p_cfg = config.platform.get(arch)?;
+    pub fn from_config(arch: &str, profile_name: &str, config: &crate::config::Config) -> Option<Self> {
+        let arch_cfg = config.platform.get(arch)?;
+        let p_cfg = arch_cfg.profiles.get(profile_name)?;
         Some(Platform {
             arch: arch.to_string(),
+            profile: profile_name.to_string(),
             rust_target: p_cfg.rust_target.clone(),
             userspace_target: p_cfg.userspace_target.clone(),
             kernel_entry: p_cfg.kernel_entry.clone(),
@@ -28,9 +31,9 @@ impl Platform {
             ohc_addr: p_cfg.ohc_addr.clone(),
             boot_addr: p_cfg.boot_addr.clone(),
             rootfs_addr: p_cfg.rootfs_addr.clone(),
-            qemu_bin: p_cfg.qemu.bin.clone(),
-            qemu_args: p_cfg.qemu.args.clone(),
-            qemu_dtb_dump_args: p_cfg.qemu.dtb_dump_args.clone(),
+            qemu_bin: p_cfg.qemu.as_ref().map(|q| q.bin.clone()).unwrap_or_default(),
+            qemu_args: p_cfg.qemu.as_ref().map(|q| q.args.clone()).unwrap_or_default(),
+            qemu_dtb_dump_args: p_cfg.qemu.as_ref().map(|q| q.dtb_dump_args.clone()).unwrap_or_default(),
         })
     }
 }

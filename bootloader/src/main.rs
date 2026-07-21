@@ -6,39 +6,104 @@ mod platform;
 
 use fdt::Fdt;
 
+extern "C" {
+    fn _start();
+}
+
 #[no_mangle]
 extern "C" fn rust_main(dtb_ptr: *const u8) -> ! {
     platform::init();
 
-    log_info!("BOOT", "Booting v{}...", env!("CARGO_PKG_VERSION"));
-
+    // 1. Parse DTB early to find UART base address (self-adaptive PL011 MMIO)
     let dtb_to_use = if dtb_ptr.is_null() {
         let candidate = platform::DTB_FALLBACK_ADDR as *const u8;
         if let Ok(_fdt) = unsafe { Fdt::from_ptr(candidate) } {
-            log_info!(
-                "BOOT",
-                "DTB found at fallback addr {:#x}.",
-                platform::DTB_FALLBACK_ADDR
-            );
             candidate
         } else {
-            log_warn!("BOOT", "DTB not found.");
             core::ptr::null()
         }
     } else {
-        if let Ok(_fdt) = unsafe { Fdt::from_ptr(dtb_ptr) } {
-            log_info!(
-                "BOOT",
-                "DTB parsed successfully at {:#x}.",
-                dtb_ptr as usize
-            );
-        } else {
-            log_warn!("BOOT", "DTB magic invalid at {:#x}.", dtb_ptr as usize);
-        }
         dtb_ptr
     };
 
-    let ohc_base = platform::OHC_BASE as *const u8;
+    let mut parsed_uart_base: Option<usize> = None;
+    if !dtb_to_use.is_null() {
+        if let Ok(fdt) = unsafe { Fdt::from_ptr(dtb_to_use) } {
+            // Check known paths directly to avoid complex tree parsing API mismatches
+            if fdt.find_node("/soc/serial@7e201000").is_some() {
+                parsed_uart_base = Some(0x3f20_1000); // RPi 3 / Zero 2 W physical view
+            } else if fdt.find_node("/soc/serial@fe201000").is_some() {
+                parsed_uart_base = Some(0xfe20_1000); // RPi 4 physical view
+            } else if fdt.find_node("/pl011@9000000").is_some() {
+                parsed_uart_base = Some(0x0900_0000); // QEMU virt
+            }
+        }
+    }
+
+    if let Some(base) = parsed_uart_base {
+        unsafe {
+            platform::UART_BASE_ADDR = base;
+        }
+    }
+
+    // Now we can output early logs using the correct UART base!
+    log_info!("BOOT", "Booting v{}...", env!("CARGO_PKG_VERSION"));
+
+    if !dtb_to_use.is_null() {
+        log_info!(
+            "BOOT",
+            "DTB parsed successfully at {:#x}.",
+            dtb_to_use as usize
+        );
+        if let Some(base) = parsed_uart_base {
+            log_info!("BOOT", "=> UART     : PL011 Base Address = {:#x}", base);
+        }
+    } else {
+        log_warn!("BOOT", "DTB not found.");
+    }
+
+    // 2. Self-Adaptive OHC_BASE and BOOTFS_BASE Detection
+    let bootloader_load_addr = _start as usize;
+    let potential_ohc_base = bootloader_load_addr + 131072;
+
+    let header_bytes = unsafe {
+        core::slice::from_raw_parts(potential_ohc_base as *const u8, ohlink_format::OHLK_Header::SIZE)
+    };
+
+    let mut ohc_base_addr = platform::DEFAULT_OHC_BASE;
+    let mut bootfs_pa = platform::DEFAULT_BOOTFS_BASE;
+    let mut dynamic_mode = false;
+
+    if let Ok(header) = ohlink_format::OHLK_Header::from_bytes(header_bytes) {
+        // Valid OHLINK header found right after the bootloader! (RPi/Unified boot)
+        ohc_base_addr = potential_ohc_base;
+        dynamic_mode = true;
+
+        let kernel_size = header.file_size as usize;
+        let aligned_kernel_size = (kernel_size + 4095) & !4095;
+        let potential_bootfs_base = ohc_base_addr + aligned_kernel_size;
+
+        // Verify if a valid HNXF_VFS image is placed right after the kernel
+        let sig_bytes = unsafe { core::slice::from_raw_parts(potential_bootfs_base as *const u8, 8) };
+        if sig_bytes == b"HNXF_VFS" {
+            bootfs_pa = potential_bootfs_base;
+        } else {
+            // Check if initramfs was loaded independently (e.g. by RPi GPU at 0x46000000)
+            let rpi_initramfs_base = 0x4600_0000;
+            let rpi_sig_bytes = unsafe { core::slice::from_raw_parts(rpi_initramfs_base as *const u8, 8) };
+            if rpi_sig_bytes == b"HNXF_VFS" {
+                bootfs_pa = rpi_initramfs_base;
+            }
+        }
+    }
+
+    let ohc_base = ohc_base_addr as *const u8;
+    log_info!(
+        "BOOT",
+        "Loading Kernel from {} Address: {:#x}",
+        if dynamic_mode { "DYNAMIC" } else { "STATIC" },
+        ohc_base_addr
+    );
 
     let header_bytes =
         unsafe { core::slice::from_raw_parts(ohc_base, ohlink_format::OHLK_Header::SIZE) };
@@ -104,7 +169,6 @@ extern "C" fn rust_main(dtb_ptr: *const u8) -> ! {
 
     log_info!("BOOT", "Jumping to HNX Kernel...");
 
-    let bootfs_pa = platform::BOOTFS_BASE;
     let mut bootfs_size = 0usize;
 
     unsafe {

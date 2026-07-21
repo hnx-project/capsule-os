@@ -9,7 +9,7 @@ pub struct Config {
     pub gitcode: GitCode,
     pub submodules: BTreeMap<String, Submodule>,
     pub toolchain: Toolchain,
-    pub platform: BTreeMap<String, PlatformConfig>,
+    pub platform: BTreeMap<String, ArchConfig>,
     pub subprojects: Vec<Subproject>,
     pub distribution: Distribution,
 }
@@ -57,7 +57,12 @@ pub struct Linker {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct PlatformConfig {
+pub struct ArchConfig {
+    pub profiles: BTreeMap<String, PlatformProfileConfig>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct PlatformProfileConfig {
     pub rust_target: String,
     pub userspace_target: String,
     pub kernel_entry: String,
@@ -67,7 +72,7 @@ pub struct PlatformConfig {
     pub ohc_addr: String,
     pub boot_addr: String,
     pub rootfs_addr: String,
-    pub qemu: QemuConfig,
+    pub qemu: Option<QemuConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
