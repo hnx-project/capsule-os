@@ -240,6 +240,9 @@ impl Scheduler {
             return;
         }
 
+        let current_ticks = crate::drivers::timer::get_ticks();
+        self.check_sleeping_threads(current_ticks);
+
         let prev_idx = match self.current_idx {
             Some(idx) => idx,
             None => {
@@ -615,6 +618,29 @@ impl Scheduler {
             }
         }
         self.unlock();
+    }
+
+    /// Scan all threads in the system. Any thread in `ThreadState::Sleeping` state whose
+    /// sleep time has elapsed is moved back to the `ThreadState::Ready` state.
+    ///
+    /// This is called within the preemptive scheduler while the scheduler lock is held.
+    pub fn check_sleeping_threads(&mut self, current_ticks: u64) {
+        for i in 0..MAX_THREADS {
+            if let Some(ref mut t) = self.threads[i] {
+                if t.state == ThreadState::Sleeping {
+                    if let Some(wakeup_tick) = t.sleep_until {
+                        if current_ticks >= wakeup_tick {
+                            t.state = ThreadState::Ready;
+                            t.sleep_until = None;
+                            let priority_idx = Self::priority_to_index(t.priority);
+                            if !self.queues[priority_idx].push(i) {
+                                crate::log_warn!("SCHED", "check_sleeping_threads: Failed to requeue sleeping thread!");
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

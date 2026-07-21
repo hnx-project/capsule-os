@@ -1,8 +1,11 @@
 use core::time::Duration;
 
 pub fn sleep(duration: Duration) {
-    let req = [duration.as_secs() as u32, duration.subsec_nanos()];
-    let _ = libc::nanosleep(req.as_ptr() as *const u8, core::ptr::null_mut());
+    let req = libc::timespec {
+        tv_sec: duration.as_secs() as i64,
+        tv_nsec: duration.subsec_nanos() as i64,
+    };
+    let _ = libc::nanosleep(&req as *const libc::timespec, core::ptr::null_mut());
 }
 
 pub fn yield_now() {

@@ -217,6 +217,9 @@ pub const SYSCALL_MMIO_READ: u32 = 122;
 /// Writes `value` as a `u32` to `base + offset` (volatile).
 pub const SYSCALL_MMIO_WRITE: u32 = 123;
 
+/// Suspend the calling thread's execution for a specified number of scheduler ticks.
+pub const SYSCALL_THREAD_SLEEP: u32 = 124;
+
 /// One past the last valid syscall number.  Any `syscall_num >= SYSCALL_NR`
 /// is reserved by the ABI for future extensions and must not be accepted by
 /// the dispatcher — see `kernel/src/syscall/mod.rs`.

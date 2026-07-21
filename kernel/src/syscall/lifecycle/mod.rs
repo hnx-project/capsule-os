@@ -62,7 +62,9 @@ pub fn dispatch_lifecycle(
         }
 
         SYSCALL_EXECVE => {
-            match handlers::process::sys_execve(table, arg0, arg1, arg2, arg3) {
+            let binary_vmo = arg0 as u32;
+            let argv_vmo = arg1 as u32;
+            match handlers::process::sys_execve(table, binary_vmo, argv_vmo) {
                 Ok(_) => 0,
                 Err(e) => e.to_raw(),
             }
@@ -90,11 +92,9 @@ pub fn dispatch_lifecycle(
         }
 
         SYSCALL_SPAWN => {
-            let path_ptr = arg0;
-            let path_len = arg1;
-            let argv_ptr = arg2;
-            let argv_count = arg3;
-            match handlers::process::sys_spawn(table, path_ptr, path_len, argv_ptr, argv_count) {
+            let binary_vmo = arg0 as u32;
+            let argv_vmo = arg1 as u32;
+            match handlers::process::sys_spawn(table, binary_vmo, argv_vmo) {
                 Ok(pid) => pid as usize,
                 Err(e) => e.to_raw(),
             }
@@ -105,6 +105,14 @@ pub fn dispatch_lifecycle(
                 crate::task::scheduler::SCHEDULER.schedule();
             }
             0
+        }
+
+        SYSCALL_THREAD_SLEEP => {
+            let ticks = arg0 as u64;
+            match handlers::process::sys_thread_sleep(ticks) {
+                Ok(()) => 0,
+                Err(e) => e.to_raw() as usize,
+            }
         }
 
         SYSCALL_PROC_MGMT => {

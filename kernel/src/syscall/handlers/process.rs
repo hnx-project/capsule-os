@@ -202,111 +202,90 @@ const EXECVE_ARG_TOTAL: usize = 4096;
 /// Returns 0 on success or a negative `Status::to_raw()` on error.  On
 /// success the caller thread is marked Dead (the new process takes over
 /// the slot in the scheduler, see `sys_exec` for the rationale).
+/// SYSCALL_EXECVE: replace the current process image with a new executable by its VMO capability handle.
 pub fn sys_execve(
     table: &HandleTable,
-    path_ptr: usize,
-    path_len: usize,
-    argv_ptr: usize,
-    argv_count: usize,
+    binary_vmo_handle: u32,
+    argv_vmo_handle: u32,
 ) -> Result<()> {
-    if path_ptr == 0 || path_len == 0 {
-        return Err(Status::InvalidArgs);
-    }
-    if argv_count > EXECVE_MAX_ARGS {
+    if binary_vmo_handle == 0 {
         return Err(Status::InvalidArgs);
     }
 
-    let caller_pid = current_process_id()?;
-    let caller_proc = crate::task::process::find_process_mut(caller_pid)
-        .ok_or(Status::NotFound)?;
-    let caller_l0_pa = caller_proc.page_table.l0_pa();
-    if caller_l0_pa == 0 {
+    use crate::object::rights::Rights;
+
+    // 1. Read binary bytes into LOAD_BINARY_SCRATCH
+    let binary_vmo_hv = HandleValue::new(binary_vmo_handle);
+    let source_size = table.with_vmo(binary_vmo_hv, Rights::READ.bits(), |vmo| vmo.size())?;
+    if source_size > LOAD_BINARY_SCRATCH_SIZE {
         return Err(Status::InvalidArgs);
     }
 
-    let mut path_buf = [0u8; 256];
-    let copy_path_len = core::cmp::min(path_len, path_buf.len());
-    crate::syscall::handlers::ipc::safe_copy_from_user(
-        caller_l0_pa,
-        path_ptr,
-        copy_path_len,
-        &mut path_buf[..copy_path_len],
-    )?;
-    let program_name = core::str::from_utf8(&path_buf[..copy_path_len])
-        .map_err(|_| Status::InvalidArgs)?;
-
-    let mut arg_bufs: [[u8; 256]; EXECVE_MAX_ARGS] = [[0u8; 256]; EXECVE_MAX_ARGS];
-    let mut arg_lens: [usize; EXECVE_MAX_ARGS] = [0usize; EXECVE_MAX_ARGS];
-    let mut total_bytes: usize = 0;
-
-    if argv_count > 0 && argv_ptr == 0 {
-        return Err(Status::InvalidArgs);
-    }
-
-    for i in 0..argv_count {
-        let mut pair = [0u8; 16];
-        let pair_off = argv_ptr + i * 16;
-        crate::syscall::handlers::ipc::safe_copy_from_user(
-            caller_l0_pa,
-            pair_off,
-            16,
-            &mut pair,
-        )?;
-        let s_ptr = u64::from_le_bytes([
-            pair[0], pair[1], pair[2], pair[3],
-            pair[4], pair[5], pair[6], pair[7],
-        ]) as usize;
-        let s_len = u64::from_le_bytes([
-            pair[8], pair[9], pair[10], pair[11],
-            pair[12], pair[13], pair[14], pair[15],
-        ]) as usize;
-        if s_len > arg_bufs[i].len() {
-            return Err(Status::InvalidArgs);
-        }
-        if s_len > 0 {
-            crate::syscall::handlers::ipc::safe_copy_from_user(
-                caller_l0_pa,
-                s_ptr,
-                s_len,
-                &mut arg_bufs[i][..s_len],
-            )?;
-        }
-        arg_lens[i] = s_len;
-        total_bytes = total_bytes.saturating_add(s_len);
-    }
-    if total_bytes + argv_count * 8 > EXECVE_ARG_TOTAL {
-        return Err(Status::InvalidArgs);
-    }
-
-    let mapped: heapless::String<160>;
-    let path_str: &str = if program_name.contains('/') {
-        program_name
-    } else {
-        mapped = heapless::String::try_from("system/bin/")
-            .ok()
-            .and_then(|mut s| {
-                s.push_str(program_name).ok()?;
-                Some(s)
-            })
-            .ok_or(Status::InvalidArgs)?;
-        mapped.as_str()
-    };
-
-    let bytes = crate::rootfs::get_file(path_str).ok_or_else(|| {
-        crate::log_error!("EXEC", "Program {} not found in rootfs path: {}", program_name, path_str);
-        Status::NotFound
+    let copied_into_scratch = table.with_vmo(binary_vmo_hv, Rights::READ.bits(), |vmo| {
+        let mut buf = unsafe { &mut LOAD_BINARY_SCRATCH[..source_size] };
+        vmo.read(0, buf).unwrap_or(0)
     })?;
 
-    let name_static: &'static str = intern_name(program_name)?;
+    if copied_into_scratch != source_size {
+        return Err(Status::InvalidArgs);
+    }
+
+    // 2. Parse argv from VMO
+    let mut arg_bufs = [[0u8; 256]; EXECVE_MAX_ARGS];
+    let mut arg_lens = [0usize; EXECVE_MAX_ARGS];
+    let mut argv_count = 0;
+    let mut argv_vmo_buf = [0u8; 4096];
+
+    if argv_vmo_handle != 0 {
+        let argv_vmo_hv = HandleValue::new(argv_vmo_handle);
+        let read_bytes = table.with_vmo(argv_vmo_hv, Rights::READ.bits(), |vmo| {
+            let len = core::cmp::min(vmo.size(), argv_vmo_buf.len());
+            vmo.read(0, &mut argv_vmo_buf[..len]).unwrap_or(0)
+        })?;
+
+        if read_bytes >= 4 {
+            let argc = u32::from_le_bytes([argv_vmo_buf[0], argv_vmo_buf[1], argv_vmo_buf[2], argv_vmo_buf[3]]) as usize;
+            let mut offset = 4;
+            let count = core::cmp::min(argc, EXECVE_MAX_ARGS);
+            for i in 0..count {
+                if offset + 4 > read_bytes {
+                    break;
+                }
+                let len = u32::from_le_bytes([
+                    argv_vmo_buf[offset],
+                    argv_vmo_buf[offset+1],
+                    argv_vmo_buf[offset+2],
+                    argv_vmo_buf[offset+3],
+                ]) as usize;
+                offset += 4;
+                if offset + len > read_bytes || len > 256 {
+                    return Err(Status::InvalidArgs);
+                }
+                if len > 0 {
+                    arg_bufs[i][..len].copy_from_slice(&argv_vmo_buf[offset..offset+len]);
+                    arg_lens[i] = len;
+                }
+                offset += len;
+                argv_count += 1;
+            }
+        }
+    }
+
+    // 3. Launch the user program using the standard mechanism
+    let caller_pid = current_process_id()?;
+    let bytes_slice = unsafe { &LOAD_BINARY_SCRATCH[..copied_into_scratch] };
+    let name_static = "user-exec";
+
     let _pid = crate::task::process::Process::launch_user_program_with_argv(
         name_static,
-        bytes,
+        bytes_slice,
         &arg_bufs[..argv_count],
         &arg_lens[..argv_count],
         argv_count,
         caller_pid,
     )?;
 
+    // 4. Mark the calling thread as Dead and schedule
     if let Some(caller) = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() } {
         unsafe {
             (*caller).state = crate::task::thread::ThreadState::Dead;
@@ -317,172 +296,95 @@ pub fn sys_execve(
 
     unsafe { crate::task::scheduler::SCHEDULER.schedule(); }
 
-    crate::log_info!(
-        "EXEC",
-        "{} launched at EL0 with argv[{}] (path={})",
-        program_name,
-        argv_count,
-        path_str
-    );
     Ok(())
 }
 
-/// SYSCALL_SPAWN: like `sys_exec` but **does not replace the caller**.
-///
-/// Reads `path_ptr`/`path_len` from the caller's user VA, resolves a
-/// short name (e.g. `"devmgr"` → `"system/bin/devmgr"`) against the
-/// embedded rootfs, materialises the OHLINK binary into a new EL0
-/// process, and returns its pid via `x0`.  The caller's thread keeps
-/// running with its original `state`, so this is the primitive boot
-/// services (loader / init) use to chain — spawn companion services,
-/// continue running, sync up via channel_registry lookups, *then*
-/// `exec` the next bootstrap stage.
-///
-/// Because the new process is added with `Ready` state but the caller
-/// is *not* demoted to `Dead`, the caller and the new process coexist
-/// in the scheduler queue until the next timer tick switches between
-/// them.  Returns the new pid as a `u64`; the syscall ABI marshals
-/// that back into `x0` for the caller.
+/// SYSCALL_SPAWN: spawn an EL0 process from a given binary VMO and command-line arguments VMO.
 pub fn sys_spawn(
     table: &HandleTable,
-    path_ptr: usize,
-    path_len: usize,
-    argv_ptr: usize,
-    argv_count: usize,
+    binary_vmo_handle: u32,
+    argv_vmo_handle: u32,
 ) -> Result<u64> {
-    if path_ptr == 0 || path_len == 0 {
-        return Err(Status::InvalidArgs);
-    }
-    if argv_count > EXECVE_MAX_ARGS {
+    if binary_vmo_handle == 0 {
         return Err(Status::InvalidArgs);
     }
 
-    // Translate the caller's user VA for path + (optional) argv.
-    let caller_pid = current_process_id()?;
-    let caller_proc = crate::task::process::find_process_mut(caller_pid)
-        .ok_or(Status::NotFound)?;
-    let caller_l0_pa = caller_proc.page_table.l0_pa();
-    if caller_l0_pa == 0 {
+    use crate::object::rights::Rights;
+
+    // 1. Read binary bytes into LOAD_BINARY_SCRATCH
+    let binary_vmo_hv = HandleValue::new(binary_vmo_handle);
+    let source_size = table.with_vmo(binary_vmo_hv, Rights::READ.bits(), |vmo| vmo.size())?;
+    if source_size > LOAD_BINARY_SCRATCH_SIZE {
         return Err(Status::InvalidArgs);
     }
 
-    let mut path_buf = [0u8; 256];
-    let copy_path_len = core::cmp::min(path_len, path_buf.len());
-    
-    // Hardening translation verification for direct map access to eliminate TLB/Cache mismatch EL1 Data Aborts
-    #[cfg(target_arch = "aarch64")]
-    if let Some(resolved_pa) = crate::arch::aarch64::mmu::translate_user_va(caller_l0_pa, path_ptr) {
-         let kva = crate::arch::mmu_facade::pa_to_kernel_va(resolved_pa);
-        // Evict/Clean user rodata page to Point of Coherency (PoC) to make sure main memory has correct values
-        unsafe {
-            use crate::arch::ArchHardware;
-            <crate::arch::aarch64::Aarch64Hardware as ArchHardware>::clean_and_invalidate_cache_range(kva, 4096);
-        }
-    }
-
-
-    if let Err(e) = crate::syscall::handlers::ipc::safe_copy_from_user(
-        caller_l0_pa,
-        path_ptr,
-        copy_path_len,
-        &mut path_buf[..copy_path_len],
-    ) {
-        crate::kprintln!("[SPAWN ERROR] sys_spawn safe_copy_from_user of path failed: {:?}", e);
-        return Err(e);
-    }
-    let program_name = core::str::from_utf8(&path_buf[..copy_path_len])
-        .map_err(|_| Status::InvalidArgs)?;
-
-    let mut arg_bufs: [[u8; 256]; EXECVE_MAX_ARGS] = [[0u8; 256]; EXECVE_MAX_ARGS];
-    let mut arg_lens: [usize; EXECVE_MAX_ARGS] = [0usize; EXECVE_MAX_ARGS];
-    let mut total_bytes: usize = 0;
-
-    if argv_count > 0 {
-        if argv_ptr == 0 {
-            return Err(Status::InvalidArgs);
-        }
-        for i in 0..argv_count {
-            let mut pair = [0u8; 16];
-            let pair_off = argv_ptr + i * 16;
-            if let Err(e) = crate::syscall::handlers::ipc::safe_copy_from_user(
-                caller_l0_pa,
-                pair_off,
-                16,
-                &mut pair,
-            ) {
-                crate::kprintln!("[SPAWN ERROR] failed to copy argv pair at {:#x}: {:?}", pair_off, e);
-                return Err(e);
-            }
-            let s_ptr = u64::from_le_bytes([
-                pair[0], pair[1], pair[2], pair[3],
-                pair[4], pair[5], pair[6], pair[7],
-            ]) as usize;
-            let s_len = u64::from_le_bytes([
-                pair[8], pair[9], pair[10], pair[11],
-                pair[12], pair[13], pair[14], pair[15],
-            ]) as usize;
-            if s_len > arg_bufs[i].len() {
-                return Err(Status::InvalidArgs);
-            }
-            if s_len > 0 {
-                if let Err(e) = crate::syscall::handlers::ipc::safe_copy_from_user(
-                    caller_l0_pa,
-                    s_ptr,
-                    s_len,
-                    &mut arg_bufs[i][..s_len],
-                ) {
-                    crate::kprintln!("[SPAWN ERROR] failed to copy argv string at {:#x}: {:?}", s_ptr, e);
-                    return Err(e);
-                }
-            }
-            arg_lens[i] = s_len;
-            total_bytes = total_bytes.saturating_add(s_len);
-        }
-    }
-    if total_bytes + argv_count * 8 > EXECVE_ARG_TOTAL {
-        return Err(Status::InvalidArgs);
-    }
-
-    let mapped: heapless::String<160>;
-    let path_str: &str = if program_name.contains('/') {
-        program_name
-    } else {
-        mapped = heapless::String::try_from("system/bin/")
-            .ok()
-            .and_then(|mut s| {
-                s.push_str(program_name).ok()?;
-                Some(s)
-            })
-            .ok_or(Status::InvalidArgs)?;
-        mapped.as_str()
-    };
-
-    let bytes = crate::rootfs::get_file(path_str).ok_or_else(|| {
-        crate::log_error!("SPAWN", "Program {} not found in rootfs path: {}", program_name, path_str);
-        Status::NotFound
+    let copied_into_scratch = table.with_vmo(binary_vmo_hv, Rights::READ.bits(), |vmo| {
+        let mut buf = unsafe { &mut LOAD_BINARY_SCRATCH[..source_size] };
+        vmo.read(0, buf).unwrap_or(0)
     })?;
 
-    let name_static: &'static str = intern_name(program_name)?;
+    if copied_into_scratch != source_size {
+        return Err(Status::InvalidArgs);
+    }
+
+    // 2. Parse argv from VMO
+    let mut arg_bufs = [[0u8; 256]; EXECVE_MAX_ARGS];
+    let mut arg_lens = [0usize; EXECVE_MAX_ARGS];
+    let mut argv_count = 0;
+    let mut argv_vmo_buf = [0u8; 4096];
+
+    if argv_vmo_handle != 0 {
+        let argv_vmo_hv = HandleValue::new(argv_vmo_handle);
+        let read_bytes = table.with_vmo(argv_vmo_hv, Rights::READ.bits(), |vmo| {
+            let len = core::cmp::min(vmo.size(), argv_vmo_buf.len());
+            vmo.read(0, &mut argv_vmo_buf[..len]).unwrap_or(0)
+        })?;
+
+        if read_bytes >= 4 {
+            let argc = u32::from_le_bytes([argv_vmo_buf[0], argv_vmo_buf[1], argv_vmo_buf[2], argv_vmo_buf[3]]) as usize;
+            let mut offset = 4;
+            let count = core::cmp::min(argc, EXECVE_MAX_ARGS);
+            for i in 0..count {
+                if offset + 4 > read_bytes {
+                    break;
+                }
+                let len = u32::from_le_bytes([
+                    argv_vmo_buf[offset],
+                    argv_vmo_buf[offset+1],
+                    argv_vmo_buf[offset+2],
+                    argv_vmo_buf[offset+3],
+                ]) as usize;
+                offset += 4;
+                if offset + len > read_bytes || len > 256 {
+                    return Err(Status::InvalidArgs);
+                }
+                if len > 0 {
+                    arg_bufs[i][..len].copy_from_slice(&argv_vmo_buf[offset..offset+len]);
+                    arg_lens[i] = len;
+                }
+                offset += len;
+                argv_count += 1;
+            }
+        }
+    }
+
+    // 3. Launch the user program using the standard mechanism
+    let caller_pid = current_process_id()?;
+    let bytes_slice = unsafe { &LOAD_BINARY_SCRATCH[..copied_into_scratch] };
+    let name_static = "user-spawn";
+
     let pid = crate::task::process::Process::launch_user_program_with_argv(
         name_static,
-        bytes,
+        bytes_slice,
         &arg_bufs[..argv_count],
         &arg_lens[..argv_count],
         argv_count,
         caller_pid,
     )?;
 
-    // Recover the pid that was just assigned inside launch_user_program
-    // so the caller can hold it if it wants to (and so we can return it).
-
-    crate::log_info!(
-        "SPAWN",
-        "{} spawned at EL0 with argv[{}] (pid={}, path={})",
-        program_name,
-        argv_count,
-        pid,
-        path_str
-    );
+    // 4. Register the Process handle so the caller can wait/terminate it
+    let rights = Rights::READ.bits() | Rights::WRITE.bits();
+    let _ = table.add(crate::object::handle_table::KernelObject::Process(pid), rights);
 
     Ok(pid)
 }
@@ -1430,4 +1332,25 @@ impl<'a> ProcListEntry<'a> {
         buf[20..20 + name_len].copy_from_slice(&self.name[..name_len]);
         buf
     }
+}
+
+/// SYSCALL_THREAD_SLEEP: safe and atomic thread-blocking timed sleep.
+///
+/// Moves the calling thread to the `ThreadState::Sleeping` state and programs
+/// its `sleep_until` timer.
+pub fn sys_thread_sleep(ticks: u64) -> Result<()> {
+    if ticks == 0 {
+        return Ok(());
+    }
+    let current_ticks = crate::drivers::timer::get_ticks();
+    let wakeup_tick = current_ticks.saturating_add(ticks);
+
+    if let Some(t) = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() } {
+        unsafe {
+            (*t).state = crate::task::thread::ThreadState::Sleeping;
+            (*t).sleep_until = Some(wakeup_tick);
+            crate::task::scheduler::SCHEDULER.schedule();
+        }
+    }
+    Ok(())
 }

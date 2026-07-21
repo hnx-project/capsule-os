@@ -51,6 +51,7 @@ pub struct Thread {
     pub handle_table: *const crate::object::handle_table::HandleTable,
     pub ipc_transfer_slots: [Option<(crate::object::handle_table::KernelObject, u32)>; 2],
     pub port_packet_slot: Option<crate::ipc::port::PortPacket>,
+    pub sleep_until: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +116,7 @@ impl Thread {
             handle_table: core::ptr::null(),
             ipc_transfer_slots: [None, None],
             port_packet_slot: None,
+            sleep_until: None,
         })
     }
 
@@ -148,6 +150,7 @@ impl Thread {
             handle_table: core::ptr::null(),
             ipc_transfer_slots: [None, None],
             port_packet_slot: None,
+            sleep_until: None,
         })
     }
 
@@ -181,6 +184,7 @@ impl Thread {
             handle_table: core::ptr::null(),
             ipc_transfer_slots: [None, None],
             port_packet_slot: None,
+            sleep_until: None,
         })
     }
 
@@ -214,6 +218,7 @@ impl Thread {
             handle_table: core::ptr::null(),
             ipc_transfer_slots: [None, None],
             port_packet_slot: None,
+            sleep_until: None,
         })
     }
 

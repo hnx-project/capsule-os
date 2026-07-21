@@ -4,6 +4,7 @@ extern crate libcapsule;
 
 pub mod posix_stub;
 pub mod syscalls;
+pub use posix_stub::*;
 pub use shared::status::Status;
 pub use shared::syscall_nums::*;
 pub use syscalls::*;
@@ -586,9 +587,26 @@ pub extern "C" fn exit(status: i32) -> ! {
     loop {}
 }
 
+#[repr(C)]
+pub struct timespec {
+    pub tv_sec: i64,
+    pub tv_nsec: i64,
+}
+
 #[no_mangle]
-pub extern "C" fn nanosleep(_req: *const u8, _rem: *mut u8) -> i32 {
-    0
+pub extern "C" fn nanosleep(req: *const timespec, _rem: *mut timespec) -> i32 {
+    if req.is_null() {
+        return -1;
+    }
+    let r = unsafe { &*req };
+    let sec_ticks = (r.tv_sec as u64).saturating_mul(62).saturating_add((r.tv_sec as u64) / 2);
+    let nsec_ticks = (r.tv_nsec as u64) / 16_000_000;
+    let total_ticks = sec_ticks.saturating_add(nsec_ticks);
+
+    match libcapsule::syscalls::thread_sleep(total_ticks) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
 }
 
 #[no_mangle]

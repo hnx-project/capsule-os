@@ -1,3 +1,11 @@
+//! # 📦 Service Loader Subsystem
+//!
+//! This module implements the `ServiceLoader` struct, which is designed for spawning
+//! privileged background services (such as `fileagent` and `devmgr`) from the read-only BootFS.
+//!
+//! Under CapsuleOS, services run indefinitely, have higher execution priorities, and have access
+//! to core system capabilities (e.g. MMIO mapping, port queues, global service registration).
+
 use shared::status::{Result, Status};
 
 /// An entry descriptor inside the HNXF_VFS archive (144 bytes).
@@ -10,12 +18,19 @@ struct HnxfEntry {
 
 /// User-space BootFS loader. Resolves and spawns system service binaries
 /// from the read-only memory BootFS VMO without using any file system paths.
+///
+/// This serves as the primary system-level bootstrap interface. In future revisions,
+/// the low-level parsing and child VMO cloning logic will be unified under a cohesive
+/// `BootfsLoader` struct, while preserving `ServiceLoader` as a distinct, intent-based API.
 pub struct ServiceLoader {
     bootfs_vmo: usize,
 }
 
 impl ServiceLoader {
     /// Create a new ServiceLoader bound to the raw BootFS VMO handle.
+    ///
+    /// # Parameters
+    /// - `bootfs_vmo`: The raw `HandleValue` index referencing the boot memory filesystem.
     pub const fn new(bootfs_vmo: usize) -> Self {
         Self { bootfs_vmo }
     }
@@ -27,6 +42,14 @@ impl ServiceLoader {
 
     /// Spawn a service by resolving its filename from the BootFS archive header,
     /// cloning its executable chunk into a VMO, and starting its EL0 process.
+    ///
+    /// # Parameters
+    /// - `name`: Relative or absolute file path/name of the target service binary.
+    ///
+    /// # Errors
+    /// - `Status::NotFound`: If the filename is not present in BootFS.
+    /// - `Status::WrongType`: If the Superblock signature does not match "HNXF_VFS".
+    /// - `Status::InvalidImage`: If directory metadata is corrupted.
     pub fn spawn_service(&self, name: &str) -> Result<usize> {
         let (offset, size) = self.resolve_file(name)?;
 
@@ -46,7 +69,9 @@ impl ServiceLoader {
         Ok(pid_or_handle as usize)
     }
 
-    /// Parse the HNXF_VFS superblock and directory headers to find offset/size of a file.
+    /// Parse the HNXF_VFS superblock and directory headers to find the offset and size of a file.
+    ///
+    /// This performs synchronous reading on the `bootfs_vmo` via capability system calls.
     pub(crate) fn resolve_file(&self, filename: &str) -> Result<(usize, usize)> {
         // 1. Read Superblock: Magic (8 bytes) + Count (8 bytes) = 16 bytes.
         let mut superblock = [0u8; 16];
