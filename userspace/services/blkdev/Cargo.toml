@@ -1,17 +1,16 @@
 [package]
-name = "hnx-fileagent"
+name = "hnx-blkdev"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "fileagent"
+name = "blkdev"
 path = "src/main.rs"
 
 [dependencies]
 capsule_runtime = { path = "../../../libraries/capsule_runtime" }
 libcapsule = { path = "../../../libraries/libcapsule", package = "libcapsule" }
 shared = { path = "../../../kernel/shared" }
-fatfs = { package = "starry-fatfs", version = "0.4.1-preview.2", default-features = false }
 
 [features]
 capsule = []

@@ -108,6 +108,9 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
                     drivers::gic::init(boot.gicd_base, boot.gicc_base);
                     drivers::timer::init();
                     crate::log_info!("IRQ", "GIC + generic timer enabled");
+                    
+                    // Initialize Virtio-Block MMIO Driver
+                    drivers::virtio_blk::init();
                 } else {
                     crate::log_warn!("IRQ", "no GIC in FDT, skipping timer bring-up");
                 }

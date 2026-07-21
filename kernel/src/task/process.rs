@@ -243,6 +243,12 @@ impl Process {
                 crate::kprintln!("WARNING: Failed to map GIC under user L0: {:?}", e);
             }
 
+            // Map Virtio-Blk device physical page (0x0a003000) under user L0.
+            let virtio_flags = crate::arch::mmu::MapFlags::device_rw_user();
+            if let Err(e) = proc.page_table.map_va(0x0a003000, 0x0a003000, &virtio_flags) {
+                crate::kprintln!("WARNING: Failed to map Virtio-Blk under user L0: {:?}", e);
+            }
+
             // Copy the high-half kernel entries (L0[256..512]) and identity
             // L1 block from the current TTBR0 (parent) into the new tree.
             if active_l0_pa != 0 {

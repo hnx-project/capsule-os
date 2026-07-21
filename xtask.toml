@@ -42,6 +42,8 @@ args = [
     "-device", "loader,file={kernel_bin},addr={ohc_addr},force-raw=on",
     "-device", "loader,file={qemu_dtb},addr={dtb_addr},force-raw=on",
     "-device", "loader,file={rootfs_img},addr={rootfs_addr},force-raw=on",
+    "-drive", "if=none,format=raw,id=hd0,file=disk.img",
+    "-device", "virtio-blk-device,drive=hd0",
     "-semihosting"
 ]
 dtb_dump_args = [
@@ -57,6 +59,7 @@ name = "userspace-apps"
 type = "userspace"
 crates = [
     { crate_name = "hnx-devmgr", out_name = "devmgr", entry = "65536" },
+    { crate_name = "hnx-blkdev", out_name = "blkdev", entry = "65536" },
     { crate_name = "hnx-fileagent", out_name = "fileagent", entry = "65536" },
     { crate_name = "hnx-loader", out_name = "loader", entry = "65536" },
     { crate_name = "hnx-procmgr", out_name = "procmgr", entry = "65536" },

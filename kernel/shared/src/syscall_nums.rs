@@ -220,7 +220,14 @@ pub const SYSCALL_MMIO_WRITE: u32 = 123;
 /// Suspend the calling thread's execution for a specified number of scheduler ticks.
 pub const SYSCALL_THREAD_SLEEP: u32 = 124;
 
+/// Read a single 512-byte sector from the block device.
+pub const SYSCALL_BLOCK_READ: u32 = 130;
+/// Write a single 512-byte sector to the block device.
+pub const SYSCALL_BLOCK_WRITE: u32 = 131;
+/// Get the total size of the block device (in 512-byte sectors).
+pub const SYSCALL_BLOCK_SIZE: u32 = 132;
+
 /// One past the last valid syscall number.  Any `syscall_num >= SYSCALL_NR`
 /// is reserved by the ABI for future extensions and must not be accepted by
 /// the dispatcher — see `kernel/src/syscall/mod.rs`.
-pub const SYSCALL_NR: u32 = 125;
+pub const SYSCALL_NR: u32 = 133;

@@ -82,3 +82,49 @@ fn write_record(buf: &mut [u8; DEVICE_BUFFER_SIZE], idx: usize, rec: &DeviceInfo
         core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr().add(offset), DEVICE_RECORD_SIZE);
     }
 }
+
+/// SYSCALL_BLOCK_READ: read a single 512-byte sector from Virtio-Blk to user space.
+pub fn sys_block_read(sector: u64, dst_user_va: usize) -> Result<()> {
+    if dst_user_va == 0 {
+        return Err(Status::InvalidArgs);
+    }
+    let l0_pa = current_l0_pa().ok_or(Status::InvalidArgs)?;
+    let dst_pa = crate::arch::aarch64::mmu::translate_user_va(l0_pa, dst_user_va)
+        .ok_or(Status::InvalidArgs)?;
+
+    // Clean user space cache before read so we don't have stale/dirty lines
+    unsafe {
+        <crate::arch::CurrentArch as crate::arch::ArchHardware>::clean_and_invalidate_cache_range(dst_user_va, 512);
+    }
+
+    crate::drivers::virtio_blk::read_sector(sector, dst_pa)?;
+
+    // Invalidate user space cache after read so CPU fetches the DMA'd data from RAM
+    unsafe {
+        <crate::arch::CurrentArch as crate::arch::ArchHardware>::clean_and_invalidate_cache_range(dst_user_va, 512);
+    }
+
+    Ok(())
+}
+
+/// SYSCALL_BLOCK_WRITE: write a single 512-byte sector from user space to Virtio-Blk.
+pub fn sys_block_write(sector: u64, src_user_va: usize) -> Result<()> {
+    if src_user_va == 0 {
+        return Err(Status::InvalidArgs);
+    }
+    let l0_pa = current_l0_pa().ok_or(Status::InvalidArgs)?;
+    let src_pa = crate::arch::aarch64::mmu::translate_user_va(l0_pa, src_user_va)
+        .ok_or(Status::InvalidArgs)?;
+
+    // Clean/writeback user space cache before write so physical RAM has the new data for DMA
+    unsafe {
+        <crate::arch::CurrentArch as crate::arch::ArchHardware>::clean_and_invalidate_cache_range(src_user_va, 512);
+    }
+
+    crate::drivers::virtio_blk::write_sector(sector, src_pa)
+}
+
+/// SYSCALL_BLOCK_SIZE: read the total number of sectors on the block device.
+pub fn sys_block_size() -> Result<u64> {
+    Ok(crate::drivers::virtio_blk::get_capacity())
+}

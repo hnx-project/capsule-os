@@ -616,3 +616,57 @@ pub fn thread_start(thread_handle: u32) -> Result<()> {
         Ok(())
     }
 }
+
+/// Read a single 512-byte sector from the block device.
+pub fn block_read(sector: u64, dst_va: usize) -> Result<()> {
+    let ret = syscall!(
+        shared::syscall_nums::SYSCALL_BLOCK_READ,
+        sector as usize,
+        dst_va,
+        0,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(())
+    }
+}
+
+/// Write a single 512-byte sector to the block device.
+pub fn block_write(sector: u64, src_va: usize) -> Result<()> {
+    let ret = syscall!(
+        shared::syscall_nums::SYSCALL_BLOCK_WRITE,
+        sector as usize,
+        src_va,
+        0,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(())
+    }
+}
+
+/// Get the total size of the block device in 512-byte sectors.
+pub fn block_size() -> Result<u64> {
+    let ret = syscall!(
+        shared::syscall_nums::SYSCALL_BLOCK_SIZE,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret as u64)
+    }
+}

@@ -33,6 +33,13 @@ pub fn main() -> i32 {
         Err(e) => kprintln!("Loader: [ERROR] Failed to spawn 'devmgr': {:?}", e),
     }
 
+    // 2c. Spawn 'blkdev' (Block Device Manager)
+    kprintln!("Loader: Spawning 'blkdev' service...");
+    match bootstrap_service.spawn_service("blkdev") {
+        Ok(handle) => kprintln!("Loader: [SUCCESS] 'blkdev' spawned, handle={}", handle),
+        Err(e) => kprintln!("Loader: [ERROR] Failed to spawn 'blkdev': {:?}", e),
+    }
+
     // 3. Spawn 'testall' (VFS Test Suite)
     kprintln!("Loader: Spawning 'testall'...");
     match bootstrap_program.spawn_program("testall") {

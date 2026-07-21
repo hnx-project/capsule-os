@@ -75,6 +75,25 @@ pub fn syscall_dispatch(
         };
     }
 
+    if syscall_num == SYSCALL_BLOCK_READ {
+        return match handlers::device::sys_block_read(arg0 as u64, arg1) {
+            Ok(()) => 0,
+            Err(e) => e.to_raw(),
+        };
+    }
+    if syscall_num == SYSCALL_BLOCK_WRITE {
+        return match handlers::device::sys_block_write(arg0 as u64, arg1) {
+            Ok(()) => 0,
+            Err(e) => e.to_raw(),
+        };
+    }
+    if syscall_num == SYSCALL_BLOCK_SIZE {
+        return match handlers::device::sys_block_size() {
+            Ok(size) => size as usize,
+            Err(e) => e.to_raw(),
+        };
+    }
+
     // 3b. Privileged MMIO access (validated against known device bases)
     if syscall_num == SYSCALL_MMIO_READ {
         return match handlers::mmio::sys_mmio_read(arg0, arg1) {

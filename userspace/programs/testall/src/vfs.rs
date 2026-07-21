@@ -193,3 +193,35 @@ pub fn test_dev_write_pl011() -> bool {
     posix_close(fd);
     ok
 }
+
+pub fn test_boot_create_file() -> bool {
+    let fd = posix_open("/boot/test.txt");
+    if fd < 0 {
+        return false;
+    }
+    let n = posix_write(fd, b"FatFS Rules!");
+    n == 12 && posix_close(fd) == 0
+}
+
+pub fn test_boot_read_file() -> bool {
+    let fd = posix_open("/boot/test.txt");
+    if fd < 0 {
+        return false;
+    }
+    let mut buf = [0u8; 128];
+    let size = posix_read(fd, &mut buf);
+    if size != 12 {
+        return false;
+    }
+    let expected = b"FatFS Rules!";
+    let ok = &buf[..size as usize] == expected;
+    posix_close(fd) == 0 && ok
+}
+
+pub fn test_boot_mkdir() -> bool {
+    posix_mkdir("/boot/testdir") == 0
+}
+
+pub fn test_boot_unlink() -> bool {
+    posix_unlink("/boot/test.txt") == 0 && posix_rmdir("/boot/testdir") == 0
+}

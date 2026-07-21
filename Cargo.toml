@@ -21,6 +21,7 @@ members = [
     "libraries/capsule_runtime",
     # userspace | capsuleOS
     "userspace/services/devmgr",
+    "userspace/services/blkdev",
     "userspace/services/fileagent",
     "userspace/services/loader",
     "userspace/services/procmgr",

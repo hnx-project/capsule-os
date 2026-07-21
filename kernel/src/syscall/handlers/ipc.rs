@@ -125,8 +125,8 @@ pub fn sys_channel_read(table: &HandleTable, handle_raw: u32,
     }
 
     // Allocate a temporary kernel-level buffer to receive data from channel safely
-    let mut temp_buf = heapless::Vec::<u8, 256>::new();
-    let actual_len = core::cmp::min(buf_len, 256);
+    let mut temp_buf = heapless::Vec::<u8, 1024>::new();
+    let actual_len = core::cmp::min(buf_len, 1024);
     unsafe {
         temp_buf.set_len(actual_len);
     }
@@ -185,8 +185,8 @@ pub fn sys_channel_write(table: &HandleTable, handle_raw: u32,
     }
 
     // Limit buffer transfer size to keep heapless stack footprint safe
-    let actual_len = core::cmp::min(buf_len, 256);
-    let mut temp_buf = heapless::Vec::<u8, 256>::new();
+    let actual_len = core::cmp::min(buf_len, 1024);
+    let mut temp_buf = heapless::Vec::<u8, 1024>::new();
     unsafe {
         temp_buf.set_len(actual_len);
     }
