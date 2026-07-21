@@ -1,4 +1,5 @@
 pub const ENOSYS: i32 = 38;
+pub const ECHILD: i32 = 10;
 
 #[no_mangle]
 pub static mut errno: i32 = 0;
@@ -138,6 +139,24 @@ pub extern "C" fn execv(path: *const u8, argv: *const *const u8) -> i32 {
             let _ = libcapsule::syscalls::close(argv_vmo_handle);
             set_errno_and_fail(e.to_raw() as i32)
         }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn wait4(pid: i32, status: *mut i32, _options: i32, _rusage: *mut u8) -> i32 {
+    let ret = libcapsule::syscall!(
+        shared::syscall_nums::SYSCALL_WAIT4,
+        pid as usize,
+        status as usize,
+        _options as usize,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        set_errno_and_fail(ECHILD)
+    } else {
+        ret as i32
     }
 }
 
