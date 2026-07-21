@@ -61,7 +61,7 @@ fn main() {
                         std::process::exit(1);
                     }
                 };
-                if let Err(e) = build::build(&config, &plat) {
+                if let Err(e) = build::build(&config, &plat, true) {
                     eprintln!("Build failed: {}", e);
                     std::process::exit(1);
                 }
@@ -74,7 +74,7 @@ fn main() {
                         std::process::exit(1);
                     }
                 };
-                if let Err(e) = build::build(&config, &plat) {
+                if let Err(e) = build::build(&config, &plat, false) {
                     eprintln!("Build failed: {}", e);
                     std::process::exit(1);
                 }

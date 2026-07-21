@@ -112,7 +112,7 @@ const BOLD_GREEN: &str = "\x1b[1;32m";
 const BOLD_CYAN: &str = "\x1b[1;36m";
 const RESET: &str = "\x1b[0m";
 
-pub fn build(config: &Config, plat: &Platform) -> Result<(), String> {
+pub fn build(config: &Config, plat: &Platform, generate_dist: bool) -> Result<(), String> {
     println!(
         "{}    Building{} {} Ecosystem ({})",
         BOLD_CYAN, RESET, config.project.name, plat.arch
@@ -154,7 +154,9 @@ pub fn build(config: &Config, plat: &Platform) -> Result<(), String> {
     }
 
     print_build_summary(config, plat);
-    generate_dist_image(config, plat, &v)?;
+    if generate_dist {
+        generate_dist_image(config, plat, &v)?;
+    }
 
     println!(
         "\n{}     Success{} {} built successfully!\n",
