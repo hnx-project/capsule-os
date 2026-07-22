@@ -1,12 +1,18 @@
 use super::{KillError, ProcSystem};
 
+extern crate libc;
 extern crate libstd;
 
 pub struct CapsuleEnv;
 
 impl ProcSystem for CapsuleEnv {
-    fn kill(&self, _pid: u32, _signal: i32) -> Result<(), KillError> {
-        Err(KillError::PermissionDenied)
+    fn kill(&self, pid: u32, signal: i32) -> Result<(), KillError> {
+        match libc::syscalls::kill(pid as i64, signal as usize) {
+            Ok(()) => Ok(()),
+            Err(libc::Status::NotFound) | Err(libc::Status::ProcessNotFound) => Err(KillError::ProcessNotFound),
+            Err(libc::Status::AccessDenied) => Err(KillError::PermissionDenied),
+            Err(_) => Err(KillError::Unknown),
+        }
     }
 
     fn write_stdout(&self, data: &[u8]) {
@@ -21,7 +27,7 @@ impl ProcSystem for CapsuleEnv {
         }
     }
 
-    fn exit(&self, _code: i32) -> ! {
-        panic!("Process exited");
+    fn exit(&self, code: i32) -> ! {
+        libc::exit(code);
     }
 }

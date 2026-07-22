@@ -13,4 +13,6 @@ name = "ps"
 path = "src/main.rs"
 
 [dependencies]
-libstd = { workspace = true }
+libc = { path = "../../../libraries/libc", package = "libc" }
+libstd = { path = "../../../libraries/libstd", package = "libstd" }
+libcapsule = { path = "../../../libraries/libcapsule", package = "libcapsule" }

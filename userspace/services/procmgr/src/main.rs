@@ -143,14 +143,42 @@ pub fn main() -> i32 {
                                         let _ = syscalls::proc_mgmt(PROC_MGMT_EXIT, pid as usize, 0, 0);
                                     }
                                 }
-                                2 => {
-                                    if n >= 17 {
-                                        let pid = u64::from_le_bytes(buf[1..9].try_into().unwrap_or([0; 8]));
-                                        let l0_pa = u64::from_le_bytes(buf[9..17].try_into().unwrap_or([0; 8]));
-                                        remove_entry(pid);
-                                        let _ = syscalls::proc_mgmt(PROC_MGMT_RELEASE_PT, l0_pa as usize, 0, 0);
-                                    }
-                                }
+                                 2 => {
+                                     if n >= 17 {
+                                         let pid = u64::from_le_bytes(buf[1..9].try_into().unwrap_or([0; 8]));
+                                         let l0_pa = u64::from_le_bytes(buf[9..17].try_into().unwrap_or([0; 8]));
+                                         remove_entry(pid);
+                                         let _ = syscalls::proc_mgmt(PROC_MGMT_RELEASE_PT, l0_pa as usize, 0, 0);
+                                     }
+                                 }
+                                 3 => {
+                                     // PROC_SNAPSHOT
+                                     if handles.len() > 0 && handles[0] != 0 {
+                                         let mut resp_buf = [0u8; 4096];
+                                         let mut count = 0u32;
+                                         let mut offset = 4;
+                                         unsafe {
+                                             for slot in PROC_TABLE.iter() {
+                                                 if let Some(ref entry) = slot {
+                                                     if offset + 52 <= resp_buf.len() {
+                                                         resp_buf[offset..offset+8].copy_from_slice(&entry.pid.to_le_bytes());
+                                                         resp_buf[offset+8..offset+16].copy_from_slice(&entry.ppid.to_le_bytes());
+                                                         resp_buf[offset+16..offset+20].copy_from_slice(&entry.state.to_le_bytes());
+                                                         resp_buf[offset+20..offset+52].copy_from_slice(&entry.name);
+                                                         offset += 52;
+                                                         count += 1;
+                                                     }
+                                                 }
+                                             }
+                                         }
+                                         resp_buf[0..4].copy_from_slice(&count.to_le_bytes());
+                                         let _ = syscalls::channel_write(
+                                             handles[0] as usize,
+                                             &resp_buf[..offset],
+                                             &[],
+                                         );
+                                     }
+                                 }
                                 _ => {}
                             }
                         }

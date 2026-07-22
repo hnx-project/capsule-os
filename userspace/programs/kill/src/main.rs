@@ -70,15 +70,56 @@ fn main() {
 // 3. Capsule OS 入口：hnxlibc 在 _start 之后会调用
 //    `extern "Rust" { fn main() -> i32 }`（见 hnxlibc/src/lib.rs）。
 //    `_start` 和 `panic_handler` 都由 hnxlibc 统一接管。
-//
-//    TODO: argv 解析依赖 kernel 把 exec 的 cmd line 透传给 target program，
-//    目前 exec 不带 argv，所以这里 hardcode 给 pid=10 发 SIGTERM 占位。
 #[cfg(not(feature = "host"))]
 #[no_mangle]
 pub fn main() -> i32 {
     let env = env::capsule::CapsuleEnv;
-    match env.kill(10, 15) {
-        Ok(()) => 0,
-        Err(_) => 1,
+    let mut pid_str = libstd::string::String::new();
+    
+    let mut count = 0;
+    for arg in libstd::env::args() {
+        if count == 1 {
+            pid_str = arg;
+        }
+        count += 1;
+    }
+
+    if count < 2 || pid_str.len() == 0 {
+        env.write_stderr(b"Usage: kill <pid>\n");
+        return 1;
+    }
+
+    match parse_u32(pid_str.as_str()) {
+        Some(pid) => {
+            match env.kill(pid, 15) {
+                // 15 = SIGTERM
+                Ok(_) => {
+                    env.write_stdout(b"Process ");
+                    env.write_stdout(pid_str.as_bytes());
+                    env.write_stdout(b" terminated.\n");
+                    0
+                }
+                Err(env::KillError::ProcessNotFound) => {
+                    env.write_stderr(b"Error: Process not found: ");
+                    env.write_stderr(pid_str.as_bytes());
+                    env.write_stderr(b"\n");
+                    1
+                }
+                Err(env::KillError::PermissionDenied) => {
+                    env.write_stderr(b"Error: Permission denied\n");
+                    1
+                }
+                Err(_) => {
+                    env.write_stderr(b"Error: Unknown kill error\n");
+                    1
+                }
+            }
+        }
+        None => {
+            env.write_stderr(b"Error: Invalid PID: ");
+            env.write_stderr(pid_str.as_bytes());
+            env.write_stderr(b"\n");
+            1
+        }
     }
 }

@@ -36,7 +36,7 @@ pub fn args() -> Args {
 
 pub fn current_dir() -> Result<crate::string::String, ()> {
     let mut buf = [0u8; 256];
-    match libc::getcwd(&mut buf) {
+    match libc::syscalls::getcwd(&mut buf) {
         Ok(len) => {
             let mut s = crate::string::String::new();
             for &b in &buf[..len] {
@@ -52,7 +52,7 @@ pub fn current_dir() -> Result<crate::string::String, ()> {
 }
 
 pub fn set_current_dir(path: &str) -> Result<(), ()> {
-    match libc::chdir(path) {
+    match libc::syscalls::chdir(path) {
         Ok(()) => Ok(()),
         Err(_) => Err(()),
     }

@@ -413,7 +413,7 @@ pub fn normalise_path(path: *const u8, out: &mut [u8]) -> Result<usize, ()> {
 
     if !is_absolute {
         let mut cwd_buf = [0u8; 256];
-        match getcwd(&mut cwd_buf) {
+        match syscalls::getcwd(&mut cwd_buf) {
             Ok(len) if len > 0 => {
                 let actual_cwd = &cwd_buf[..len];
                 let to_copy = actual_cwd.len().min(temp.len());
@@ -997,6 +997,136 @@ pub extern "C" fn readdir(fd: i32, buf: *mut u8, count: usize) -> isize {
 // up showing the message's static prefix because the 1.0
 // hnxstd lacks a Display impl; the panic-cleanup story is
 // B10.1).
+#[no_mangle]
+pub extern "C" fn chdir(path: *const u8) -> i32 {
+    if path.is_null() {
+        return -1;
+    }
+    let mut path_len = 0;
+    unsafe {
+        while *path.add(path_len) != 0 && path_len < 128 {
+            path_len += 1;
+        }
+    }
+    let path_slice = unsafe { core::slice::from_raw_parts(path, path_len) };
+    let path_str = match core::str::from_utf8(path_slice) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    match syscalls::chdir(path_str) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn getcwd(buf: *mut u8, size: usize) -> *mut u8 {
+    if buf.is_null() || size == 0 {
+        return core::ptr::null_mut();
+    }
+    let mut temp = [0u8; 128];
+    match syscalls::getcwd(&mut temp) {
+        Ok(len) => {
+            if len + 1 > size {
+                return core::ptr::null_mut();
+            }
+            unsafe {
+                core::ptr::copy_nonoverlapping(temp.as_ptr(), buf, len);
+                *buf.add(len) = 0;
+            }
+            buf
+        }
+        Err(_) => core::ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn pipe(fds: *mut i32) -> i32 {
+    if fds.is_null() {
+        return -1;
+    }
+    unsafe {
+        let mut raw = [0i32; 2];
+        match syscalls::pipe_pair(&mut raw) {
+            Ok(()) => {
+                *fds = raw[0];
+                *fds.add(1) = raw[1];
+                0
+            }
+            Err(_) => -1,
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn dup2(oldfd: i32, newfd: i32) -> i32 {
+    match syscalls::dup2(oldfd, newfd) {
+        Ok(fd) => fd,
+        Err(_) => -1,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn pause() -> i32 {
+    match syscalls::pause() {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn access(path: *const u8, _amode: i32) -> i32 {
+    let mut st = core::mem::MaybeUninit::<stat>::uninit();
+    if stat(path, st.as_mut_ptr()) == 0 {
+        0
+    } else {
+        -1
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn dup(oldfd: i32) -> i32 {
+    match syscalls::dup2(oldfd, -1) {
+        Ok(fd) => fd,
+        Err(_) => -1,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn isatty(fd: i32) -> i32 {
+    if fd < 0 || fd >= 64 {
+        return 0;
+    }
+    unsafe {
+        match &USER_FD_TABLE[fd as usize] {
+            Some(entry) => {
+                match entry.r#type {
+                    FdType::Console => 1,
+                    _ => 0,
+                }
+            }
+            None => 0,
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn usleep(useconds: u32) -> i32 {
+    let req = timespec {
+        tv_sec: (useconds / 1_000_000) as i64,
+        tv_nsec: ((useconds % 1_000_000) * 1000) as i64,
+    };
+    nanosleep(&req, core::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "C" fn kill(pid: i32, sig: i32) -> i32 {
+    match syscalls::kill(pid as i64, sig as usize) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
+}
+
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     write(2, b"EL0 PANIC: ".as_ptr(), 10);
