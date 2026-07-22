@@ -916,6 +916,28 @@ impl fatfs::Seek for BlkDevStream {
     }
 }
 
+pub fn do_rename(old_path: &str, new_path: &str) -> i32 {
+    let old_clean = if old_path.starts_with('/') { &old_path[1..] } else { old_path };
+    let new_clean = if new_path.starts_with('/') { &new_path[1..] } else { new_path };
+
+    if old_clean.starts_with("boot/") && new_clean.starts_with("boot/") {
+        let old_boot = &old_clean[5..];
+        let new_boot = &new_clean[5..];
+        if unsafe { FAT_FS.is_none() } {
+            init_fatfs();
+        }
+        if let Some(ref fs) = unsafe { &FAT_FS } {
+            if let Err(_) = fs.root_dir().rename(old_boot, &fs.root_dir(), new_boot) {
+                return -1;
+            }
+            return 0;
+        }
+        return Status::NotFound.to_raw() as i32;
+    }
+
+    ramfs::rename_node(old_clean, new_clean)
+}
+
 /// Initialize and mount FatFS over `"svc.blk"` to root namespace `/boot`.
 pub fn init_fatfs() {
     match BlkDevStream::new() {

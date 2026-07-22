@@ -413,3 +413,116 @@ pub fn create_file_path(path: &str) -> Option<i16> {
         create_file(parent_node, file_name)
     }
 }
+
+pub fn unlink_child(parent: i16, child: i16) -> bool {
+    unsafe {
+        if parent < 0 || parent as usize >= MAX_FILES || child < 0 || child as usize >= MAX_FILES {
+            return false;
+        }
+        let pu = parent as usize;
+        let cu = child as usize;
+        let mut prev = -1i16;
+        let mut cur = FIRST_CHILD[pu];
+        while cur >= 0 {
+            if cur == child {
+                if prev < 0 {
+                    FIRST_CHILD[pu] = NEXT_SIBLING[cu];
+                } else {
+                    NEXT_SIBLING[prev as usize] = NEXT_SIBLING[cu];
+                }
+                CHILD_COUNTS[pu] -= 1;
+                NEXT_SIBLING[cu] = -1;
+                PARENTS[cu] = -1;
+                return true;
+            }
+            prev = cur;
+            cur = NEXT_SIBLING[cur as usize];
+        }
+        false
+    }
+}
+
+pub fn link_child(parent: i16, child: i16) -> bool {
+    unsafe {
+        if parent < 0 || parent as usize >= MAX_FILES || child < 0 || child as usize >= MAX_FILES {
+            return false;
+        }
+        let pu = parent as usize;
+        let cu = child as usize;
+        PARENTS[cu] = parent;
+        NEXT_SIBLING[cu] = -1;
+        let first = FIRST_CHILD[pu];
+        if first < 0 {
+            FIRST_CHILD[pu] = child;
+        } else {
+            let mut cur = first;
+            loop {
+                let next = NEXT_SIBLING[cur as usize];
+                if next < 0 {
+                    NEXT_SIBLING[cur as usize] = child;
+                    break;
+                }
+                cur = next;
+            }
+        }
+        CHILD_COUNTS[pu] += 1;
+        true
+    }
+}
+
+pub fn rename_node(old_path: &str, new_path: &str) -> i32 {
+    unsafe {
+        let old_idx = match resolve(old_path) {
+            Some(idx) => idx,
+            None => return Status::NotFound.to_raw() as i32,
+        };
+
+        if old_idx == ROOT {
+            return Status::InvalidArgs.to_raw() as i32;
+        }
+
+        let clean_new = if new_path.starts_with('/') { &new_path[1..] } else { new_path };
+        if clean_new.is_empty() {
+            return Status::InvalidArgs.to_raw() as i32;
+        }
+
+        let mut dest_parent_node = ROOT;
+        let mut new_name = clean_new;
+
+        if let Some(slash_idx) = clean_new.rfind('/') {
+            let parent_path = &clean_new[..slash_idx];
+            new_name = &clean_new[slash_idx + 1..];
+            if let Some(p_idx) = resolve(parent_path) {
+                dest_parent_node = p_idx;
+            } else {
+                return Status::NotFound.to_raw() as i32;
+            }
+        }
+
+        if NTYPES[dest_parent_node as usize] != 2 {
+            return Status::WrongType.to_raw() as i32;
+        }
+
+        if find_child(dest_parent_node, new_name).is_some() {
+            return Status::AlreadyExists.to_raw() as i32;
+        }
+
+        let old_parent = PARENTS[old_idx as usize];
+        if old_parent >= 0 {
+            if !unlink_child(old_parent, old_idx) {
+                return Status::InvalidArgs.to_raw() as i32;
+            }
+        }
+
+        let name_len = new_name.len().min(MAX_NAME - 1);
+        NAMES[old_idx as usize] = [0u8; MAX_NAME];
+        NAMES[old_idx as usize][..name_len].copy_from_slice(&new_name.as_bytes()[..name_len]);
+        NAME_LENS[old_idx as usize] = name_len as u8;
+
+        if !link_child(dest_parent_node, old_idx) {
+            return Status::InvalidArgs.to_raw() as i32;
+        }
+
+        0
+    }
+}

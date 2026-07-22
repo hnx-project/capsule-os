@@ -315,3 +315,57 @@ pub fn test_exec_path_search() -> bool {
         ok
     }
 }
+
+pub fn test_vfs_rename_ramfs() -> bool {
+    let fd = posix_open("/tmp/rename_src");
+    if fd < 0 { return false; }
+    let _ = posix_write(fd, b"rename test data!");
+    posix_close(fd);
+
+    let ret = unsafe {
+        libc::rename(b"/tmp/rename_src\0".as_ptr(), b"/tmp/rename_dst\0".as_ptr())
+    };
+    if ret != 0 {
+        let _ = posix_unlink("/tmp/rename_src");
+        return false;
+    }
+
+    let (s_old, _) = posix_stat("/tmp/rename_src");
+    if s_old >= 0 {
+        let _ = posix_unlink("/tmp/rename_dst");
+        return false;
+    }
+
+    let (s_new, nt_new) = posix_stat("/tmp/rename_dst");
+    let ok = s_new == 17 && nt_new == 1;
+
+    posix_unlink("/tmp/rename_dst");
+    ok
+}
+
+pub fn test_vfs_rename_fatfs() -> bool {
+    let fd = posix_open("/boot/ren_s");
+    if fd < 0 { return false; }
+    let _ = posix_write(fd, b"fatfs rename data!");
+    posix_close(fd);
+
+    let ret = unsafe {
+        libc::rename(b"/boot/ren_s\0".as_ptr(), b"/boot/ren_d\0".as_ptr())
+    };
+    if ret != 0 {
+        let _ = posix_unlink("/boot/ren_s");
+        return false;
+    }
+
+    let (s_old, _) = posix_stat("/boot/ren_s");
+    if s_old >= 0 {
+        let _ = posix_unlink("/boot/ren_d");
+        return false;
+    }
+
+    let (s_new, nt_new) = posix_stat("/boot/ren_d");
+    let ok = s_new == 18 && nt_new == 1;
+
+    posix_unlink("/boot/ren_d");
+    ok
+}

@@ -840,6 +840,45 @@ pub extern "C" fn unlink(path: *const u8) -> i32 {
 }
 
 #[no_mangle]
+pub extern "C" fn rename(oldpath: *const u8, newpath: *const u8) -> i32 {
+    if oldpath.is_null() || newpath.is_null() {
+        return -1;
+    }
+
+    let mut normalised_old = [0u8; 128];
+    let len_old = match normalise_path(oldpath, &mut normalised_old) {
+        Ok(l) => l,
+        Err(_) => return -1,
+    };
+
+    let mut normalised_new = [0u8; 128];
+    let len_new = match normalise_path(newpath, &mut normalised_new) {
+        Ok(l) => l,
+        Err(_) => return -1,
+    };
+
+    let session_chan = match libcapsule::syscalls::channel_lookup("svc.vfs") {
+        Ok(ch) => ch,
+        Err(_) => return -1,
+    };
+
+    let mut cmd = [0u8; 148];
+    cmd[0] = 11; // VFS_RENAME
+
+    let copy_old = len_old.min(63);
+    cmd[20..20 + copy_old].copy_from_slice(&normalised_old[..copy_old]);
+    cmd[20 + copy_old] = 0;
+
+    let copy_new = len_new.min(63);
+    cmd[84..84 + copy_new].copy_from_slice(&normalised_new[..copy_new]);
+    cmd[84 + copy_new] = 0;
+
+    let result = send_vfs_cmd(session_chan, &cmd);
+    let _ = libcapsule::syscalls::close(session_chan);
+    result as i32
+}
+
+#[no_mangle]
 pub extern "C" fn stat(path: *const u8, buf: *mut stat) -> i32 {
     if path.is_null() || buf.is_null() {
         return -1;

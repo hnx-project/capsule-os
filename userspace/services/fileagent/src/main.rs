@@ -23,6 +23,24 @@ fn cmd_path(buf: &[u8]) -> &str {
     core::str::from_utf8(&buf[20..20 + end]).unwrap_or("")
 }
 
+fn cmd_path_old(buf: &[u8]) -> &str {
+    if buf.len() <= 20 {
+        return "";
+    }
+    let slice = if buf.len() > 84 { &buf[20..84] } else { &buf[20..] };
+    let end = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
+    core::str::from_utf8(&slice[..end]).unwrap_or("")
+}
+
+fn cmd_path_new(buf: &[u8]) -> &str {
+    if buf.len() <= 84 {
+        return "";
+    }
+    let slice = if buf.len() > 148 { &buf[84..148] } else { &buf[84..] };
+    let end = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
+    core::str::from_utf8(&slice[..end]).unwrap_or("")
+}
+
 fn cmd_arg32_1(buf: &[u8]) -> u32 {
     if buf.len() < 8 {
         return 0;
@@ -138,6 +156,13 @@ fn handle_cmd(session_idx: usize, session_chan: usize, buf: &[u8], _handles: &[u
             resp[..8].copy_from_slice(&(size as i64).to_le_bytes());
             resp[8..16].copy_from_slice(&(ntype as i64).to_le_bytes());
             let _ = syscalls::channel_write(session_chan, &resp, &[]);
+        }
+
+        VFS_RENAME => {
+            let old_path = cmd_path_old(buf);
+            let new_path = cmd_path_new(buf);
+            let result = vfs::do_rename(old_path, new_path);
+            write_response(session_chan, result as i64);
         }
 
         _ => {

@@ -87,6 +87,10 @@ pub fn main() -> i32 {
     // POSIX PATH (execv search path) tests
     t.run("exec_path_search", vfs::test_exec_path_search());
 
+    // POSIX rename tests
+    t.run("vfs_rename_ramfs", vfs::test_vfs_rename_ramfs());
+    t.run("vfs_rename_fatfs", vfs::test_vfs_rename_fatfs());
+
     if t.total > 0 {
         kprintln!("{}/{} passed", t.passed, t.total);
     } else {

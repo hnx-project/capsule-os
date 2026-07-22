@@ -8,6 +8,7 @@ pub const VFS_RMDIR: u8 = 7;
 pub const VFS_UNLINK: u8 = 8;
 pub const VFS_READDIR: u8 = 9;
 pub const VFS_STAT: u8 = 10;
+pub const VFS_RENAME: u8 = 11;
 
 pub const INLINE_DATA_MAX: usize = 128;
 
