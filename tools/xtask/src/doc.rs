@@ -320,6 +320,23 @@ fn serve_and_open_docs(doc_dir_str: &str) -> Result<(), String> {
 
                         // Percent decode URLs (e.g. "%20" to " ")
                         let decoded_path = url_decode(path_part_clean);
+
+                        // Check if the requested path maps to a directory on disk
+                        let disk_path = format!("{}{}", doc_dir_clone, decoded_path);
+                        let disk_path_obj = Path::new(&disk_path);
+                        if disk_path_obj.exists() && disk_path_obj.is_dir() {
+                            // Directory must have trailing slash so relative CSS/JS paths resolve correctly in the browser
+                            if !decoded_path.ends_with('/') {
+                                let redirect_url = format!("{}/", path_part_clean);
+                                let response = format!(
+                                    "HTTP/1.1 301 Moved Permanently\r\nLocation: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                                    redirect_url
+                                );
+                                let _ = stream.write_all(response.as_bytes());
+                                return;
+                            }
+                        }
+
                         let file_path_str = if decoded_path == "/" || decoded_path.ends_with('/') {
                             format!("{}{}index.html", doc_dir_clone, decoded_path)
                         } else {
