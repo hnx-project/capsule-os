@@ -70,6 +70,55 @@ fn main() {
 #[no_mangle]
 pub fn main() -> i32 {
     let env = env::capsule::CapsuleEnv;
-    env.write_stderr(b"ls: readdir not yet wired in this CapsuleOS build\n");
-    let _ = env.exit(1);
+    let mut opts = LsOptions::new();
+    let mut target_str = libstd::string::String::new();
+
+    let mut count = 0;
+    for arg in libstd::env::args() {
+        if count == 0 {
+            count += 1;
+            continue;
+        }
+        if arg.as_str().starts_with('-') {
+            for c in arg.as_str().chars().skip(1) {
+                match c {
+                    'a' => opts.all = true,
+                    'l' => opts.long = true,
+                    _ => {
+                        env.write_stderr(b"Unknown option: -");
+                        let mut char_buf = [0u8; 4];
+                        let s = c.encode_utf8(&mut char_buf);
+                        env.write_stderr(s.as_bytes());
+                        env.write_stderr(b"\n");
+                        let _ = env.exit(1);
+                    }
+                }
+            }
+        } else if target_str.len() == 0 {
+            target_str = arg;
+        }
+        count += 1;
+    }
+
+    let target_dir = if target_str.len() > 0 {
+        target_str.as_str()
+    } else {
+        "."
+    };
+
+    match ls::run_ls(&env, target_dir, &opts) {
+        Ok(_) => 0,
+        Err(env::FsError::DirectoryNotFound) => {
+            env.write_stderr(b"Error: Directory not found\n");
+            1
+        }
+        Err(env::FsError::PermissionDenied) => {
+            env.write_stderr(b"Error: Permission denied\n");
+            1
+        }
+        Err(_) => {
+            env.write_stderr(b"Error: Unknown FS Error\n");
+            1
+        }
+    }
 }

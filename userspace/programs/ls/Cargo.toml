@@ -14,3 +14,4 @@ path = "src/main.rs"
 
 [dependencies]
 libstd = { workspace = true }
+libc = { workspace = true }
