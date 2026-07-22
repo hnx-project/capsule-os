@@ -5,6 +5,11 @@ use crate::object::handle_table::KernelObject;
 use crate::object::rights::Rights;
 use crate::memory::vmo::Vmo;
 
+/// Default slot index in the spawned process's handle table where the
+/// kernel injects the BootFS VMO handle.  Mirrors the
+/// `BOOTFS_VMO_HANDLE = 100` constant used by every EL0 service.
+pub const DEFAULT_BOOTFS_HANDLE_SLOT: u32 = 100;
+
 /// Unified Service Launcher for early kernel-space boot stage.
 pub struct ServiceLauncher;
 
@@ -16,13 +21,25 @@ impl ServiceLauncher {
         // Launch the user process through the standard process loader
         let pid = Process::launch_user_program(desc.name, bytes)?;
 
-        // Handle bootstrap Capability hand-offs (like injecting BootFS VMO handle)
-        if let Some(handle_idx) = desc.bootstrap_vmo_handle_index {
-            let rootfs_vmo = unsafe { Vmo::create_physical(crate::BOOTFS_PHYS_ADDR, crate::BOOTFS_PHYS_SIZE)? };
-            if let Some(proc) = crate::task::process::find_process_mut(pid) {
-                let rights = Rights::READ.bits() | Rights::WRITE.bits();
-                let _ = proc.handle_table.add_raw_handle(handle_idx, KernelObject::Vmo(rootfs_vmo), rights);
-            }
+        // Inject the BootFS VMO into the spawned process's handle table
+        // so it can resolve further EL0 services via
+        // `libcapsule::ServiceLoader::new(100)`.  We honour
+        // `desc.bootstrap_vmo_handle_index` when set, falling back to
+        // the canonical slot 100 used by every EL0 service.  Without
+        // this injection the spawned service could not bootstrap any
+        // further descendants using the user-space ServiceLoader,
+        // since the kernel-level `ServiceLauncher` reads BootFS
+        // directly and never propagates a BootFS capability to the
+        // child.
+        let handle_idx = desc
+            .bootstrap_vmo_handle_index
+            .unwrap_or(DEFAULT_BOOTFS_HANDLE_SLOT);
+        let rootfs_vmo = unsafe {
+            Vmo::create_physical(crate::BOOTFS_PHYS_ADDR, crate::BOOTFS_PHYS_SIZE)?
+        };
+        if let Some(proc) = crate::task::process::find_process_mut(pid) {
+            let rights = Rights::READ.bits() | Rights::WRITE.bits();
+            let _ = proc.handle_table.add_raw_handle(handle_idx, KernelObject::Vmo(rootfs_vmo), rights);
         }
 
         // CANARY: check PID 1's L3 page is still intact after launch.

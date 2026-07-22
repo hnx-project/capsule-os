@@ -86,7 +86,10 @@ pub fn main() -> i32 {
         kprintln!("initd: [ERROR] channel_register failed: {:?}", e);
         return -2;
     }
-    kprintln!("initd: Registered global name 'svc.init' on channel {}", server_chan);
+    kprintln!(
+        "initd: Registered global name 'svc.init' on channel {}",
+        server_chan
+    );
 
     // 3. Keep track of service states and PIDs
     let mut states = [ServiceState::Pending; SERVICES.len()];
@@ -117,17 +120,28 @@ pub fn main() -> i32 {
                 }
 
                 if satisfied {
-                    kprintln!("initd: Dependency satisfied. Spawning '{}'...", SERVICES[i].name);
+                    kprintln!(
+                        "initd: Dependency satisfied. Spawning '{}'...",
+                        SERVICES[i].name
+                    );
                     if SERVICES[i].is_program {
                         match bootstrap_program.spawn_program(SERVICES[i].path) {
                             Ok(pid) => {
-                                kprintln!("initd: [SPAWN] Program '{}' launched with PID {}", SERVICES[i].name, pid);
+                                kprintln!(
+                                    "initd: [SPAWN] Program '{}' launched with PID {}",
+                                    SERVICES[i].name,
+                                    pid
+                                );
                                 pids[i] = pid as u64;
                                 states[i] = ServiceState::Running;
                                 progress = true;
                             }
                             Err(e) => {
-                                kprintln!("initd: [ERROR] Failed to spawn program '{}': {:?}", SERVICES[i].name, e);
+                                kprintln!(
+                                    "initd: [ERROR] Failed to spawn program '{}': {:?}",
+                                    SERVICES[i].name,
+                                    e
+                                );
                             }
                         }
                     } else {
@@ -139,7 +153,11 @@ pub fn main() -> i32 {
                                 progress = true;
                             }
                             Err(e) => {
-                                kprintln!("initd: [ERROR] Failed to spawn service '{}': {:?}", SERVICES[i].name, e);
+                                kprintln!(
+                                    "initd: [ERROR] Failed to spawn service '{}': {:?}",
+                                    SERVICES[i].name,
+                                    e
+                                );
                             }
                         }
                     }
@@ -173,23 +191,34 @@ pub fn main() -> i32 {
                     let mut cmd_buf = [0u8; 148];
                     let mut cmd_handles = [0u32; 2];
 
-                    if let Ok(n) = syscalls::channel_read(session_chan, &mut cmd_buf, &mut cmd_handles) {
+                    if let Ok(n) =
+                        syscalls::channel_read(session_chan, &mut cmd_buf, &mut cmd_handles)
+                    {
                         if n >= 20 {
                             let cmd = cmd_buf[0];
-                            if cmd == 1 { // INIT_CMD_READY
+                            if cmd == 1 {
+                                // INIT_CMD_READY
                                 let mut len_bytes = [0u8; 4];
                                 len_bytes.copy_from_slice(&cmd_buf[4..8]);
                                 let len = (u32::from_le_bytes(len_bytes) as usize).min(128);
 
-                                if let Ok(service_name) = core::str::from_utf8(&cmd_buf[20..20 + len]) {
+                                if let Ok(service_name) =
+                                    core::str::from_utf8(&cmd_buf[20..20 + len])
+                                {
                                     let name = service_name.trim();
-                                    kprintln!("initd: Received INIT_CMD_READY handshake from '{}'", name);
+                                    kprintln!(
+                                        "initd: Received INIT_CMD_READY handshake from '{}'",
+                                        name
+                                    );
 
                                     // Match name and promote state
                                     for i in 0..SERVICES.len() {
                                         if SERVICES[i].name == name {
                                             states[i] = ServiceState::Running;
-                                            kprintln!("initd: Service '{}' promoted to RUNNING state", name);
+                                            kprintln!(
+                                                "initd: Service '{}' promoted to RUNNING state",
+                                                name
+                                            );
                                             break;
                                         }
                                     }
@@ -230,15 +259,20 @@ pub fn main() -> i32 {
             if let Some(idx) = found_idx {
                 let s_name = SERVICES[idx].name;
                 if SERVICES[idx].is_program {
-                    kprintln!("initd: [INFO] Program '{}' (PID {}) has completed. Exit code: {}.", s_name, reaped_pid, exit_status);
+                    kprintln!(
+                        "initd: [INFO] Program '{}' (PID {}) has completed. Exit code: {}.",
+                        s_name,
+                        reaped_pid,
+                        exit_status
+                    );
                 } else {
                     kprintln!("initd: [1;31m[CRASH] Service '{}' (PID {}) has terminated with exit code {}![0m", s_name, reaped_pid, exit_status);
                     kprintln!("initd: [1;32m[AUTO-HEALING] Resetting dependency graph to restart '{}'...[0m", s_name);
-                    
+
                     // Reset service state and PID to trigger automatic DAG-based re-spawning
                     states[idx] = ServiceState::Pending;
                     pids[idx] = 0;
-                    
+
                     // If fileagent crashed, we must also reset its downstream program (testall)
                     // so that the test suite is safely re-executed once the FS is rebuilt.
                     for j in 0..SERVICES.len() {

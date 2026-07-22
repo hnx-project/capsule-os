@@ -514,6 +514,28 @@ pub fn sys_load_binary(
 
     let pid = crate::task::process::Process::launch_user_program(name_static, bytes_slice)?;
 
+    // Inject the BootFS VMO into the new process's handle table at the
+    // canonical slot 100 used by every EL0 service.  This lets the
+    // spawned program use `libcapsule::ServiceLoader::new(100)` to
+    // resolve further EL0 services the same way every other service
+    // does.  Without this the child has no way to read the HNXF_VFS
+    // archive and cannot bootstrap any descendants.
+    let rootfs_vmo = unsafe {
+        crate::memory::vmo::Vmo::create_physical(
+            crate::BOOTFS_PHYS_ADDR,
+            crate::BOOTFS_PHYS_SIZE,
+        )?
+    };
+    if let Some(proc) = crate::task::process::find_process_mut(pid) {
+        let rights = crate::object::rights::Rights::READ.bits()
+            | crate::object::rights::Rights::WRITE.bits();
+        let _ = proc.handle_table.add_raw_handle(
+            crate::loader::DEFAULT_BOOTFS_HANDLE_SLOT,
+            crate::object::handle_table::KernelObject::Vmo(rootfs_vmo),
+            rights,
+        );
+    }
+
     // Hand the caller a Process handle so it can later close, wait, etc.
     let rights = Rights::READ.bits() | Rights::WRITE.bits();
     let _ = table.add(KernelObject::Process(pid), rights);
