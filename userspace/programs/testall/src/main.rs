@@ -84,6 +84,9 @@ pub fn main() -> i32 {
     t.run("proc_connect", proc::test_proc_connect());
     t.run("proc_create_invalid", proc::test_proc_create_invalid());
 
+    // POSIX PATH (execv search path) tests
+    t.run("exec_path_search", vfs::test_exec_path_search());
+
     if t.total > 0 {
         kprintln!("{}/{} passed", t.passed, t.total);
     } else {

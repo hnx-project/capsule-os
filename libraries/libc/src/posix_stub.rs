@@ -17,6 +17,7 @@ pub extern "C" fn fork() -> i32 {
 }
 
 #[no_mangle]
+#[no_mangle]
 pub extern "C" fn execv(path: *const u8, argv: *const *const u8) -> i32 {
     if path.is_null() {
         return set_errno_and_fail(2); // ENOENT (No such file)
@@ -35,22 +36,61 @@ pub extern "C" fn execv(path: *const u8, argv: *const *const u8) -> i32 {
         Err(_) => return set_errno_and_fail(22), // EINVAL
     };
 
-    // 2. Open the file to verify it exists and read it
-    let fd = crate::open(path, 0, 0);
-    if fd < 0 {
-        return set_errno_and_fail(2); // ENOENT (No such file)
+    // 2. Locate the file and get its size using stat (to avoid concurrent session deadlock on fileagent)
+    let mut fd = -1;
+    let mut winner_path = [0u8; 128];
+    let mut winner_len = 0;
+    let mut st = core::mem::MaybeUninit::<crate::stat>::uninit();
+    let mut found = false;
+
+    let has_slash = path_str.contains('/');
+    if !has_slash {
+        let search_dirs = &["/boot/system/bin", "/system/bin", "/bin", "/boot"];
+        for dir in search_dirs {
+            let mut candidate = [0u8; 128];
+            let dir_bytes = dir.as_bytes();
+            let d_len = dir_bytes.len();
+            let p_len = path_str.len();
+            if d_len + 1 + p_len >= 128 {
+                continue;
+            }
+            candidate[..d_len].copy_from_slice(dir_bytes);
+            candidate[d_len] = b'/';
+            candidate[d_len + 1..d_len + 1 + p_len].copy_from_slice(path_str.as_bytes());
+            candidate[d_len + 1 + p_len] = 0;
+
+            if crate::stat(candidate.as_ptr(), st.as_mut_ptr()) == 0 {
+                winner_path[..d_len + 1 + p_len].copy_from_slice(&candidate[..d_len + 1 + p_len]);
+                winner_path[d_len + 1 + p_len] = 0;
+                winner_len = d_len + 1 + p_len;
+                found = true;
+                break;
+            }
+        }
     }
 
-    let mut st = core::mem::MaybeUninit::<crate::stat>::uninit();
-    if crate::stat(path, st.as_mut_ptr()) < 0 {
-        let _ = crate::close(fd);
+    if !found {
+        if crate::stat(path, st.as_mut_ptr()) == 0 {
+            winner_path[..path_len].copy_from_slice(path_slice);
+            winner_path[path_len] = 0;
+            winner_len = path_len;
+            found = true;
+        }
+    }
+
+    if !found {
         return set_errno_and_fail(2); // ENOENT
     }
+
     let st = unsafe { st.assume_init() };
     let size = st.st_size as usize;
     if size == 0 {
-        let _ = crate::close(fd);
         return set_errno_and_fail(22); // EINVAL
+    }
+
+    fd = crate::open(winner_path.as_ptr(), 0, 0);
+    if fd < 0 {
+        return set_errno_and_fail(2); // ENOENT (No such file)
     }
 
     // Create a binary VMO capability

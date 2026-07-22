@@ -870,11 +870,15 @@ pub extern "C" fn stat(path: *const u8, buf: *mut stat) -> i32 {
         Ok(n) if n >= 16 => {
             let size = i64::from_le_bytes(resp[..8].try_into().unwrap());
             let ntype = i64::from_le_bytes(resp[8..16].try_into().unwrap());
-            unsafe {
-                (*buf).st_size = size;
-                (*buf).st_mode = if ntype == 2 { 0x4000 } else if ntype == 1 { 0x8000 } else { 0 };
+            if size < 0 {
+                -1
+            } else {
+                unsafe {
+                    (*buf).st_size = size;
+                    (*buf).st_mode = if ntype == 2 { 0x4000 } else if ntype == 1 { 0x8000 } else { 0 };
+                }
+                0
             }
-            0
         }
         _ => -1,
     };

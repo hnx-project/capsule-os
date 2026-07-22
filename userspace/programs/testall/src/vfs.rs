@@ -284,3 +284,34 @@ pub fn test_cwd_relative() -> bool {
 
     libc::chdir("/").is_ok()
 }
+
+static mut ARGS_DATA: [[u8; 256]; 16] = [[b'A'; 256]; 16];
+static mut ARGV_PTRS: [*const u8; 17] = [core::ptr::null(); 17];
+
+pub fn test_exec_path_search() -> bool {
+    // 1. Create a single-level dummy file at /boot/mk_bin so PATH search finds it
+    let fd = posix_open("/boot/mk_bin");
+    if fd < 0 {
+        return false;
+    }
+    let _ = posix_write(fd, b"DUMMY OHLINK BYTES FOR TESTING PATH SEARCH RESOLUTION");
+    let _ = posix_close(fd);
+
+    unsafe {
+        for i in 0..16 {
+            ARGS_DATA[i][255] = 0;
+            ARGV_PTRS[i] = ARGS_DATA[i].as_ptr();
+        }
+        ARGV_PTRS[16] = core::ptr::null();
+
+        libc::errno = 0;
+        let _ = libc::execv(b"mk_bin\0".as_ptr(), ARGV_PTRS.as_ptr());
+
+        let ok = libc::errno == 7;
+
+        // Cleanup
+        let _ = posix_unlink("/boot/mk_bin");
+
+        ok
+    }
+}
