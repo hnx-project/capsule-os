@@ -91,8 +91,8 @@ fn main() {
                     std::process::exit(1);
                 }
             }
-            CodeSubcommands::Doc => {
-                if let Err(e) = doc::generate_doc(&config) {
+            CodeSubcommands::Doc { open } => {
+                if let Err(e) = doc::generate_doc(*open, &config) {
                     eprintln!("Document generation failed: {}", e);
                     std::process::exit(1);
                 }

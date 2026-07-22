@@ -76,5 +76,11 @@ pub enum CodeSubcommands {
     #[command(
         about = "Generate unified and consolidated rust-doc website for all layers"
     )]
-    Doc,
+    Doc {
+        #[arg(
+            long,
+            help = "Automatically start a local server and open the documentation portal in your browser"
+        )]
+        open: bool,
+    },
 }

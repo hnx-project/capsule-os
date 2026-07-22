@@ -1,9 +1,12 @@
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::net::TcpListener;
+use std::io::{Read, Write};
+use std::thread;
 use crate::config::Config;
 
-pub fn generate_doc(_config: &Config) -> Result<(), String> {
+pub fn generate_doc(open: bool, _config: &Config) -> Result<(), String> {
     println!("\x1b[1;36m🏗️  Generating CapsuleOS Unified API Documentation...\x1b[0m");
 
     // 1. Clean and initialize build/dist/docs directory
@@ -276,7 +279,115 @@ pub fn generate_doc(_config: &Config) -> Result<(), String> {
         .map_err(|e| format!("Failed to write index.html landing page: {}", e))?;
 
     println!("🎉 \x1b[1;32mUnified rust-doc website compiled successfully at: {}/\x1b[0m", docs_dist_dir);
+
+    if open {
+        serve_and_open_docs(docs_dist_dir)?;
+    }
+
     Ok(())
+}
+
+fn serve_and_open_docs(doc_dir_str: &str) -> Result<(), String> {
+    // 1. Bind to a random OS-assigned available local TCP port
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| format!("Failed to bind local HTTP server port: {}", e))?;
+    let port = listener.local_addr().unwrap().port();
+    let url = format!("http://127.0.0.1:{}", port);
+
+    println!("\x1b[1;34m🚀 Starting zero-dependency HTTP server on {}...\x1b[0m", url);
+    println!("\x1b[1;33m💡 Server is hosting local files. Press Ctrl+C in your terminal to exit.\x1b[0m");
+
+    let doc_dir = doc_dir_str.to_string();
+    // 2. Spawn multi-threaded file-serving HTTP handler
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            if let Ok(mut stream) = stream {
+                let doc_dir_clone = doc_dir.clone();
+                thread::spawn(move || {
+                    let mut buffer = [0; 4096];
+                    if let Ok(size) = stream.read(&mut buffer) {
+                        let req = String::from_utf8_lossy(&buffer[..size]);
+                        let mut path_part = "/";
+                        if let Some(first_line) = req.lines().next() {
+                            let parts: Vec<&str> = first_line.split_whitespace().collect();
+                            if parts.len() >= 2 {
+                                path_part = parts[1];
+                            }
+                        }
+
+                        // Remove query parameters or fragments if any
+                        let path_part_clean = path_part.split('?').next().unwrap_or(path_part).split('#').next().unwrap_or(path_part);
+
+                        // Percent decode URLs (e.g. "%20" to " ")
+                        let decoded_path = url_decode(path_part_clean);
+                        let file_path_str = if decoded_path == "/" || decoded_path.ends_with('/') {
+                            format!("{}{}index.html", doc_dir_clone, decoded_path)
+                        } else {
+                            format!("{}{}", doc_dir_clone, decoded_path)
+                        };
+
+                        let path = Path::new(&file_path_str);
+                        if path.exists() && path.is_file() {
+                            if let Ok(content) = fs::read(path) {
+                                let mime = if file_path_str.ends_with(".html") { "text/html" }
+                                    else if file_path_str.ends_with(".css") { "text/css" }
+                                    else if file_path_str.ends_with(".js") { "application/javascript" }
+                                    else if file_path_str.ends_with(".png") { "image/png" }
+                                    else if file_path_str.ends_with(".svg") { "image/svg+xml" }
+                                    else if file_path_str.ends_with(".woff") { "font/woff" }
+                                    else if file_path_str.ends_with(".woff2") { "font/woff2" }
+                                    else { "application/octet-stream" };
+
+                                let response = format!(
+                                    "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                    mime, content.len()
+                                );
+                                let _ = stream.write_all(response.as_bytes());
+                                let _ = stream.write_all(&content);
+                            }
+                        } else {
+                            let response = "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
+                            let _ = stream.write_all(response.as_bytes());
+                        }
+                    }
+                });
+            }
+        }
+    });
+
+    // 3. Open platform default browser on macOS, Linux, or Windows
+    println!("\x1b[1;36m🌐 Launching default web browser...\x1b[0m");
+    #[cfg(target_os = "macos")]
+    let _ = Command::new("open").arg(&url).status();
+
+    #[cfg(target_os = "linux")]
+    let _ = Command::new("xdg-open").arg(&url).status();
+
+    #[cfg(target_os = "windows")]
+    let _ = Command::new("cmd").args(["/C", "start", &url]).status();
+
+    // 4. Block on the main thread so the server doesn't shut down immediately
+    loop {
+        thread::sleep(std::time::Duration::from_secs(60));
+    }
+}
+
+fn url_decode(s: &str) -> String {
+    let mut res = Vec::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(val) = u8::from_str_radix(&s[i+1..i+3], 16) {
+                res.push(val);
+                i += 3;
+                continue;
+            }
+        }
+        res.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&res).into_owned()
 }
 
 fn find_and_copy_doc(paths: &[&str], dest: &str) -> Result<(), String> {
