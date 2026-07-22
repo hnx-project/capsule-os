@@ -33,6 +33,7 @@ pub fn main() -> i32 {
         return -2;
     }
     kprintln!("tty: [SUCCESS] registered service as 'svc.tty'");
+    let _ = libcapsule::notify_init("tty");
 
     let mut conn_buf = [0u8; 64];
     let mut conn_handles = [0u32; 2];

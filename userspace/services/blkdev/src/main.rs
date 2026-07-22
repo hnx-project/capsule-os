@@ -32,6 +32,7 @@ pub fn main() -> i32 {
         return -2;
     }
     kprintln!("blkdev: registered svc.blk");
+    let _ = libcapsule::notify_init("blkdev");
 
     let mut conn_buf = [0u8; 64];
     let mut conn_handles = [0u32; 2];

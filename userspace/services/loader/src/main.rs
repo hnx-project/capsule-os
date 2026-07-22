@@ -14,53 +14,19 @@ pub fn main() -> i32 {
     kprintln!("Loader: {} Active", option_env!("CAPSULEOS_VERSION").unwrap_or("capsuleOS Pangu v1.0.0 (dev)"));
     kprintln!("====================================================");
 
-    // 1. Instantiating the stateless BootFS ServiceLoader and ProgramLoader
-    let bootstrap_service = libcapsule::ServiceLoader::new(BOOTFS_VMO_HANDLE);
-    let bootstrap_program = libcapsule::ProgramLoader::new(BOOTFS_VMO_HANDLE);
-
-    // 2. Spawn 'fileagent' (VFS Agent) from BootFS
-    kprintln!("Loader: Spawning 'fileagent' service...");
-    match bootstrap_service.spawn_service("fileagent") {
-        Ok(handle) => kprintln!("Loader: [SUCCESS] 'fileagent' spawned, handle={}", handle),
-        Err(e) => kprintln!("Loader: [ERROR] Failed to spawn 'fileagent': {:?}", e),
+    // 1. Spawn 'initd' (Service Manager) from BootFS with BootFS VMO handle hand-off
+    kprintln!("Loader: Spawning 'initd' service manager via ServiceLauncher...");
+    let desc = shared::launcher::ServiceDescriptor {
+        name: "initd",
+        path: "system/bin/initd",
+        bootstrap_vmo_handle_index: Some(100),
+    };
+    match libcapsule::syscalls::service_spawn(&desc) {
+        Ok(pid) => kprintln!("Loader: [SUCCESS] 'initd' spawned, PID={}", pid),
+        Err(e) => kprintln!("Loader: [ERROR] Failed to spawn 'initd': {:?}", e),
     }
 
-    // 2b. Spawn 'devmgr' (Device Manager)
-    kprintln!("Loader: Spawning 'devmgr' service...");
-    match bootstrap_service.spawn_service("devmgr") {
-        Ok(handle) => kprintln!("Loader: [SUCCESS] 'devmgr' spawned, handle={}", handle),
-        Err(e) => kprintln!("Loader: [ERROR] Failed to spawn 'devmgr': {:?}", e),
-    }
-
-    // 2c. Spawn 'blkdev' (Block Device Manager)
-    kprintln!("Loader: Spawning 'blkdev' service...");
-    match bootstrap_service.spawn_service("blkdev") {
-        Ok(handle) => kprintln!("Loader: [SUCCESS] 'blkdev' spawned, handle={}", handle),
-        Err(e) => kprintln!("Loader: [ERROR] Failed to spawn 'blkdev': {:?}", e),
-    }
-
-    // 2d. Spawn 'procmgr' (Process Manager)
-    kprintln!("Loader: Spawning 'procmgr' service...");
-    match bootstrap_service.spawn_service("procmgr") {
-        Ok(handle) => kprintln!("Loader: [SUCCESS] 'procmgr' spawned, handle={}", handle),
-        Err(e) => kprintln!("Loader: [ERROR] Failed to spawn 'procmgr': {:?}", e),
-    }
-
-    // 2e. Spawn 'tty' (Terminal & TTY Console Service)
-    kprintln!("Loader: Spawning 'tty' service...");
-    match bootstrap_service.spawn_service("tty") {
-        Ok(handle) => kprintln!("Loader: [SUCCESS] 'tty' spawned, handle={}", handle),
-        Err(e) => kprintln!("Loader: [ERROR] Failed to spawn 'tty': {:?}", e),
-    }
-
-    // 3. Spawn 'testall' (VFS Test Suite)
-    kprintln!("Loader: Spawning 'testall'...");
-    match bootstrap_program.spawn_program("testall") {
-        Ok(handle) => kprintln!("Loader: [SUCCESS] 'testall' spawned, handle={}", handle),
-        Err(e) => kprintln!("Loader: [ERROR] Failed to spawn 'testall': {:?}", e),
-    }
-
-    kprintln!("Loader: Userboot bootstrap complete.");
+    kprintln!("Loader: Bootloader bootstrap hand-off to initd complete.");
     kprintln!("====================================================");
 
     // 4. Fallback yield loop to let other spawned services execute

@@ -123,3 +123,19 @@ impl ServiceManager {
         crate::syscalls::channel_lookup(name)
     }
 }
+
+/// Notify the Init Service (initd) that this service has finished initialization
+/// and is ready to accept client connections.
+pub fn notify_init(service_name: &str) -> Result<()> {
+    if let Ok(init_chan) = crate::syscalls::channel_lookup("svc.init") {
+        let mut msg = [0u8; 148];
+        msg[0] = 1; // INIT_CMD_READY
+        let name_bytes = service_name.as_bytes();
+        let len = name_bytes.len().min(128);
+        msg[4..8].copy_from_slice(&(len as u32).to_le_bytes());
+        msg[20..20 + len].copy_from_slice(&name_bytes[..len]);
+        let _ = crate::syscalls::channel_write(init_chan, &msg, &[]);
+        let _ = crate::syscalls::close(init_chan);
+    }
+    Ok(())
+}

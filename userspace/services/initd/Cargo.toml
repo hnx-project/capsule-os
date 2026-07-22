@@ -1,0 +1,15 @@
+[package]
+name = "hnx-initd"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "initd"
+path = "src/main.rs"
+
+[dependencies]
+libcapsule = { path = "../../../libraries/libcapsule", package = "libcapsule", features = ["runtime"] }
+shared = { path = "../../../kernel/shared" }
+
+[features]
+capsule = []

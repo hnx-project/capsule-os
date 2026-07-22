@@ -198,6 +198,7 @@ pub fn main() -> i32 {
         return -2;
     }
     kprintln!("fileagent: registered svc.vfs");
+    let _ = libcapsule::notify_init("fileagent");
 
     let mut conn_buf = [0u8; 64];
     let mut conn_handles = [0u32; 2];

@@ -26,7 +26,7 @@ pub mod path;
 pub mod runtime;
 
 pub use channel::Channel;
-pub use service::{ServiceLoader, ServiceManager};
+pub use service::{ServiceLoader, ServiceManager, notify_init};
 pub use program::ProgramLoader;
 pub use fd::{USER_FD_TABLE, FdEntry, FdType, FdManager};
 pub use path::normalise_path;

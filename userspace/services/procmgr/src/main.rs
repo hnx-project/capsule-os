@@ -83,6 +83,7 @@ pub fn main() -> i32 {
     }
 
     kprintln!("procmgr: registered svc.procmgr, entering event loop");
+    let _ = libcapsule::notify_init("procmgr");
 
     let mut conn_buf = [0u8; 64];
     let mut conn_handles = [0u32; 2];

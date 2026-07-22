@@ -255,6 +255,8 @@ pub fn main() -> i32 {
         }
     }
 
+    let _ = libcapsule::notify_init("devmgr");
+
     let mut conn_buf = [0u8; 64];
     let mut conn_handles = [0u32; 2];
 
