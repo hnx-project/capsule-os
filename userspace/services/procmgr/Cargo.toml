@@ -8,9 +8,9 @@ name = "procmgr"
 path = "src/main.rs"
 
 [dependencies]
-libstd = { path = "../../../libraries/libstd", package = "libstd" }
+capsule_runtime = { path = "../../../libraries/capsule_runtime" }
 libcapsule = { path = "../../../libraries/libcapsule", package = "libcapsule" }
-libc = { path = "../../../libraries/libc", package = "libc" }
+shared = { path = "../../../kernel/shared" }
 
 [features]
 capsule = []

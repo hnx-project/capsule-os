@@ -369,6 +369,16 @@ pub struct stat {
     pub st_mode: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct Dirent {
+    pub ino: u64,
+    pub size: u64,
+    pub ftype: u8,
+    pub name_len: u8,
+    pub name: [u8; 110],
+}
+
 fn send_vfs_cmd(ch: usize, cmd: &[u8]) -> i64 {
     if let Err(_) = libcapsule::syscalls::channel_write(ch, cmd, &[]) {
         return -1;

@@ -1,18 +1,11 @@
 #![no_std]
 #![no_main]
 
-extern crate libstd;
+extern crate capsule_runtime;
+extern crate libcapsule;
 
-use libcapsule::syscalls::{self, PROC_MGMT_CREATE, PROC_MGMT_EXIT, PROC_MGMT_RELEASE_PT};
-
-fn print(s: &str) {
-    let _ = libc::write(1, s.as_ptr(), s.len());
-}
-
-fn println(s: &str) {
-    print(s);
-    print("\n");
-}
+use libcapsule::{kprintln, syscalls};
+use libcapsule::syscalls::{PROC_MGMT_CREATE, PROC_MGMT_EXIT, PROC_MGMT_RELEASE_PT};
 
 #[repr(C)]
 struct ProcEntry {
@@ -74,29 +67,29 @@ fn remove_entry(pid: u64) {
 
 #[no_mangle]
 pub fn main() -> i32 {
-    println("procmgr: CapsuleOS process manager starting...");
+    kprintln!("procmgr: CapsuleOS process manager starting...");
 
     let server_chan = match syscalls::channel_create() {
         Ok(ch) => ch,
         Err(_) => {
-            println("procmgr: failed to create channel");
+            kprintln!("procmgr: failed to create channel");
             return -1;
         }
     };
 
     if let Err(_) = syscalls::channel_register("svc.procmgr", server_chan) {
-        println("procmgr: failed to register svc.procmgr");
+        kprintln!("procmgr: failed to register svc.procmgr");
         return -2;
     }
 
-    println("procmgr: registered svc.procmgr, entering event loop");
+    kprintln!("procmgr: registered svc.procmgr, entering event loop");
 
     loop {
         let mut buf = [0u8; 256];
         let mut handles = [0u32; 4];
 
-        match syscalls::channel_read(server_chan, &mut buf, &mut handles) {
-            Ok(n) if n > 0 => {
+        if let Ok(n) = syscalls::channel_read(server_chan, &mut buf, &mut handles) {
+            if n > 0 {
                 let cmd = buf[0];
                 match cmd {
                     0 => {
@@ -152,9 +145,6 @@ pub fn main() -> i32 {
                     }
                     _ => {}
                 }
-            }
-            _ => {
-                let _ = syscalls::yield_cpu();
             }
         }
     }

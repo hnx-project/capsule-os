@@ -109,11 +109,19 @@ pub fn test_mkdir_dup() -> bool {
 pub fn test_readdir() -> bool {
     let mut buf = [0u8; 128];
     let size = posix_readdir("/tmp", &mut buf);
-    if size <= 0 {
+    if size != 128 {
         return false;
     }
-    let s = core::str::from_utf8(&buf[..size as usize]).unwrap_or("");
-    s.contains("a")
+    let dirent = unsafe { &*(buf.as_ptr() as *const libc::Dirent) };
+    if dirent.ftype != 2 {
+        return false;
+    }
+    let name_len = dirent.name_len as usize;
+    if name_len == 0 || name_len > 110 {
+        return false;
+    }
+    let name_str = core::str::from_utf8(&dirent.name[..name_len]).unwrap_or("");
+    name_str == "a"
 }
 
 pub fn test_rmdir() -> bool {

@@ -662,13 +662,19 @@ pub fn do_readdir(session_idx: usize, fd: u32, buf: &mut [u8]) -> i32 {
         if node_idx < -1 {
             return 0; // Return empty for FatFS directories since testall doesn't read /boot dir
         }
-        let result = ramfs::readdir_names(node_idx, buf);
-        if result > 0 {
-            if let Some(ref mut of_mut) = sess.fds[fd as usize] {
-                of_mut.offset += result as u32;
+        let offset = of.offset as usize;
+        match ramfs::readdir_entry(node_idx, offset) {
+            Some(dirent) => {
+                let bytes = core::slice::from_raw_parts(&dirent as *const ramfs::Dirent as *const u8, 128);
+                let copy_len = bytes.len().min(buf.len());
+                buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
+                if let Some(ref mut of_mut) = sess.fds[fd as usize] {
+                    of_mut.offset += 1;
+                }
+                copy_len as i32
             }
+            None => 0,
         }
-        result
     }
 }
 
