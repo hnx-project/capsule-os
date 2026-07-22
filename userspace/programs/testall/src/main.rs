@@ -6,6 +6,7 @@ extern crate libcapsule;
 
 mod dev;
 mod vfs;
+mod proc;
 
 use libcapsule::kprintln;
 
@@ -74,6 +75,10 @@ pub fn main() -> i32 {
     t.run("dev_open_nonexist2", vfs::test_dev_open_nonexist());
     t.run("dev_read_pl011", vfs::test_dev_read_pl011());
     t.run("dev_write_pl011", vfs::test_dev_write_pl011());
+
+    // procmgr process management tests (direct svc.procmgr IPC)
+    t.run("proc_connect", proc::test_proc_connect());
+    t.run("proc_create_invalid", proc::test_proc_create_invalid());
 
     if t.total > 0 {
         kprintln!("{}/{} passed", t.passed, t.total);

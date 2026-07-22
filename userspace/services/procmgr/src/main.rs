@@ -6,6 +6,7 @@ extern crate libcapsule;
 
 use libcapsule::{kprintln, syscalls};
 use libcapsule::syscalls::{PROC_MGMT_CREATE, PROC_MGMT_EXIT, PROC_MGMT_RELEASE_PT};
+use shared::status::Status;
 
 #[repr(C)]
 struct ProcEntry {
@@ -84,66 +85,81 @@ pub fn main() -> i32 {
 
     kprintln!("procmgr: registered svc.procmgr, entering event loop");
 
-    loop {
-        let mut buf = [0u8; 256];
-        let mut handles = [0u32; 4];
+    let mut conn_buf = [0u8; 64];
+    let mut conn_handles = [0u32; 2];
 
-        if let Ok(n) = syscalls::channel_read(server_chan, &mut buf, &mut handles) {
-            if n > 0 {
-                let cmd = buf[0];
-                match cmd {
-                    0 => {
-                        if n >= 17 {
-                            let ppid = u64::from_le_bytes(buf[1..9].try_into().unwrap_or([0; 8]));
-                            let l0_pa = u64::from_le_bytes(buf[9..17].try_into().unwrap_or([0; 8]));
-                            let name_len = (n - 17).min(31);
-                            let name = core::str::from_utf8(&buf[17..17 + name_len]).unwrap_or("");
-                            match syscalls::proc_mgmt(
-                                PROC_MGMT_CREATE,
-                                ppid as usize,
-                                0,
-                                l0_pa as usize,
-                            ) {
-                                Ok(pid) => {
-                                    add_entry(pid as u64, ppid, l0_pa, name);
-                                    if handles.len() > 0 && handles[0] != 0 {
-                                        let resp = pid.to_le_bytes();
-                                        let _ = syscalls::channel_write(
-                                            handles[0] as usize,
-                                            &resp,
-                                            &[],
-                                        );
+    loop {
+        if let Ok(_) = syscalls::channel_read(server_chan, &mut conn_buf, &mut conn_handles) {
+            if conn_handles[0] != 0 {
+                let session_chan = conn_handles[0] as usize;
+
+                loop {
+                    let mut buf = [0u8; 256];
+                    let mut handles = [0u32; 4];
+                    match syscalls::channel_read(session_chan, &mut buf, &mut handles) {
+                        Ok(n) if n > 0 => {
+                            let cmd = buf[0];
+                            match cmd {
+                                0 => {
+                                    if n >= 17 {
+                                        let ppid = u64::from_le_bytes(buf[1..9].try_into().unwrap_or([0; 8]));
+                                        let l0_pa = u64::from_le_bytes(buf[9..17].try_into().unwrap_or([0; 8]));
+                                        let name_len = (n - 17).min(31);
+                                        let name = core::str::from_utf8(&buf[17..17 + name_len]).unwrap_or("");
+                                        match syscalls::proc_mgmt(
+                                            PROC_MGMT_CREATE,
+                                            ppid as usize,
+                                            0,
+                                            l0_pa as usize,
+                                        ) {
+                                            Ok(pid) => {
+                                                add_entry(pid as u64, ppid, l0_pa, name);
+                                                if handles.len() > 0 && handles[0] != 0 {
+                                                    let resp = pid.to_le_bytes();
+                                                    let _ = syscalls::channel_write(
+                                                        handles[0] as usize,
+                                                        &resp,
+                                                        &[],
+                                                    );
+                                                }
+                                            }
+                                            Err(e) => {
+                                                if handles.len() > 0 && handles[0] != 0 {
+                                                    let resp = (e.to_raw() as u64).to_le_bytes();
+                                                    let _ = syscalls::channel_write(
+                                                        handles[0] as usize,
+                                                        &resp,
+                                                        &[],
+                                                    );
+                                                }
+                                            }
+                                        }
                                     }
                                 }
-                                Err(e) => {
-                                    if handles.len() > 0 && handles[0] != 0 {
-                                        let resp = (e.to_raw() as u64).to_le_bytes();
-                                        let _ = syscalls::channel_write(
-                                            handles[0] as usize,
-                                            &resp,
-                                            &[],
-                                        );
+                                1 => {
+                                    if n >= 9 {
+                                        let pid = u64::from_le_bytes(buf[1..9].try_into().unwrap_or([0; 8]));
+                                        mark_zombie(pid);
+                                        let _ = syscalls::proc_mgmt(PROC_MGMT_EXIT, pid as usize, 0, 0);
                                     }
                                 }
+                                2 => {
+                                    if n >= 17 {
+                                        let pid = u64::from_le_bytes(buf[1..9].try_into().unwrap_or([0; 8]));
+                                        let l0_pa = u64::from_le_bytes(buf[9..17].try_into().unwrap_or([0; 8]));
+                                        remove_entry(pid);
+                                        let _ = syscalls::proc_mgmt(PROC_MGMT_RELEASE_PT, l0_pa as usize, 0, 0);
+                                    }
+                                }
+                                _ => {}
                             }
                         }
-                    }
-                    1 => {
-                        if n >= 9 {
-                            let pid = u64::from_le_bytes(buf[1..9].try_into().unwrap_or([0; 8]));
-                            mark_zombie(pid);
-                            let _ = syscalls::proc_mgmt(PROC_MGMT_EXIT, pid as usize, 0, 0);
+                        Ok(_) => {}
+                        Err(Status::PeerClosed) | Err(_) => {
+                            let _ = syscalls::close(session_chan);
+                            break;
                         }
                     }
-                    2 => {
-                        if n >= 17 {
-                            let pid = u64::from_le_bytes(buf[1..9].try_into().unwrap_or([0; 8]));
-                            let l0_pa = u64::from_le_bytes(buf[9..17].try_into().unwrap_or([0; 8]));
-                            remove_entry(pid);
-                            let _ = syscalls::proc_mgmt(PROC_MGMT_RELEASE_PT, l0_pa as usize, 0, 0);
-                        }
-                    }
-                    _ => {}
                 }
             }
         }
