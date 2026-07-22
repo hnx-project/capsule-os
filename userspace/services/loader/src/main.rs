@@ -46,6 +46,13 @@ pub fn main() -> i32 {
         Err(e) => kprintln!("Loader: [ERROR] Failed to spawn 'procmgr': {:?}", e),
     }
 
+    // 2e. Spawn 'tty' (Terminal & TTY Console Service)
+    kprintln!("Loader: Spawning 'tty' service...");
+    match bootstrap_service.spawn_service("tty") {
+        Ok(handle) => kprintln!("Loader: [SUCCESS] 'tty' spawned, handle={}", handle),
+        Err(e) => kprintln!("Loader: [ERROR] Failed to spawn 'tty': {:?}", e),
+    }
+
     // 3. Spawn 'testall' (VFS Test Suite)
     kprintln!("Loader: Spawning 'testall'...");
     match bootstrap_program.spawn_program("testall") {
