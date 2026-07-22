@@ -132,144 +132,178 @@ pub fn generate_doc(open: bool, _config: &Config) -> Result<(), String> {
         &format!("{}/ohlink_toolchain", docs_dist_dir),
     )?;
 
-    // 7. Generate beautiful dark-themed unified index.html landing page
+    // 7. Generate beautiful print-style unified index.html landing page
     println!("\x1b[1;36m✨ Generating unified documentation portal...\x1b[0m");
     let index_html_content = r#"<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CapsuleOS (Pangu) Developer Documentation Hub</title>
+    <title>CapsuleOS (Pangu) Developer Documentation Portal</title>
     <style>
         :root {
-            --bg-color: #0d1117;
-            --card-bg: #161b22;
-            --text-color: #c9d1d9;
-            --accent-color: #58a6ff;
-            --accent-purple: #bc8cff;
-            --accent-green: #3fb950;
-            --accent-orange: #f0883e;
-            --border-color: #30363d;
+            --bg-color: #faf9f6;
+            --text-main: #111827;
+            --text-sub: #4b5563;
+            --text-muted: #9ca3af;
+            --border-color: #e5e7eb;
+            --accent-color: #df3625; /* Raspberry Pi / Rust Red */
+            --accent-bg-hover: #f3f4f6;
         }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
             background-color: var(--bg-color);
-            color: var(--text-color);
+            color: var(--text-main);
             margin: 0;
-            padding: 40px 20px;
+            padding: 80px 20px;
             display: flex;
             flex-direction: column;
             align-items: center;
         }
-        header {
-            text-align: center;
-            margin-bottom: 50px;
+        .container {
             max-width: 800px;
+            width: 100%;
+        }
+        header {
+            border-bottom: 2px solid var(--text-main);
+            padding-bottom: 24px;
+            margin-bottom: 40px;
         }
         h1 {
+            font-family: "Source Serif 4", Georgia, serif;
             font-size: 2.5rem;
-            color: #ffffff;
-            margin-bottom: 10px;
-            font-weight: 700;
+            font-weight: 500;
+            margin: 0 0 12px 0;
+            color: var(--text-main);
             letter-spacing: -0.5px;
         }
         .subtitle {
             font-size: 1.1rem;
-            color: #8b949e;
-            line-height: 1.5;
+            color: var(--text-sub);
+            line-height: 1.6;
+            font-family: "Source Serif 4", Georgia, serif;
+            font-style: italic;
         }
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 24px;
-            max-width: 1200px;
-            width: 100%;
+        .section-title {
+            font-family: monospace;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            margin: 40px 0 16px 0;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 8px;
         }
-        .card {
-            background-color: var(--card-bg);
-            border: 1px solid var(--border-color);
-            border-radius: 12px;
-            padding: 24px;
-            transition: all 0.3s ease;
-            text-decoration: none;
-            color: inherit;
+        .list {
             display: flex;
             flex-direction: column;
-            height: 100%;
-            box-sizing: border-box;
+            gap: 16px;
         }
-        .card:hover {
-            transform: translateY(-4px);
+        .item {
+            display: block;
+            text-decoration: none;
+            color: inherit;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 20px;
+            background-color: #ffffff;
+            transition: all 0.2s ease;
+        }
+        .item:hover {
             border-color: var(--accent-color);
-            box-shadow: 0 8px 24px rgba(56, 139, 253, 0.15);
+            background-color: #fffdfc;
         }
-        .card-title {
-            font-size: 1.25rem;
-            font-weight: 600;
-            margin: 0 0 12px 0;
-            color: #ffffff;
+        .item-header {
             display: flex;
+            justify-content: space-between;
             align-items: center;
-            gap: 8px;
+            margin-bottom: 8px;
         }
-        .card-desc {
-            font-size: 0.9rem;
-            color: #8b949e;
-            line-height: 1.5;
-            flex-grow: 1;
-            margin-bottom: 20px;
-        }
-        .card-badge {
-            font-size: 0.75rem;
+        .item-title {
+            font-size: 1.2rem;
             font-weight: 600;
-            padding: 4px 8px;
-            border-radius: 6px;
-            align-self: flex-start;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            color: var(--text-main);
+            font-family: "Source Serif 4", Georgia, serif;
         }
-        .badge-l1 { background-color: rgba(188, 140, 255, 0.15); color: var(--accent-purple); border: 1px solid rgba(188, 140, 255, 0.3); }
-        .badge-l2 { background-color: rgba(56, 139, 253, 0.15); color: var(--accent-color); border: 1px solid rgba(56, 139, 253, 0.3); }
-        .badge-host { background-color: rgba(63, 185, 80, 0.15); color: var(--accent-green); border: 1px solid rgba(63, 185, 80, 0.3); }
-        .badge-tool { background-color: rgba(240, 136, 62, 0.15); color: var(--accent-orange); border: 1px solid rgba(240, 136, 62, 0.3); }
+        .item:hover .item-title {
+            color: var(--accent-color);
+        }
+        .item-badge {
+            font-family: monospace;
+            font-size: 0.75rem;
+            color: var(--accent-color);
+            border: 1px solid var(--accent-color);
+            padding: 2px 8px;
+            border-radius: 3px;
+            background-color: rgba(223, 54, 37, 0.04);
+        }
+        .item:hover .item-badge {
+            background-color: var(--accent-color);
+            color: #ffffff;
+        }
+        .item-desc {
+            font-size: 0.925rem;
+            color: var(--text-sub);
+            line-height: 1.5;
+        }
         footer {
             margin-top: 80px;
-            color: #484f58;
-            font-size: 0.85rem;
+            border-top: 1px solid var(--border-color);
+            padding-top: 24px;
+            color: var(--text-muted);
+            font-family: monospace;
+            font-size: 0.8rem;
             text-align: center;
         }
     </style>
 </head>
 <body>
-    <header>
-        <h1>🌌 CapsuleOS (Pangu) Developer Hub</h1>
-        <div class="subtitle">Unified API Documentation and Reference manual for CapsuleOS, HNX Microkernel, standard runtime libraries, userspace sandboxes, and customized toolchains.</div>
-    </header>
-    <div class="grid">
-        <a href="./kernel/kernel/index.html" class="card">
-            <div class="card-title">🛡️ HNX Microkernel</div>
-            <div class="card-desc">Low-level operating system microkernel core running at EL1. Contains process schedules, virtual memory (VMAR/VMO), zero-allocation IPC, and capabilities handle system.</div>
-            <div class="card-badge badge-l1">L1 Privileged Core</div>
-        </a>
-        <a href="./userspace/libc/index.html" class="card">
-            <div class="card-title">🧬 Userspace Standard Runtime</div>
-            <div class="card-desc">C-ABI POSIX shim translation library (libc), safe capability wrapping runtime (libcapsule), and custom safe Rust standard library (libstd).</div>
-            <div class="card-badge badge-l2">L2 Runtime & APIs</div>
-        </a>
-        <a href="./host_tools/xtask/index.html" class="card">
-            <div class="card-title">⚙️ Xtask Build Orchestrator</div>
-            <div class="card-desc">Host developer task CLI tool for compiling, cleaning, local QEMU simulation, firmware fetching, dynamic MBR formatting, and version audits.</div>
-            <div class="card-badge badge-host">Host Development</div>
-        </a>
-        <a href="./ohlink_toolchain/ohlink_format/index.html" class="card">
-            <div class="card-title">⛓️ OHLINK Toolchain</div>
-            <div class="card-desc">Custom binary format specification (OHLINK), compiler codegen plugin for rustc, and low-level zero-ELF absolute binary linker.</div>
-            <div class="card-badge badge-tool">Custom Toolchain</div>
-        </a>
+    <div class="container">
+        <header>
+            <h1>capsuleOS / pangu</h1>
+            <div class="subtitle">A from-scratch Unix-like microkernel operating system built in Rust for the AArch64 architecture.</div>
+        </header>
+        
+        <div class="section-title">System Architecture Reference</div>
+        <div class="list">
+            <a href="./kernel/kernel/index.html" class="item">
+                <div class="item-header">
+                    <div class="item-title">L1 Privileged Microkernel (HNX Core)</div>
+                    <div class="item-badge">hnxcore</div>
+                </div>
+                <div class="item-desc">Low-level microkernel core running at EL1. Manages thread scheduling, capabilities handle mappings, zero-allocation IPC channels, and physical memory allocation.</div>
+            </a>
+            <a href="./userspace/libc/index.html" class="item">
+                <div class="item-header">
+                    <div class="item-title">L2 Standard Runtime & L3 Sandboxed Services</div>
+                    <div class="item-badge">userspace</div>
+                </div>
+                <div class="item-desc">Standard C-ABI compatibility interface (libc), Safe microkernel capability wrappers (libcapsule), customized safe Rust standard library (libstd), and standard sandboxed user services.</div>
+            </a>
+        </div>
+
+        <div class="section-title">Development & Toolchain Reference</div>
+        <div class="list">
+            <a href="./host_tools/xtask/index.html" class="item">
+                <div class="item-header">
+                    <div class="item-title">Host Build & Test Orchestration</div>
+                    <div class="item-badge">xtask</div>
+                </div>
+                <div class="item-desc">Unified host-side developer task runner. Handles platform configuration compilation, emulated runtime environment deployments, and disk formatting.</div>
+            </a>
+            <a href="./ohlink_toolchain/ohlink_format/index.html" class="item">
+                <div class="item-header">
+                    <div class="item-title">OHLINK Absolute Binary Toolchain</div>
+                    <div class="item-badge">ohlink-cc</div>
+                </div>
+                <div class="item-desc">Custom decoupled absolute binary layout specification (OHLINK), compiler codegen plugin for rustc, and low-level physical linker.</div>
+            </a>
+        </div>
+
+        <footer>
+            pangu 1.0.0-beta4 / hnx-project / built with rust & cargo-doc
+        </footer>
     </div>
-    <footer>
-        Developed by HNX-Project. Powered by Rust & cargo-doc.
-    </footer>
 </body>
 </html>
 "#;
