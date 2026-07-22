@@ -8,6 +8,7 @@ mod platform;
 mod run;
 mod toolchain;
 mod version;
+mod doc;
 
 use clap::Parser;
 use cli::{Cli, CodeSubcommands, Commands};
@@ -87,6 +88,12 @@ fn main() {
             CodeSubcommands::CheckVersion { sync } => {
                 if let Err(e) = version::check_version(*sync, &config) {
                     eprintln!("{}", e);
+                    std::process::exit(1);
+                }
+            }
+            CodeSubcommands::Doc => {
+                if let Err(e) = doc::generate_doc(&config) {
+                    eprintln!("Document generation failed: {}", e);
                     std::process::exit(1);
                 }
             }

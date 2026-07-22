@@ -73,4 +73,8 @@ pub enum CodeSubcommands {
         )]
         sync: bool,
     },
+    #[command(
+        about = "Generate unified and consolidated rust-doc website for all layers"
+    )]
+    Doc,
 }
