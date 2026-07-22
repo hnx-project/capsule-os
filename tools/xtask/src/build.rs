@@ -112,11 +112,27 @@ const BOLD_GREEN: &str = "\x1b[1;32m";
 const BOLD_CYAN: &str = "\x1b[1;36m";
 const RESET: &str = "\x1b[0m";
 
+fn generate_c_bindings() -> Result<(), String> {
+    let crate_dir = "libraries/libcapsule";
+    let bindings = cbindgen::Builder::new()
+        .with_crate(crate_dir)
+        .with_config(cbindgen::Config::from_file("libraries/libcapsule/cbindgen.toml").unwrap_or_default())
+        .generate()
+        .map_err(|e| format!("cbindgen failed: {:?}", e))?;
+    
+    std::fs::create_dir_all("libraries/libcapsule/include").map_err(|e| e.to_string())?;
+    bindings.write_to_file("libraries/libcapsule/include/capsule.h");
+    Ok(())
+}
+
 pub fn build(config: &Config, plat: &Platform, generate_dist: bool) -> Result<(), String> {
     println!(
         "{}    Building{} {} Ecosystem ({})",
         BOLD_CYAN, RESET, config.project.name, plat.arch
     );
+
+    // Generate C bindings first
+    generate_c_bindings()?;
 
     let v = get_parsed_version(config);
 

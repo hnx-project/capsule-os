@@ -78,4 +78,16 @@ impl FdManager {
             USER_FD_TABLE[fd as usize].take().ok_or(Status::NotFound)
         }
     }
+
+    /// Duplicate a process-local FD slot into another specific slot.
+    pub fn dup2(oldfd: i32, newfd: i32) -> Result<i32> {
+        if oldfd < 0 || oldfd >= 64 || newfd < 0 || newfd >= 64 {
+            return Err(Status::InvalidArgs);
+        }
+        unsafe {
+            let entry = USER_FD_TABLE[oldfd as usize].ok_or(Status::NotFound)?;
+            USER_FD_TABLE[newfd as usize] = Some(entry);
+            Ok(newfd)
+        }
+    }
 }

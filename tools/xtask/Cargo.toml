@@ -10,3 +10,4 @@ regex = "1.10"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 toml = "0.8"
 fatfs = { package = "starry-fatfs", version = "0.4.1-preview.2", features = ["std"] }
+cbindgen = "0.26"

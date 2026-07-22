@@ -855,10 +855,13 @@ pub extern "C" fn pipe(fds: *mut i32) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn dup2(oldfd: i32, newfd: i32) -> i32 {
-    match syscalls::dup2(oldfd, newfd) {
-        Ok(fd) => fd,
-        Err(_) => -1,
+    if let Err(_) = libcapsule::fd::FdManager::dup2(oldfd, newfd) {
+        return -1;
     }
+    if oldfd >= 3 && newfd >= 3 {
+        let _ = syscalls::dup2(oldfd, newfd);
+    }
+    newfd
 }
 
 #[no_mangle]
