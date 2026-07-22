@@ -7,6 +7,7 @@ mod pack;
 mod platform;
 mod run;
 mod toolchain;
+mod version;
 
 use clap::Parser;
 use cli::{Cli, CodeSubcommands, Commands};
@@ -80,6 +81,12 @@ fn main() {
                 }
                 if let Err(e) = run::run(&config, &plat, *gdb) {
                     eprintln!("Run failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+            CodeSubcommands::CheckVersion { sync } => {
+                if let Err(e) = version::check_version(*sync, &config) {
+                    eprintln!("{}", e);
                     std::process::exit(1);
                 }
             }

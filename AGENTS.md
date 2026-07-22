@@ -5,7 +5,7 @@ This document outlines the strict engineering conventions, layout definitions, a
 ---
 
 ## 🌌 System Overview
-**CapsuleOS** (Codename: **Pangu**) is a from-scratch microkernel operating system built entirely in Rust.
+**CapsuleOS** (Codename: **Pangu**) is a from-scratch Unix-like microkernel operating system targetting the aarch64 architecture, developed primarily in Rust.
 *   **Privileged Level**: HNX Microkernel (EL1 on AArch64).
 *   **Target Platform**: `aarch64-unknown-none` (soft-float ABI).
 *   **User-Space Triple**: `aarch64-unknown-capsule`.
@@ -76,7 +76,9 @@ xtask code run --arch aarch64
 ```
 
 ### 3. 🛡️ Safety & Quality Verification
-*   **Adherence to DEVELOPMENT.md**: The AI Agent must strictly verify all code changes against the **8 Core Development Standards** defined in **[DEVELOPMENT.md](./DEVELOPMENT.md)**.
+*   **Adherence to DEVELOPMENT.md**: The AI Agent must strictly verify all code changes against the development and design standards (including **POSIX isolation**, **API.md documentation standards**, and **no-duplication rules**) defined in **[DEVELOPMENT.md](./DEVELOPMENT.md)**.
+*   **No Duplication & Refactor First**: It is strictly forbidden to duplicate methods, macros, or variables. Always perform global checks (e.g. using grep) before introducing any new function or interface. If an existing implementation is suboptimal or incomplete, refactor it directly rather than adding redundant workarounds.
+*   **API.md Document Lifecycle**: When creating or modifying a program, library, or service, the AI Agent must first read the module's `API.md` file to understand constraints, and update the `API.md` (specifically updating the status, definitions, dependencies, and public symbols) upon completion.
 *   **Warnings Mitigation**: Any warning generated during `xtask code build` (including unused imports or variables) should be solved proactively prior to merging.
 *   **Handle Isolation**: Never pass raw physical/virtual pointers across user-space system calls. Use capability `HandleValue` mappings securely managed under `HandleTable`.
 

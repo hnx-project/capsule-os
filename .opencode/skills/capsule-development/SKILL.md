@@ -16,6 +16,8 @@ Every code modification inside this workspace must comply with the 8 Core Develo
 6.  **rust std标准 (Rust std Standard)**: Bridge standard allocations and formatting macros inside `libraries/libstd` down to `libc` C-ABI.
 7.  **服务开发标准 (Service Development Standard)**: Background daemons (`devmgr`, `fileagent`) must run as zero-polling, synchronous blocking event loops.
 8.  **程序开发标准 (Program Development Standard)**: Sandboxed utilities (`testall`, `osh`, `ls`) must be completely insulated from microkernel interfaces, building 100% against POSIX C-ABI.
+9.  **模块开发文档标准 (Module Documentation - API.md Standard)**: Read the component's `API.md` file first before modifying any component. Update `API.md` (detailing status, name, dependencies/associations, definitions, exposed interfaces) upon completion.
+10. **严禁重复实现与强制重构规范 (Zero-Duplication & Mandatory Refactoring Standard)**: Strictly search for duplicate operations before implementing any function or variable. Refactor existing suboptimal implementations rather than adding redundant wrappers.
 
 ## 🧪 Integration Verification
 Run tests using QEMU integration:

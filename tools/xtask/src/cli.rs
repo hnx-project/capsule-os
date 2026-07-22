@@ -63,4 +63,14 @@ pub enum CodeSubcommands {
         #[arg(long, help = "The expected Rust compiler version")]
         expected_rust: Option<String>,
     },
+    #[command(
+        about = "Verify and synchronize Cargo.toml and project workspace versions"
+    )]
+    CheckVersion {
+        #[arg(
+            long,
+            help = "Synchronize root workspace and xtask project version across subprojects"
+        )]
+        sync: bool,
+    },
 }

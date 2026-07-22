@@ -29,6 +29,7 @@ To keep the codebase modular, robust, and safe, any code modification must adher
 ### 5. `libc` 翻译标准 (libc Translation Standard)
 *   **Standard POSIX Compatibility**: Provide fully compliant C-ABI standard library symbols (`open`, `close`, `read`, `write`, `stat`, `readdir`, `mkdir`, `rmdir`, `unlink`).
 *   **Inline Byte VFS Protocol**: `libc` translates classic POSIX operations into uniform VFS byte streams sent over synchronous IPC channels to `fileagent`. It hides low-level capability handle manipulations from standard programs, keeping POSIX code clean.
+*   **Kernel Isolation Boundary**: Keep the HNX microkernel itself entirely clean and decoupled from POSIX. HNX must contain **zero** POSIX implementations, POSIX-specific system definitions, or POSIX-specific syscalls. It only processes pure, low-level microkernel capabilities.
 
 ### 6. `rust std` 标准 (Rust std Standard)
 *   **Custom `#![no_std]` Stdlib**: `libraries/libstd` provides standard collections (`Vec`, `String`, `Box`, `BTreeMap`, etc.) and formatting macros (`println!`) to user-space.
@@ -41,6 +42,22 @@ To keep the codebase modular, robust, and safe, any code modification must adher
 ### 8. 程序开发标准 (Program Development Standard)
 *   **Absolute Separation of Concerns**: Sandboxed EL0 applications (e.g., `testall`, `osh`, `ls`, `rm`) are completely insulated from kernel-specific objects, handles, and syscalls. They must build exclusively against standard POSIX C-ABI APIs.
 *   **Portability & Cleanliness**: Applications should match standard POSIX shell utilities, facilitating high code reuse and robust integration testing.
+
+### 9. 模块开发文档标准 (Module Documentation - API.md Standard)
+*   **Mandatory Document Review & Update**: When creating or modifying a program, library, or background service, the developer or AI Agent must:
+    1. First read the component's `API.md` file (if existing) to understand specifications, limits, and associations.
+    2. Update the `API.md` document upon completion if the code changes touch public methods, structures, constant values, or communication protocols.
+*   **Required Template Content**: The `API.md` file must strictly incorporate:
+    - **Status (状态)**: `[Active (使用中) | Deprecated (已废弃)]`
+    - **Name (组件名称)**
+    - **Dependencies & Related Components (依赖/关联组件说明)**: Enumerate dependencies (e.g. `libcapsule`) and other microkernel services (e.g. `devmgr`) it collaborates with.
+    - **Core Definition (核心职责与定义)**
+    - **Exposed Interfaces (暴露接口与公共约定)**: Standard public methods, protocols, constants, or IPC packets.
+
+### 10. 严禁重复实现与强制重构规范 (Zero-Duplication & Mandatory Refactoring Standard)
+*   **Strict Anti-Duplication Rule**: It is strictly forbidden to duplicate existing methods, macros, functions, or static variables.
+*   **Pre-Implementation Inspection**: Prior to adding new functionality, you must thoroughly scan the codebase using standard tools (such as Grep) to see if similar operations are already implemented.
+*   **Refactor First**: If an existing utility, helper, or core implementation is suboptimal, insufficient, or poorly designed for your needs, you must refactor and extend the existing code directly rather than introducing redundant functions, workarounds, or duplicate helper wrappers.
 
 ---
 

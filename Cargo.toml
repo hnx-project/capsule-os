@@ -1,5 +1,5 @@
 [workspace.package]
-version = "1.0.0-beta"
+version = "1.0.0-beta4"
 edition = "2021"
 
 [workspace.dependencies]
