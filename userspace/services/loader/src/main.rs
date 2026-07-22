@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
 
-extern crate capsule_runtime;
 extern crate libcapsule;
 
 use libcapsule::kprintln;

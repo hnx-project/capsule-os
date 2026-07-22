@@ -22,6 +22,9 @@ pub mod syscalls;
 pub mod fd;
 pub mod path;
 
+#[cfg(feature = "runtime")]
+pub mod runtime;
+
 pub use channel::Channel;
 pub use service::{ServiceLoader, ServiceManager};
 pub use program::ProgramLoader;

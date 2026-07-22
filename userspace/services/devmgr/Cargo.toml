@@ -8,8 +8,7 @@ name = "devmgr"
 path = "src/main.rs"
 
 [dependencies]
-capsule_runtime = { path = "../../../libraries/capsule_runtime" }
-libcapsule = { path = "../../../libraries/libcapsule", package = "libcapsule" }
+libcapsule = { path = "../../../libraries/libcapsule", package = "libcapsule", features = ["runtime"] }
 shared = { path = "../../../kernel/shared" }
 
 

@@ -7,6 +7,9 @@ edition.workspace = true
 crate-type = ["rlib"]
 name =  "capsule"
 
-
 [dependencies]
 shared = { path = "../../kernel/shared" }
+
+[features]
+default = []
+runtime = []

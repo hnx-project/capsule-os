@@ -18,7 +18,6 @@ members = [
     "libraries/libc",
     "libraries/libstd",
     "libraries/libcapsule",
-    "libraries/capsule_runtime",
     # userspace | capsuleOS
     "userspace/services/devmgr",
     "userspace/services/blkdev",

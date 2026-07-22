@@ -1,6 +1,7 @@
-#![no_std]
-
-extern crate capsule as libcapsule;
+//! # 📟 Native Capsule Process Runtime Bootstrapper
+//!
+//! This module provides the standard `_start` entry point, stack setup, panic handler, and C-ABI memory
+//! functions (`memcpy`, `memmove`, `memcmp`, `memset`) for raw `no_std` Capsule services.
 
 #[cfg(target_arch = "aarch64")]
 core::arch::global_asm!(
@@ -32,7 +33,7 @@ extern "Rust" {
 pub unsafe extern "C" fn _hnx_user_entry() -> ! {
     let code = main();
 
-    libcapsule::syscall!(libcapsule::SYSCALL_EXIT, code as usize, 0, 0, 0, 0, 0);
+    let _ = crate::syscall!(shared::syscall_nums::SYSCALL_EXIT, code as usize, 0, 0, 0, 0, 0);
     loop {}
 }
 
