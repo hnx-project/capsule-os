@@ -670,3 +670,21 @@ pub fn block_size() -> Result<u64> {
         Ok(ret as u64)
     }
 }
+
+/// Get the current working directory of the process.
+pub fn getcwd(buf: &mut [u8]) -> Result<usize> {
+    let ret = syscall!(
+        shared::syscall_nums::SYSCALL_GETCWD,
+        buf.as_mut_ptr() as usize,
+        buf.len(),
+        0,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret)
+    }
+}

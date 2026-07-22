@@ -113,3 +113,13 @@ impl ServiceLoader {
         Err(Status::NotFound)
     }
 }
+
+/// Unified Public Interface for locating and connecting to system services.
+pub struct ServiceManager;
+
+impl ServiceManager {
+    /// Connect to a system service by name and obtain its communication channel handle.
+    pub fn connect(name: &str) -> Result<usize> {
+        crate::syscalls::channel_lookup(name)
+    }
+}

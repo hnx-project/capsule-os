@@ -19,9 +19,13 @@ pub mod log;
 pub mod service;
 pub mod program;
 pub mod syscalls;
+pub mod fd;
+pub mod path;
 
 pub use channel::Channel;
-pub use service::ServiceLoader;
+pub use service::{ServiceLoader, ServiceManager};
 pub use program::ProgramLoader;
+pub use fd::{USER_FD_TABLE, FdEntry, FdType, FdManager};
+pub use path::normalise_path;
 pub use shared::status::Status;
 pub use shared::syscall_nums::*;
