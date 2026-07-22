@@ -66,10 +66,21 @@ pub fn getcwd(buf: &mut [u8]) -> Result<usize, Status> {
 }
 
 pub fn chdir(path: &str) -> Result<(), Status> {
+    let mut temp = [0u8; 128];
+    let len = path.len().min(127);
+    temp[..len].copy_from_slice(&path.as_bytes()[..len]);
+    temp[len] = 0;
+
+    let mut normalised = [0u8; 128];
+    let normalised_len = match crate::normalise_path(temp.as_ptr(), &mut normalised) {
+        Ok(l) => l,
+        Err(_) => return Err(Status::InvalidArgs),
+    };
+
     let ret = libcapsule::syscall!(
         SYSCALL_CHDIR,
-        path.as_ptr() as usize,
-        path.len(),
+        normalised.as_ptr() as usize,
+        normalised_len,
         0,
         0,
         0,

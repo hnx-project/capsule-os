@@ -70,6 +70,10 @@ pub fn main() -> i32 {
     t.run("boot_mkdir", vfs::test_boot_mkdir());
     t.run("boot_unlink", vfs::test_boot_unlink());
 
+    // POSIX CWD (Current Working Directory) and relative-path tests
+    t.run("cwd_getcwd", vfs::test_cwd_getcwd());
+    t.run("cwd_relative", vfs::test_cwd_relative());
+
     // POSIX device tests (posix_open → fileagent → devmgr)
     t.run("dev_open_pl011", vfs::test_dev_open_pl011());
     t.run("dev_open_nonexist2", vfs::test_dev_open_nonexist());

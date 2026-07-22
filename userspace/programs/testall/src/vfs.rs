@@ -233,3 +233,54 @@ pub fn test_boot_mkdir() -> bool {
 pub fn test_boot_unlink() -> bool {
     posix_unlink("/boot/test.txt") == 0 && posix_rmdir("/boot/testdir") == 0
 }
+
+pub fn test_cwd_getcwd() -> bool {
+    let mut buf = [0u8; 256];
+    match libc::getcwd(&mut buf) {
+        Ok(len) => {
+            let s = core::str::from_utf8(&buf[..len]).unwrap_or("");
+            s == "/"
+        }
+        Err(_) => false,
+    }
+}
+
+pub fn test_cwd_relative() -> bool {
+    if libc::chdir("/tmp").is_err() {
+        return false;
+    }
+
+    let mut buf = [0u8; 256];
+    match libc::getcwd(&mut buf) {
+        Ok(len) => {
+            let s = core::str::from_utf8(&buf[..len]).unwrap_or("");
+            if s != "/tmp" {
+                let _ = libc::chdir("/");
+                return false;
+            }
+        }
+        Err(_) => {
+            let _ = libc::chdir("/");
+            return false;
+        }
+    }
+
+    if posix_mkdir("test_cwd_dir") != 0 {
+        let _ = libc::chdir("/");
+        return false;
+    }
+
+    let (size, ntype) = posix_stat("/tmp/test_cwd_dir");
+    if size < 0 || ntype != 2 {
+        let _ = posix_rmdir("/tmp/test_cwd_dir");
+        let _ = libc::chdir("/");
+        return false;
+    }
+
+    if posix_rmdir("test_cwd_dir") != 0 {
+        let _ = libc::chdir("/");
+        return false;
+    }
+
+    libc::chdir("/").is_ok()
+}

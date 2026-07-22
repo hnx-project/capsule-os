@@ -391,6 +391,123 @@ fn send_vfs_cmd(ch: usize, cmd: &[u8]) -> i64 {
     }
 }
 
+/// Helper to normalise a given raw file-system path against CWD in a stack-only,
+/// zero-dynamic-allocation manner.
+pub fn normalise_path(path: *const u8, out: &mut [u8]) -> Result<usize, ()> {
+    if path.is_null() || out.is_empty() {
+        return Err(());
+    }
+
+    let mut raw_len = 0;
+    unsafe {
+        while *path.add(raw_len) != 0 && raw_len < 127 {
+            raw_len += 1;
+        }
+    }
+    let raw_bytes = unsafe { core::slice::from_raw_parts(path, raw_len) };
+
+    let is_absolute = raw_len > 0 && raw_bytes[0] == b'/';
+
+    let mut temp = [0u8; 512];
+    let mut temp_len = 0;
+
+    if !is_absolute {
+        let mut cwd_buf = [0u8; 256];
+        match getcwd(&mut cwd_buf) {
+            Ok(len) if len > 0 => {
+                let actual_cwd = &cwd_buf[..len];
+                let to_copy = actual_cwd.len().min(temp.len());
+                temp[..to_copy].copy_from_slice(&actual_cwd[..to_copy]);
+                temp_len = to_copy;
+            }
+            _ => {
+                temp[0] = b'/';
+                temp_len = 1;
+            }
+        }
+        
+        if temp_len > 0 && temp[temp_len - 1] != b'/' {
+            if temp_len < temp.len() {
+                temp[temp_len] = b'/';
+                temp_len += 1;
+            }
+        }
+
+        let space_remaining = temp.len() - temp_len;
+        let to_copy = raw_bytes.len().min(space_remaining);
+        temp[temp_len..temp_len + to_copy].copy_from_slice(&raw_bytes[..to_copy]);
+        temp_len += to_copy;
+    } else {
+        let to_copy = raw_bytes.len().min(temp.len());
+        temp[..to_copy].copy_from_slice(&raw_bytes[..to_copy]);
+        temp_len = to_copy;
+    }
+
+    let temp_slice = &temp[..temp_len];
+    
+    let mut comp_starts = [0usize; 32];
+    let mut comp_lens = [0usize; 32];
+    let mut comp_count = 0;
+
+    let mut i = 0;
+    while i < temp_len {
+        while i < temp_len && temp_slice[i] == b'/' {
+            i += 1;
+        }
+        if i >= temp_len {
+            break;
+        }
+        let start = i;
+        while i < temp_len && temp_slice[i] != b'/' {
+            i += 1;
+        }
+        let len = i - start;
+        let comp = &temp_slice[start..start + len];
+
+        if comp == b"." {
+            // ignore
+        } else if comp == b".." {
+            if comp_count > 0 {
+                comp_count -= 1;
+            }
+        } else {
+            if comp_count < 32 {
+                comp_starts[comp_count] = start;
+                comp_lens[comp_count] = len;
+                comp_count += 1;
+            } else {
+                return Err(());
+            }
+        }
+    }
+
+    let mut out_idx = 0;
+    out[out_idx] = b'/';
+    out_idx += 1;
+
+    for c in 0..comp_count {
+        if c > 0 {
+            if out_idx >= out.len() { return Err(()); }
+            out[out_idx] = b'/';
+            out_idx += 1;
+        }
+        let start = comp_starts[c];
+        let len = comp_lens[c];
+        if out_idx + len >= out.len() {
+            return Err(());
+        }
+        out[out_idx..out_idx + len].copy_from_slice(&temp_slice[start..start + len]);
+        out_idx += len;
+    }
+
+    if out_idx >= out.len() {
+        return Err(());
+    }
+    out[out_idx] = 0;
+
+    Ok(out_idx)
+}
+
 /// Rust-friendly wrapper around `open` that takes a `&str` and copies
 /// it into a NUL-terminated 256-byte stack buffer before calling
 /// the C-ABI `open` (which scans the buffer for a NUL terminator
@@ -410,12 +527,11 @@ pub extern "C" fn open(path: *const u8, flags: i32, _mode: i32) -> i32 {
         return -1;
     }
 
-    let mut len = 0;
-    unsafe {
-        while *path.add(len) != 0 && len < 127 {
-            len += 1;
-        }
-    }
+    let mut normalised = [0u8; 128];
+    let len = match normalise_path(path, &mut normalised) {
+        Ok(l) => l,
+        Err(_) => return -1,
+    };
 
     let session_chan = match libcapsule::syscalls::channel_lookup("svc.vfs") {
         Ok(ch) => ch,
@@ -425,9 +541,7 @@ pub extern "C" fn open(path: *const u8, flags: i32, _mode: i32) -> i32 {
     let mut cmd = [0u8; 148];
     cmd[0] = 1; // VFS_OPEN
     cmd[4..8].copy_from_slice(&(flags as u32).to_le_bytes());
-    unsafe {
-        core::ptr::copy_nonoverlapping(path, cmd[20..20 + len].as_mut_ptr(), len);
-    }
+    cmd[20..20 + len].copy_from_slice(&normalised[..len]);
 
     let remote_fd = send_vfs_cmd(session_chan, &cmd);
     if remote_fd < 0 {
@@ -655,12 +769,11 @@ pub extern "C" fn mkdir(path: *const u8) -> i32 {
     if path.is_null() {
         return -1;
     }
-    let mut len = 0;
-    unsafe {
-        while *path.add(len) != 0 && len < 127 {
-            len += 1;
-        }
-    }
+    let mut normalised = [0u8; 128];
+    let len = match normalise_path(path, &mut normalised) {
+        Ok(l) => l,
+        Err(_) => return -1,
+    };
 
     let session_chan = match libcapsule::syscalls::channel_lookup("svc.vfs") {
         Ok(ch) => ch,
@@ -669,9 +782,7 @@ pub extern "C" fn mkdir(path: *const u8) -> i32 {
 
     let mut cmd = [0u8; 148];
     cmd[0] = 6; // VFS_MKDIR
-    unsafe {
-        core::ptr::copy_nonoverlapping(path, cmd[20..20 + len].as_mut_ptr(), len);
-    }
+    cmd[20..20 + len].copy_from_slice(&normalised[..len]);
 
     let result = send_vfs_cmd(session_chan, &cmd);
     let _ = libcapsule::syscalls::close(session_chan);
@@ -683,12 +794,11 @@ pub extern "C" fn rmdir(path: *const u8) -> i32 {
     if path.is_null() {
         return -1;
     }
-    let mut len = 0;
-    unsafe {
-        while *path.add(len) != 0 && len < 127 {
-            len += 1;
-        }
-    }
+    let mut normalised = [0u8; 128];
+    let len = match normalise_path(path, &mut normalised) {
+        Ok(l) => l,
+        Err(_) => return -1,
+    };
 
     let session_chan = match libcapsule::syscalls::channel_lookup("svc.vfs") {
         Ok(ch) => ch,
@@ -697,9 +807,7 @@ pub extern "C" fn rmdir(path: *const u8) -> i32 {
 
     let mut cmd = [0u8; 148];
     cmd[0] = 7; // VFS_RMDIR
-    unsafe {
-        core::ptr::copy_nonoverlapping(path, cmd[20..20 + len].as_mut_ptr(), len);
-    }
+    cmd[20..20 + len].copy_from_slice(&normalised[..len]);
 
     let result = send_vfs_cmd(session_chan, &cmd);
     let _ = libcapsule::syscalls::close(session_chan);
@@ -711,12 +819,11 @@ pub extern "C" fn unlink(path: *const u8) -> i32 {
     if path.is_null() {
         return -1;
     }
-    let mut len = 0;
-    unsafe {
-        while *path.add(len) != 0 && len < 127 {
-            len += 1;
-        }
-    }
+    let mut normalised = [0u8; 128];
+    let len = match normalise_path(path, &mut normalised) {
+        Ok(l) => l,
+        Err(_) => return -1,
+    };
 
     let session_chan = match libcapsule::syscalls::channel_lookup("svc.vfs") {
         Ok(ch) => ch,
@@ -725,9 +832,7 @@ pub extern "C" fn unlink(path: *const u8) -> i32 {
 
     let mut cmd = [0u8; 148];
     cmd[0] = 8; // VFS_UNLINK
-    unsafe {
-        core::ptr::copy_nonoverlapping(path, cmd[20..20 + len].as_mut_ptr(), len);
-    }
+    cmd[20..20 + len].copy_from_slice(&normalised[..len]);
 
     let result = send_vfs_cmd(session_chan, &cmd);
     let _ = libcapsule::syscalls::close(session_chan);
@@ -739,12 +844,11 @@ pub extern "C" fn stat(path: *const u8, buf: *mut stat) -> i32 {
     if path.is_null() || buf.is_null() {
         return -1;
     }
-    let mut len = 0;
-    unsafe {
-        while *path.add(len) != 0 && len < 127 {
-            len += 1;
-        }
-    }
+    let mut normalised = [0u8; 128];
+    let len = match normalise_path(path, &mut normalised) {
+        Ok(l) => l,
+        Err(_) => return -1,
+    };
 
     let session_chan = match libcapsule::syscalls::channel_lookup("svc.vfs") {
         Ok(ch) => ch,
@@ -753,9 +857,7 @@ pub extern "C" fn stat(path: *const u8, buf: *mut stat) -> i32 {
 
     let mut cmd = [0u8; 148];
     cmd[0] = 10; // VFS_STAT
-    unsafe {
-        core::ptr::copy_nonoverlapping(path, cmd[20..20 + len].as_mut_ptr(), len);
-    }
+    cmd[20..20 + len].copy_from_slice(&normalised[..len]);
 
     if let Err(_) = libcapsule::syscalls::channel_write(session_chan, &cmd, &[]) {
         let _ = libcapsule::syscalls::close(session_chan);
