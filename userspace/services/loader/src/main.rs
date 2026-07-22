@@ -40,6 +40,13 @@ pub fn main() -> i32 {
         Err(e) => kprintln!("Loader: [ERROR] Failed to spawn 'blkdev': {:?}", e),
     }
 
+    // 2d. Spawn 'procmgr' (Process Manager)
+    kprintln!("Loader: Spawning 'procmgr' service...");
+    match bootstrap_service.spawn_service("procmgr") {
+        Ok(handle) => kprintln!("Loader: [SUCCESS] 'procmgr' spawned, handle={}", handle),
+        Err(e) => kprintln!("Loader: [ERROR] Failed to spawn 'procmgr': {:?}", e),
+    }
+
     // 3. Spawn 'testall' (VFS Test Suite)
     kprintln!("Loader: Spawning 'testall'...");
     match bootstrap_program.spawn_program("testall") {
