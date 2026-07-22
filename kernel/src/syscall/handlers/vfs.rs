@@ -63,8 +63,12 @@ pub fn sys_read(fd: u32, buf_ptr: usize, buf_len: usize) -> Result<usize> {
                 crate::drivers::uart::putchar(b'^');
                 crate::drivers::uart::putchar(b'C');
                 crate::drivers::uart::putchar(b'\n');
-                // Execution jump straight out: terminate this thread immediately!
-                crate::syscall::handlers::process::sys_exit(-1);
+                if let Ok(caller_pid) = crate::task::process::current_process_id() {
+                    if caller_pid > 6 {
+                        let _ = crate::task::signals::signal_send(caller_pid, 2);
+                    }
+                }
+                return Ok(total);
             }
 
             // 3. Filter garbage/null control characters
