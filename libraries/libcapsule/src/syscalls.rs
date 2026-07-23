@@ -688,3 +688,39 @@ pub fn getcwd(buf: &mut [u8]) -> Result<usize> {
         Ok(ret)
     }
 }
+
+/// Send a raw network packet from user space.
+pub fn net_send(buf: &[u8]) -> Result<()> {
+    let ret = syscall!(
+        shared::syscall_nums::SYSCALL_NET_SEND,
+        buf.as_ptr() as usize,
+        buf.len(),
+        0,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(())
+    }
+}
+
+/// Receive a raw network packet into user space.
+pub fn net_recv(buf: &mut [u8]) -> Result<usize> {
+    let ret = syscall!(
+        shared::syscall_nums::SYSCALL_NET_RECV,
+        buf.as_mut_ptr() as usize,
+        buf.len(),
+        0,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret)
+    }
+}

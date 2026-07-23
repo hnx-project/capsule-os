@@ -93,6 +93,18 @@ pub fn syscall_dispatch(
             Err(e) => e.to_raw(),
         };
     }
+    if syscall_num == SYSCALL_NET_SEND {
+        return match handlers::device::sys_net_send(arg0, arg1) {
+            Ok(()) => 0,
+            Err(e) => e.to_raw(),
+        };
+    }
+    if syscall_num == SYSCALL_NET_RECV {
+        return match handlers::device::sys_net_recv(arg0, arg1) {
+            Ok(n) => n,
+            Err(e) => e.to_raw(),
+        };
+    }
 
     // 3b. Privileged MMIO access (validated against known device bases)
     if syscall_num == SYSCALL_MMIO_READ {

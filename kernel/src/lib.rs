@@ -111,6 +111,9 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
                     
                     // Initialize Virtio-Block MMIO Driver
                     drivers::virtio_blk::init();
+                    
+                    // Initialize Virtio-Net MMIO Driver
+                    drivers::virtio_net::init();
                 } else {
                     crate::log_warn!("IRQ", "no GIC in FDT, skipping timer bring-up");
                 }

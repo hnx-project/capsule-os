@@ -227,7 +227,12 @@ pub const SYSCALL_BLOCK_WRITE: u32 = 131;
 /// Get the total size of the block device (in 512-byte sectors).
 pub const SYSCALL_BLOCK_SIZE: u32 = 132;
 
+/// Send a raw network packet through the ethernet card.
+pub const SYSCALL_NET_SEND: u32 = 133;
+/// Receive a raw network packet from the ethernet card.
+pub const SYSCALL_NET_RECV: u32 = 134;
+
 /// One past the last valid syscall number.  Any `syscall_num >= SYSCALL_NR`
 /// is reserved by the ABI for future extensions and must not be accepted by
 /// the dispatcher — see `kernel/src/syscall/mod.rs`.
-pub const SYSCALL_NR: u32 = 133;
+pub const SYSCALL_NR: u32 = 135;

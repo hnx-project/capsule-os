@@ -128,3 +128,33 @@ pub fn sys_block_write(sector: u64, src_user_va: usize) -> Result<()> {
 pub fn sys_block_size() -> Result<u64> {
     Ok(crate::drivers::virtio_blk::get_capacity())
 }
+
+/// SYSCALL_NET_SEND: send a raw network packet from user space through Virtio-Net.
+pub fn sys_net_send(buf_user_va: usize, len: usize) -> Result<()> {
+    if buf_user_va == 0 || len == 0 || len > 1518 {
+        return Err(Status::InvalidArgs);
+    }
+    let l0_pa = current_l0_pa().ok_or(Status::InvalidArgs)?;
+    
+    let mut temp_buf = [0u8; 1518];
+    super::ipc::safe_copy_from_user(l0_pa, buf_user_va, len, &mut temp_buf[..len])?;
+    
+    crate::drivers::virtio_net::send_packet(&temp_buf[..len])
+}
+
+/// SYSCALL_NET_RECV: receive a raw network packet from Virtio-Net into user space.
+pub fn sys_net_recv(buf_user_va: usize, max_len: usize) -> Result<usize> {
+    if buf_user_va == 0 || max_len == 0 {
+        return Err(Status::InvalidArgs);
+    }
+    let l0_pa = current_l0_pa().ok_or(Status::InvalidArgs)?;
+    
+    let mut temp_buf = [0u8; 1518];
+    let actual_len = crate::drivers::virtio_net::recv_packet(&mut temp_buf[..max_len.min(1518)])?;
+    
+    if actual_len > 0 {
+        super::ipc::safe_copy_to_user(l0_pa, &temp_buf[..actual_len], buf_user_va, actual_len)?;
+    }
+    
+    Ok(actual_len)
+}

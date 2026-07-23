@@ -7,6 +7,7 @@ extern crate libcapsule;
 mod dev;
 mod vfs;
 mod proc;
+mod net;
 
 use libcapsule::kprintln;
 
@@ -83,6 +84,10 @@ pub fn main() -> i32 {
     // procmgr process management tests (direct svc.procmgr IPC)
     t.run("proc_connect", proc::test_proc_connect());
     t.run("proc_create_invalid", proc::test_proc_create_invalid());
+
+    // netd network daemon tests (direct svc.net IPC)
+    t.run("net_connect", net::test_net_connect());
+    t.run("net_socket_ops", net::test_net_socket_ops());
 
     // POSIX PATH (execv search path) tests
     t.run("exec_path_search", vfs::test_exec_path_search());

@@ -762,9 +762,11 @@ impl Process {
     }
 }
 
-pub const MAX_PROCESSES: usize = 8;
-pub static mut PROCESSES: [Option<Process>; MAX_PROCESSES] =
-    [None, None, None, None, None, None, None, None];
+pub const MAX_PROCESSES: usize = 16;
+pub static mut PROCESSES: [Option<Process>; MAX_PROCESSES] = [
+    None, None, None, None, None, None, None, None,
+    None, None, None, None, None, None, None, None,
+];
 
 /// Returns the calling thread's owning process id, or `NotFound`
 /// if no thread is currently scheduled.  Useful for paths that
