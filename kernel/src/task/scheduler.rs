@@ -1,6 +1,7 @@
-use crate::task::thread::{Priority, Thread, ThreadState};
 use crate::arch::{ArchHardware, CurrentArch};
 use crate::arch::trap::{disable_irqs, enable_irqs};
+use crate::smp::{self, MAX_CORES};
+use crate::task::thread::{Priority, Thread, ThreadState};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 pub const MAX_THREADS: usize = 16;
@@ -14,7 +15,7 @@ struct ThreadQueue {
 impl ThreadQueue {
     const fn new() -> Self {
         ThreadQueue {
-            items: [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None],
+            items: [None; MAX_THREADS],
             count: 0,
         }
     }
@@ -46,10 +47,17 @@ impl ThreadQueue {
     }
 }
 
+/// SMP-aware scheduler.
+///
+/// `current_indices[c]` is the per-core currently-running thread
+/// slot, indexed by physical CPU slot.  When a thread is in
+/// `state == Running`, its `owner_core` matches the slot it is
+/// running on; this pair of fields forms the per-iteration occupancy
+/// invariant.
 pub struct Scheduler {
     threads: [Option<Thread>; MAX_THREADS],
     queues: [ThreadQueue; PRIORITY_LEVELS],
-    current_idx: Option<usize>,
+    current_indices: [Option<usize>; MAX_CORES],
     running: bool,
 }
 
@@ -57,27 +65,26 @@ static SCHEDULER_LOCK: AtomicBool = AtomicBool::new(false);
 
 pub static mut SCHEDULER: Scheduler = Scheduler::new();
 
-static mut SCHED_SAME_HIT_COUNT: u32 = 0;
-
 impl Scheduler {
     pub const fn new() -> Self {
         Scheduler {
             threads: [const { None }; MAX_THREADS],
             queues: [const { ThreadQueue::new() }; PRIORITY_LEVELS],
-            current_idx: None,
+            current_indices: [const { None }; MAX_CORES],
             running: false,
         }
     }
 
+    /// Acquire the scheduler lock and disable IRQs on this CPU.  The
+    /// returned flags value must be passed to `unlock()` to restore
+    /// the IRQ state.  Callers must not hold any other lock at the
+    /// same time.
     pub fn lock(&self) -> usize {
-        // H5 (KERNEL_HEALTH): save the current DAIF mask and only
-        // re-enable IRQs on unlock if they were enabled at the
-        // matching `lock()`.  AArch64 has no
-        // dedicated IRQ-on-PUSH, so the saved-and-restored pair is
-        // the PSTATE-safe equivalent of Linux's
-        // `local_irq_save` / `local_irq_restore`.
-        let flags = unsafe { crate::arch::CurrentArch::local_irq_save() };
-        while SCHEDULER_LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        let flags = unsafe { CurrentArch::local_irq_save() };
+        while SCHEDULER_LOCK
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
             core::hint::spin_loop();
         }
         flags
@@ -86,7 +93,7 @@ impl Scheduler {
     pub fn unlock(&self, flags: usize) {
         SCHEDULER_LOCK.store(false, Ordering::Release);
         unsafe {
-            crate::arch::CurrentArch::local_irq_restore(flags);
+            CurrentArch::local_irq_restore(flags);
         }
     }
 
@@ -108,9 +115,9 @@ impl Scheduler {
 
         let slot = self.find_empty_slot();
         if let Some(idx) = slot {
-            
             let priority_idx = Self::priority_to_index(thread.priority);
             thread.state = ThreadState::Ready;
+            thread.owner_core = None;
             self.threads[idx] = Some(thread);
 
             if !self.queues[priority_idx].push(idx) {
@@ -126,63 +133,46 @@ impl Scheduler {
         self.unlock(flags);
     }
 
-    /// Pop the highest-priority ready thread, skipping any thread that
-    /// has been marked `ThreadState::Dead` since it was last enqueued.
+    /// Pop the next thread the given core should run.  The candidate
+    /// must already satisfy `state == Ready && owner_core == None`;
+    /// if it doesn't, we drop it on the floor and keep scanning.
+    /// Called with the scheduler lock held.
     ///
-    /// **Why we skip Dead here**: an EL0 fault path (`aarch64_sync_el0_handler`
-    /// and the new `aarch64_serror_el0_handler`) marks the current
-    /// user thread `Dead` *and then* calls `SCHEDULER.schedule()`.  At
-    /// that point the dying thread is still sitting in some priority
-    /// queue (it was Running a moment ago, got requeued on the
-    /// previous timer tick, and never re-popped because the fault
-    /// stole the timer).  Without the Dead filter, `pop_next` would
-    /// return the dead thread itself, `prev_idx == next_idx` would
-    /// short-circuit, and the system would loop forever in
-    /// `SCHED-SAME`.  With the filter, we re-scan up to `MAX_THREADS`
-    /// candidates; if every queued thread is Dead, fall through to
-    /// a linear scan of `self.threads` to find a still-Running/Ready
-    /// thread (e.g. devmgr, which lives outside the ready queues
-    /// while it's in EL0).  This is O(N) per call but N is tiny
-    /// (MAX_THREADS = 16) and the only alternatives — pruning dead
-    /// entries from every queue on every kill, or maintaining a
-    /// separate "alive" bitmap — are far more invasive.
-    fn pop_next_from_all_queues(&mut self) -> Option<usize> {
+    /// The function commits the ownership transition atomically:
+    /// `threads[idx].owner_core` is set to `Some(my)` before the
+    /// slot is returned, so a concurrent schedulder cannot pick the
+    /// same thread even if it acquires the lock immediately after
+    /// we release it.
+    fn pop_next_for_core(&mut self, my: usize) -> Option<usize> {
+        // Bound the scan so a pathological state machine doesn't
+        // loop indefinitely.
         for _ in 0..MAX_THREADS {
             let candidate = (0..PRIORITY_LEVELS)
-                .find_map(|i| self.queues[i].pop_highest_priority());
+                .find_map(|p| self.queues[p].pop_highest_priority());
             match candidate {
                 None => {
-                    // Ready queues are empty (or every queued thread
-                    // we examined was Dead and was therefore already
-                    // dropped).  Look for any thread that is *not*
-                    // Dead — typically one stuck in Running because
-                    // it wasn't requeued when its time slice expired
-                    // (e.g. the `loader` was killed before its next
-                    // tick, but `devmgr` is still in EL0).
-                    return self
-                        .threads
-                        .iter()
-                        .enumerate()
-                        .find_map(|(i, t)| match t {
-                            Some(thread) if thread.state != ThreadState::Dead => Some(i),
-                            _ => None,
-                        });
+                    // Ready queues are empty (or every queued
+                    // thread we examined was Dead and was therefore
+                    // already dropped).
+                    return None;
                 }
                 Some(idx) => {
-                    let is_dead = self.threads[idx]
-                        .as_ref()
-                        .map(|t| t.state == ThreadState::Dead)
-                        .unwrap_or(true);
-                    if !is_dead {
+                    let accept = match self.threads[idx].as_ref() {
+                        Some(t) => {
+                            t.state == ThreadState::Ready && t.owner_core.is_none()
+                        }
+                        None => false,
+                    };
+                    if accept {
+                        let t_mut = self.threads[idx].as_mut().expect("just checked");
+                        t_mut.owner_core = Some(my);
                         return Some(idx);
                     }
-                    // Drop the dead candidate and try the next one.
+                    // Drop the unacceptable candidate and try the
+                    // next one.
                 }
             }
         }
-        // Every ready-queue entry across every priority was Dead, and
-        // the linear scan of `self.threads` found nothing alive
-        // either.  Caller will hit the "all dead" branch.
         None
     }
 
@@ -195,361 +185,190 @@ impl Scheduler {
         self.queues[priority_idx].push(idx);
     }
 
+    /// Apply the page table / ASID associated with `idx`.  On
+    /// aarch64 this is a single `MSR ttbr0_el1, ...` plus a TLB
+    /// flush; no-op for architectures without `ttbr0`.
+    fn apply_ttbr_for(&self, idx: usize) {
+        if let Some(t) = self.threads[idx].as_ref() {
+            let pid = t.process_id;
+            #[cfg(target_arch = "aarch64")]
+            if let Some((l0_pa, asid)) =
+                crate::task::process::find_process_l0_user_pa(pid)
+            {
+                crate::arch::aarch64::mmu::set_ttbr0_el1(l0_pa, asid);
+            }
+        }
+    }
+
+    /// First-time entry: pick the highest-priority thread on this
+    /// core, mark it running, and context-switch out of the boot
+    /// stack.  Never returns.
     pub fn run(&mut self) -> ! {
         let flags = self.lock();
         self.running = true;
-
-        if let Some(idx) = self.pop_next_from_all_queues() {
-            self.current_idx = Some(idx);
-            unsafe {
-                if let Some(ref mut t) = self.threads[idx] {
-                    t.state = ThreadState::Running;
-                    t.reset_time_slice();
-                }
-            }
-
-            #[cfg(target_arch = "aarch64")]
-            unsafe {
-                crate::arch::CurrentArch::flush_tlb();
-            }
-
-            let mut dummy_ctx = crate::task::thread::ThreadContext::default();
+        let my = smp::current_core_id();
+        if my >= MAX_CORES {
+            // Offlined slot — can't happen for core 0, fall back to
+            // the legacy "find any thread" path but be defensive.
             self.unlock(flags);
-            unsafe {
-                CurrentArch::switch_context(&mut dummy_ctx, &mut self.threads[idx].as_mut().unwrap().context);
-            }
+            panic!("[SCHED] run() called from an unregistered slot");
         }
+        let idx = self
+            .pop_next_for_core(my)
+            .expect("[SCHED] No threads to run at boot");
 
-        panic!("[SCHED] No threads to run!");
+        if let Some(t) = self.threads[idx].as_mut() {
+            t.state = ThreadState::Running;
+            t.reset_time_slice();
+        }
+        self.current_indices[my] = Some(idx);
+
+        self.apply_ttbr_for(idx);
+        self.unlock(flags);
+
+        // Switch out to the selected thread using a dummy
+        // `prev` context.  When the next kernel entry happens
+        // (timer IRQ, exception), the scheduler will eventually
+        // swap contexts the normal way.
+        let mut dummy = crate::task::thread::ThreadContext::default();
+        let next_ptr =
+            &self.threads[idx].as_ref().unwrap().context as *const _ as *mut _;
+        unsafe {
+            CurrentArch::switch_context(&mut dummy, next_ptr);
+        }
+        // switch_to never returns when called with a dummy prev.
+        loop {
+            unsafe { CurrentArch::wait_for_interrupt() };
+        }
     }
 
     pub fn schedule(&mut self) {
         let flags = self.lock();
+        let my = smp::current_core_id();
+        if my >= MAX_CORES {
+            self.unlock(flags);
+            return;
+        }
 
         if !self.running {
             self.unlock(flags);
             return;
         }
 
-        let current_ticks = crate::drivers::timer::get_ticks();
-        self.check_sleeping_threads(current_ticks);
+        // Wake up any sleeping threads whose timer has elapsed.
+        self.check_sleeping_threads(crate::drivers::timer::get_ticks());
 
-        let prev_idx = match self.current_idx {
-            Some(idx) => idx,
-            None => {
-                self.unlock(flags);
-                return;
-            }
-        };
-
-        let prev_state = if let Some(ref mut t) = self.threads[prev_idx] {
-            if t.state == ThreadState::Running {
-                t.state = ThreadState::Ready;
-            }
-            t.remaining_ticks = t.remaining_ticks.saturating_sub(1);
-            if t.remaining_ticks == 0 {
-                t.decay_priority();
-            }
-            t.state
-        } else {
-            ThreadState::Dead
-        };
-
-        if prev_state == ThreadState::Ready {
-            self.requeue_current(prev_idx);
-        }
-
-        if let Some(next_idx) = self.pop_next_from_all_queues() {
-            let prev_name = if let Some(ref t) = self.threads[prev_idx] { t.name } else { "none" };
-            let next_name = if let Some(ref t) = self.threads[next_idx] { t.name } else { "none" };
-
-            if let Some(ref mut t) = self.threads[next_idx] {
-                t.state = ThreadState::Running;
-                t.reset_time_slice();
-            }
-
-            self.current_idx = Some(next_idx);
-
-            // The SCHED-SAME short-circuit only applies when `prev`
-            // was a live Running thread that the pop_next logic
-            // happened to re-select (e.g. the only ready thread is
-            // the same one we just ran).  If the caller killed the
-            // prev thread before invoking `schedule()` (the EL0
-            // fault / SError path), `prev_state` is already `Dead`
-            // and we *must* perform the switch so the dispatcher
-            // can `eret` into a non-dead context.
-
-            // **Short-circuit when there's nothing to switch to.**  When a
-            // timer IRQ nests inside kernel EL1 (e.g. during
-            // `sys_spawn`'s safe-copy loops), `schedule()` runs with
-            // `current_idx == loader` and the only Ready thread is
-            // `loader` itself, so `pop_next` returns `loader` again.
-            // Calling `switch_to(loader, loader)` would still execute
-            // its trailing `ret x30 = user_eret_stub → eret`, which
-            // **hijacks** the calling kernel stack frame: control flow
-            // jumps to EL0 as if we'd finished a context switch, the
-            // syscall handler's epilogue (`msr elr_el1; eret`) never
-            // runs, and the original `syscalls::spawn("devmgr", ...)`
-            // SVC never returns.  That cascades into the user's
-            // `tp!("T11: returned from spawn(devmgr)")` never firing
-            // because the loader's PC is stuck at the SVC+4 PC inside
-            // an unbroken timer-tick → switch_to → eret → SVC trap →
-            // timer IRQ → switch_to → eret loop.
-            //
-            // Skip the `switch_to` + `ret` entirely when we're already
-            // on the thread we'd be switching to.  The time-slice
-            // accounting (`t.reset_time_slice` above) and state
-            // transition (Ready → Running) have already been applied
-            // in this same scope, so control returning to the caller
-            // of `schedule()` is the correct semantic: we stay on the
-            // current kernel stack frame and resume the interrupted
-            // syscall / IRQ handler's epilogue.
-            //
-            // **Phase 3 hardening (prev==next return path)**: even
-            // when we skip the actual `switch_to`, the previous
-            // (pre-fix) implementation never reloaded `TTBR0_EL1`.
-            // That left the CPU's translation regime pointed at
-            // whatever process last ran `set_ttbr0_el1` -- typically
-            // a now-dead child like `ls`.  When the parent (`osh`)
-            // then resumed on this same kernel stack, the very next
-            // user-side instruction fetch could Translation-fault on
-            // a perfectly valid VA in `osh`'s own L0.  We now reload
-            // `TTBR0_EL1` from the *current* process's L0 + ASID on
-            // every resumption, regardless of whether we hit the
-            // short-circuit or the full switch path.  This is the
-            // explicit fix for the KERNEL_HEALTH A2 follow-on
-            // (EL0-FAULT EC=0x24 after `ls` exit).
-            if prev_idx == next_idx && prev_state != ThreadState::Dead {
-                // When the scheduler selects the same thread (common
-                // during IRQ nesting), reload TTBR0_EL1 + flush the
-                // icache at the thread's user PC so the upcoming eret
-                // uses the correct translation regime.  This is the
-                // same pair of operations the full switch path does
-                // before/after switch_to, but without the switch itself.
-                #[cfg(target_arch = "aarch64")]
-                {
-                    let cur_pid = self.threads[prev_idx].as_ref().unwrap().process_id;
-                    if let Some((cur_l0_pa, cur_asid)) =
-                        crate::task::process::find_process_l0_user_pa(cur_pid)
-                    {
-                        crate::arch::aarch64::mmu::set_ttbr0_el1(cur_l0_pa, cur_asid);
+        // 1. Release this core's currently-running thread (if any).
+        let prev_idx = match self.current_indices[my] {
+            Some(i) => {
+                // Compute everything in one &mut borrow scope, then
+                // requeue separately so we don't double-borrow
+                // `self.threads` via `requeue_current`.
+                let needs_requeue = {
+                    let t = self.threads[i].as_mut().expect("current thread vanished");
+                    let was_running = t.state == ThreadState::Running;
+                    if was_running {
+                        t.state = ThreadState::Ready;
                     }
-                    if let Some(ref t) = self.threads[prev_idx] {
-                        let user_pc = t.context.elr;
-                        if user_pc != 0 {
-                            unsafe {
-                                <crate::arch::aarch64::Aarch64Hardware as ArchHardware>::instruction_barrier();
-                            }
-                        }
-                        // PRE-ERET generation-stamp check: if the thread's
-                        // PageTableTree generation doesn't match the process,
-                        // the thread holds a stale tree handle.
-                        if let Some(gen) =
-                            crate::task::process::find_process_page_table_gen(t.process_id)
-                        {
-                            if t.context.page_table_gen != gen {
-                                crate::log_error!(
-                                    "SCHED",
-                                    "PRE-ERET: pid={} page_table_gen mismatch: thread={} process={}",
-                                    t.process_id, t.context.page_table_gen, gen
-                                );
-                            }
-                        }
-                        // PRE-ERET validation: walk the page table for
-                        // user_sp (checking the page below SP, since SP
-                        // can start at stack_top which is one-past-end).
-                        let usp = t.context.user_sp as usize;
-                        let check_va = if usp & 0xFFF == 0 && usp >= 8 {
-                            usp - 8
-                        } else {
-                            usp
-                        };
-                        if let Some((l0_pa, _)) =
-                            crate::task::process::find_process_l0_user_pa(t.process_id)
-                        {
-                    match crate::arch::aarch64::mmu::translate_user_va(l0_pa, check_va) {
-                        Some(pa) => {
-                            crate::log_debug!("SCHED", "PRE-ERET: user_sp={:#x} -> PA {:#x} pid={} OK",
-                                usp, pa, t.process_id);
-                        }
-                        None => {
-                            crate::log_error!(
-                                "SCHED",
-                                "PRE-ERET: user_sp={:#x} check={:#x} pid={} has no valid PTE!",
-                                usp, check_va, t.process_id
-                            );
-                            crate::log_error!(
-                                "SCHED",
-                                "  PT-VALIDATE pid={}: {}",
-                                t.process_id,
-                                if crate::task::process::validate_process_page_table(t.process_id)
-                                    { "tree OK" } else { "** TREE CORRUPTED **" }
-                            );
+                    t.remaining_ticks = t.remaining_ticks.saturating_sub(1);
+                    if t.remaining_ticks == 0 {
+                        t.decay_priority();
                     }
-                }
-                }
-                }
-                }
-                self.unlock(flags);
-                // Use a volatile write to ensure the compiler doesn't elide
-                // our early return: the dummy `static mut` sink prevents the
-                // LLVM optimizer from realizing that we just fall through
-                // into the switch_to block, and the `core::hint::black_box`
-                // hints that the comparison has side effects that matter.
-                unsafe {
-                    core::ptr::write_volatile(&mut SCHED_SAME_HIT_COUNT as *mut u32, 1);
-                }
-                core::hint::black_box(prev_idx);
-                return;
-            }
-
-            let prev_context_ptr = &mut self.threads[prev_idx].as_mut().unwrap().context as *mut _;
-            let next_context_ptr = &mut self.threads[next_idx].as_mut().unwrap().context as *mut _;
-
-            // CRITICAL: switch TTBR0_EL1 to the *next* thread's process
-            // page table before we context-switch.  Without this, the
-            // current TTBR0 still points at whichever process most
-            // recently called `Process::launch_user_program` — and
-            // every other process's user VA range would walk into the
-            // wrong L0 page, faulting on a perfectly valid address.
-            //
-            // We also have to swap back to the *previous* thread's L0
-            // on the way back, because the new process's L0 only
-            // covers that new process's user VA; the kernel still
-            // needs to find the old user stack during `eret`/signal
-            // teardown.  Doing both in one place (this function) keeps
-            // the policy in one spot.
-            //
-            // **Phase 3 (ASID)**: the L0 PA now travels with its
-            // owning process's 8-bit ASID.  `set_ttbr0_el1` packs
-            // both into a single MSR, and the inner barrier
-            // sequence (`tlbi vmalle1is` + `dsb ish` + `isb`)
-            // ensures the new translation regime is observable to
-            // the page-table walker before the first user-side
-            // fetch after `eret`.
-            let next_pid = self.threads[next_idx].as_ref().unwrap().process_id;
-            let prev_pid = self.threads[prev_idx].as_ref().unwrap().process_id;
-
-            let next_l0_asid = crate::task::process::find_process_l0_user_pa(next_pid);
-            #[cfg(target_arch = "aarch64")]
-            if let Some((next_l0_pa, next_asid)) = next_l0_asid {
-                crate::arch::aarch64::mmu::set_ttbr0_el1(next_l0_pa, next_asid);
-            }
-            #[cfg(target_arch = "aarch64")]
-            unsafe {
-                crate::arch::CurrentArch::flush_tlb();
-            }
-
-            #[cfg(target_arch = "aarch64")]
-            if let Some(ref t) = self.threads[next_idx] {
-                if let Some(gen) =
-                    crate::task::process::find_process_page_table_gen(t.process_id)
-                {
-                    if t.context.page_table_gen != gen {
-                        crate::log_error!(
-                            "SCHED",
-                            "PRE-ERET: pid={} page_table_gen mismatch: thread={} process={}",
-                            t.process_id, t.context.page_table_gen, gen
-                        );
-                    }
-                }
-                let usp = t.context.user_sp as usize;
-                let check_va = if usp & 0xFFF == 0 && usp >= 8 {
-                    usp - 8
-                } else {
-                    usp
+                    t.owner_core = None;
+                    was_running
                 };
-                if let Some((l0_pa, _)) =
-                    crate::task::process::find_process_l0_user_pa(t.process_id)
-                {
-                    match crate::arch::aarch64::mmu::translate_user_va(l0_pa, check_va) {
-                        Some(pa) => {
-                            crate::log_debug!("SCHED", "PRE-ERET: user_sp={:#x} -> PA {:#x} pid={} OK",
-                                usp, pa, t.process_id);
-                        }
-                        None => {
-                            crate::log_error!(
-                                "SCHED",
-                                "PRE-ERET: user_sp={:#x} check={:#x} pid={} has no valid PTE!",
-                                usp, check_va, t.process_id
-                            );
-                            crate::log_info!(
-                                "SCHED",
-                                "  PT-VALIDATE pid={}: {}",
-                                t.process_id,
-                                if crate::task::process::validate_process_page_table(t.process_id)
-                                    { "tree OK" } else { "** TREE CORRUPTED **" }
-                            );
-                        }
-                    }
+                if needs_requeue {
+                    self.requeue_current(i);
                 }
+                i
             }
-            self.unlock(flags);
+            None => usize::MAX, // first time on this core or returning from WFE
+        };
 
-            unsafe {
-                CurrentArch::switch_context(&mut *prev_context_ptr, &*next_context_ptr);
+        // 2. Pick the next thread.  Strictly
+        //    `Ready && owner_core == None`.
+        let next_idx = match self.pop_next_for_core(my) {
+            Some(i) => i,
+            None => {
+                // Nothing to run on this core.  Park in WFE —
+                // another core may wake us by `wake_thread` setting
+                // ONLINE_MASK[my], or by an IRQ from outside.
+                self.current_indices[my] = None;
+                self.unlock(flags);
+                unsafe { CurrentArch::wait_for_event(); }
+                // After wake, reschedule immediately.
+                return self.schedule();
             }
+        };
 
-            // Control returns here when this thread is scheduled back in
-            // (i.e. the *next* thread from the call above is now the
-            // previous one).  Restore TTBR0 to the original (now current)
-            // process's L0 so the kernel can keep poking at the user
-            // address space it was working on before the switch.  We do
-            // exactly the same double-barrier dance as the outgoing path
-            // (B1.3) so that the second process we switched *into* got
-            // the same MMU-walker-visible flush on its way in.
-            #[cfg(target_arch = "aarch64")]
-            unsafe {
-                crate::arch::CurrentArch::flush_tlb();
-
-                // Restore TTBR0 to the original (now current) process's L0
-                // so the CPU can translate user VAs through the correct table
-                // when returning back to the user context!
-                if let Some(ref t) = self.threads[prev_idx] {
-                    if let Some((cur_l0_pa, cur_asid)) =
-                        crate::task::process::find_process_l0_user_pa(t.process_id)
-                    {
-                        crate::arch::aarch64::mmu::set_ttbr0_el1(cur_l0_pa, cur_asid);
-                    }
-                }
-
-                // Zircon-aligned Cache Hardening: Invalidate instruction pre-fetch pipeline
-                // at the thread's user-mode entry PC (elr) to prevent QEMU TCG decoding translation
-                // faults on the very first instruction fetch after eret!
-                if let Some(ref mut t) = self.threads[prev_idx] {
-                    let user_pc = t.context.elr;
-                    if user_pc != 0 {
-                        unsafe {
-                            <crate::arch::aarch64::Aarch64Hardware as ArchHardware>::instruction_barrier();
-                        }
-                    }
-                }
-            }
-        } else {
-            let all_dead = self.threads.iter().all(|t| match t {
-                None => true,
-                Some(thread) => thread.state == ThreadState::Dead,
-            });
-
-            self.unlock(flags);
-
-            if all_dead {
-                crate::log_error!("SCHED", "No runnable threads left! Halting CPU safely...");
-                unsafe {
-                    crate::arch::trap::disable_irqs();
-                    loop {
-                        crate::arch::CurrentArch::wait_for_event();
-                    }
-                }
-            }
-
-            self.current_idx = None;
+        // 3. State submit for `next`.
+        {
+            let t = self.threads[next_idx].as_mut().unwrap();
+            t.state = ThreadState::Running;
+            t.reset_time_slice();
         }
+        self.current_indices[my] = Some(next_idx);
+
+        // 4. prev == next short circuit (IRQ nesting or a yield
+        //    that didn't actually move us off this thread).
+        if prev_idx == next_idx {
+            // Make sure TTBR0 is in sync (cheap) and bail out
+            // without an actual register switch.
+            self.apply_ttbr_for(next_idx);
+            self.unlock(flags);
+            return;
+        }
+
+        // 5. Apply TTBR0 + TLB flush for the new thread BEFORE we
+        //    release the lock; the actual `switch_context` is then
+        //    lockless, satisfying the "decoupled locking &
+        //    blocking" requirement.
+        self.apply_ttbr_for(next_idx);
+        self.unlock(flags);
+
+        // 6. Register-level context switch.
+        if prev_idx == usize::MAX {
+            // Secondary-core boot: no prev, just push a dummy
+            // context and jump to `next`.
+            let mut dummy = crate::task::thread::ThreadContext::default();
+            let next_ptr =
+                &self.threads[next_idx].as_ref().unwrap().context as *const _ as *mut _;
+            unsafe {
+                CurrentArch::switch_context(&mut dummy, next_ptr);
+            }
+            // Should not return on this path.
+            return;
+        }
+
+        // Two-element borrow conflicts with `&mut self`; switch
+        // contexts through raw pointers instead.  Safe because
+        // `prev_idx` and `next_idx` are distinct and the scheduler
+        // lock prevents either index from being mutated by other
+        // CPUs between obtaining the pointers and the actual
+        // switch.
+        let prev_ptr =
+            &mut self.threads[prev_idx].as_mut().unwrap().context as *mut _;
+        let next_ptr = &self.threads[next_idx].as_ref().unwrap().context as *const _;
+        unsafe {
+            CurrentArch::switch_context(prev_ptr, next_ptr);
+        }
+
+        // When we return here, `prev` is once again the
+        // currently-running thread on `my`.  Reapply the page
+        // table so the EL1 code that follows sees the user L0
+        // set up for our own process.
+        self.apply_ttbr_for(prev_idx);
     }
 
     pub fn get_current_thread_ptr(&mut self) -> Option<*mut Thread> {
         let flags = self.lock();
-        let ptr = self.current_idx.and_then(|idx| self.threads[idx].as_mut().map(|t| t as *mut Thread));
+        let my = smp::current_core_id();
+        let slot = if my < MAX_CORES {
+            self.current_indices[my]
+        } else {
+            None
+        };
+        let ptr = slot.and_then(|idx| self.threads[idx].as_mut().map(|t| t as *mut Thread));
         self.unlock(flags);
         ptr
     }
@@ -573,7 +392,16 @@ impl Scheduler {
         let flags = self.lock();
         for i in 0..MAX_THREADS {
             if let Some(ref mut t) = self.threads[i] {
-                if t.id == thread_id && (t.state == ThreadState::Blocked || t.state == ThreadState::Sleeping) {
+                if t.id == thread_id
+                    && (t.state == ThreadState::Blocked
+                        || t.state == ThreadState::Sleeping)
+                {
+                    if t.owner_core.is_some() {
+                        // Defensive — shouldn't happen if everyone
+                        // releases ownership before blocking, but
+                        // if it does, silently drop the claim.
+                        t.owner_core = None;
+                    }
                     t.state = ThreadState::Ready;
                     self.requeue_current(i);
                     break;
@@ -594,6 +422,7 @@ impl Scheduler {
                     if let Some(wakeup_tick) = t.sleep_until {
                         if current_ticks >= wakeup_tick {
                             t.state = ThreadState::Ready;
+                            t.owner_core = None;
                             t.sleep_until = None;
                             let priority_idx = Self::priority_to_index(t.priority);
                             if !self.queues[priority_idx].push(i) {

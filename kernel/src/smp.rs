@@ -1,121 +1,154 @@
-//! # 🏎️ SMP (Symmetric Multiprocessing) Core Booting & Handshake
+//! SMP (Symmetric Multiprocessing) bootstrap & topology discovery.
 //!
-//! Coordinates multi-core boot sequences on AArch64 using an assembly-level mailbox
-//! combined with ARM PSCI CPU_ON firmware calls.
-//! Each secondary core is started one by one with a strict acknowledgment handshake
-//! to prevent racing and memory write corruption.
+//! This module replaces the original "1 file, 1 PSCI loop" boot with
+//! a UNIX-style, FDT-driven topology bring-up.  Each secondary core
+//! is launched by `boot_secondary_cores()`, which:
+//!
+//!   1. Reads `/cpus` from the DTB provided by the bootloader.
+//!   2. Cross-checks the firmware declaration against an explicit
+//!      `PSCI_AFFINITY_INFO` round trip.
+//!   3. For each present/online slot, allocates a private kernel
+//!      stack, writes the mailbox, and issues `PSCI_CPU_ON`.
+//!
+//! Submodules:
+//!   - `psci`       – Direct PSCI SMC/HVC dispatch
+//!   - `probe`      – FDT `/cpus` scan + ONLINE_MASK population
+//!   - `per_core`   – Secondary entry points (`kmain_secondary`)
+//!   - `boot`       – `boot_secondary_cores()` orchestrator
 
+pub mod psci;
+pub mod probe;
+pub mod per_core;
+pub mod boot;
+
+use crate::fdt::CpuMask;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use crate::arch::ArchHardware;
 
-extern "C" {
-    static mut SECONDARY_CORE_ENTRY: usize;
-    static mut SECONDARY_CORE_SP: usize;
+/// Maximum number of CPU slots tracked by the kernel.  The DTB scan
+/// itself may return up to `crate::fdt::MAX_CPUS_IN_DTB` (= 16)
+/// entries; this limit is the absolute upper bound for any
+/// per-CPU static array (`Scheduler.current_indices`,
+/// `idle_flags`, etc).
+pub const MAX_CORES: usize = 8;
+
+/// `possible`: bits set if the firmware declares the slot as a
+/// `cpu@N` in `/cpus`.  Always treated as "this slot is real
+/// hardware; you may try to bring it up".
+pub static POSSIBLE_MASK: CpuMask = CpuMask::new();
+
+/// `present`: a subset of `POSSIBLE_MASK` reflecting cpus that pass
+/// any firmware-level sanity checks (compatible string contains
+/// "arm,cortex", etc.).  Reserved for future use; Pangu 1.0 does
+/// not gate scheduling on this bit.
+pub static PRESENT_MASK: CpuMask = CpuMask::new();
+
+/// `online`: a subset of `POSSIBLE_MASK` whose slot has been
+/// confirmed running either by `PSCI_AFFINITY_INFO` or by the
+/// entry handshake in `kmain_secondary`.  The scheduler's
+/// `current_indices[]` is only meaningful when the bit is set.
+pub static ONLINE_MASK: CpuMask = CpuMask::new();
+
+/// Cached `cpu@N` descriptors produced by `probe::probe_cpus()`.
+/// Indexed by slot; only `0..cpu_descriptors.count` is valid.
+pub static mut CPU_DESCRIPTORS: [CpuDescStatic; 16] = [const {
+    CpuDescStatic {
+        reg: 0,
+        enable_method: 0,
+        enabled: false,
+        present: false,
+    }
+}; 16];
+pub static mut CPU_DESCRIPTOR_COUNT: usize = 0;
+
+/// Compact snapshot of `/cpus` parsed data, kept around because
+/// `heapless::String` is not `Sync` and `static mut` arrays cannot
+/// hold heapless types without `MaybeUninit`.
+#[derive(Debug, Clone, Copy)]
+pub struct CpuDescStatic {
+    pub reg: u32,
+    /// 4-byte tag of the enable-method (hashed to avoid string in
+    /// `static mut`); canonical values:
+    /// 0 = none, 1 = "psci", 2 = "spin-table".
+    pub enable_method: u8,
+    pub enabled: bool,
+    pub present: bool,
 }
 
-/// The total number of active cores in the system (including Core 0).
-pub static ACTIVE_CORES: AtomicUsize = AtomicUsize::new(1);
+/// Holds the slot id of the current CPU.  `usize::MAX` means
+/// "the kernel hasn't recorded a slot yet" (very early boot) — in
+/// that case `current_core_id()` falls back to `MPIDR_EL1`.
+pub static CURRENT_CORE_SLOT: AtomicUsize = AtomicUsize::new(usize::MAX);
 
-/// Kernel physical entry point for secondary core boot.
-const KERNEL_ENTRY_PHYS_ADDR: u64 = 0x40080000;
-
-/// Call ARM PSCI CPU_ON to wake up a specific core at the physical entry point.
-#[cfg(target_arch = "aarch64")]
-fn psci_cpu_on(cpu_id: u64, entry_point_pa: u64) -> i32 {
-    let mut ret: u64;
-    unsafe {
-        // Try Hypervisor Call (HVC) first, which is standard on non-secure EL1 hypervisors
-        core::arch::asm!(
-            "hvc #0",
-            inout("x0") 0xC4000003u64 => ret,
-            in("x1") cpu_id,
-            in("x2") entry_point_pa,
-            in("x3") 0u64,
-            out("x4") _, out("x5") _, out("x6") _, out("x7") _,
-        );
+/// Returns the per-CPU slot id of the caller (0..MAX_CORES).
+///
+/// Resolution order:
+///   1. `CURRENT_CORE_SLOT` (cheap atom load) — set as soon as a
+///      secondary core clears the boot mailbox, or by `kernel_main`
+///      for core 0.
+///   2. `MPIDR_EL1` (architectural fallback) — used during the
+///      few instructions before the slot is recorded.
+///
+/// The caller is expected to compare the result against `MAX_CORES`
+/// before using it as an array index; out-of-range values are
+/// treated as "this CPU is not under kernel control yet" by the
+/// scheduler.
+#[inline]
+pub fn current_core_id() -> usize {
+    let slot = CURRENT_CORE_SLOT.load(Ordering::Relaxed);
+    if slot != usize::MAX {
+        return slot;
     }
-    if (ret as i32) < 0 {
-        // Fallback to Secure Monitor Call (SMC) if HVC is not supported or returns error
+    // Fallback: read MPIDR_EL1.Aff0.  On QEMU virt / Cortex-A72 this
+    // is a contiguous 0..3 assignment that matches `reg` directly,
+    // which is good enough for early boot and for cores that haven't
+    // recorded a slot yet.
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mpidr: u64;
         unsafe {
             core::arch::asm!(
-                "smc #0",
-                inout("x0") 0xC4000003u64 => ret,
-                in("x1") cpu_id,
-                in("x2") entry_point_pa,
-                in("x3") 0u64,
-                out("x4") _, out("x5") _, out("x6") _, out("x7") _,
+                "mrs {0}, mpidr_el1",
+                out(reg) mpidr,
+                options(nomem, preserves_flags)
             );
         }
+        (mpidr & 0xff) as usize
     }
-    ret as i32
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        0
+    }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
-fn psci_cpu_on(_cpu_id: u64, _entry_point_pa: u64) -> i32 {
-    0
+/// Hash a small set of well-known `enable-method` strings into a
+/// `u8` so we can keep descriptors in `static mut`.
+pub fn encode_enable_method(s: &str) -> u8 {
+    match s.trim_end_matches('\0') {
+        "" | "spintable" => 2,
+        "psci" => 1,
+        _ => 0,
+    }
 }
 
-/// Boot Core 1, Core 2, and Core 3 using our high-reliability mailbox handshake.
-pub fn boot_secondary_cores() {
-    crate::log_info!("SMP", "Booting secondary CPU cores...");
+/// Number of CPUs that have already entered the kernel (recorded
+/// via `register_core`).  Increments monotonically as each
+/// secondary core clears the mailbox.
+pub static BOOTED_CORES: AtomicUsize = AtomicUsize::new(1);
 
-    for core_id in 1..4 {
-        // Allocate a separate 4KB kernel stack page for each secondary core
-        let stack_page_pa = crate::arch::aarch64::phys::alloc_kstack_page()
-            .expect("Failed to allocate stack page for secondary core");
-        let stack_top_va = crate::arch::mmu_facade::pa_to_kernel_va(stack_page_pa.as_usize()) + 4096;
+/// Counts secondary entry completions for the diagnostic log.
+/// Increments inside `per_core::kmain_secondary` after the per-core
+/// init has finished — if this stays at zero, the PSCI CPU_ON
+/// handshake never actually delivered execution to the secondaries.
+pub static SECONDARY_ENTRY_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-        crate::log_info!("SMP", "Waking up Core {} (SP Top = {:#x})...", core_id, stack_top_va);
-
-        unsafe {
-            // 1. Write the stack top and the secondary kmain entry point into the mailbox
-            core::ptr::write_volatile(&mut SECONDARY_CORE_SP as *mut usize, stack_top_va);
-            core::ptr::write_volatile(&mut SECONDARY_CORE_ENTRY as *mut usize, kmain_secondary as usize);
-            
-            // Ensure memory writes are visible before calling PSCI
-            core::sync::atomic::fence(Ordering::SeqCst);
-
-            // 2. Invoke PSCI CPU_ON to wake up the secondary core at _start (physical 0x40080000)
-            let psci_ret = psci_cpu_on(core_id as u64, KERNEL_ENTRY_PHYS_ADDR);
-            if psci_ret != 0 {
-                crate::log_error!("SMP", "PSCI CPU_ON failed for Core {} with error code: {}", core_id, psci_ret);
-                continue;
-            }
-
-            // 3. Spin-wait for the secondary core to clear ENTRY to 0 to acknowledge boot
-            while core::ptr::read_volatile(&SECONDARY_CORE_ENTRY as *const usize) != 0 {
-                core::hint::spin_loop();
-            }
-        }
-
-        // Increment total active cores in the system
-        ACTIVE_CORES.fetch_add(1, Ordering::SeqCst);
-        crate::log_info!("SMP", "Core {} booted successfully and acknowledged!", core_id);
-    }
-
-    crate::log_info!("SMP", "All secondary cores active! Total Cores = {}", ACTIVE_CORES.load(Ordering::Relaxed));
-}
-
-/// Native EL1 secondary core entry point.
-#[no_mangle]
-pub extern "C" fn kmain_secondary(core_id: usize) -> ! {
-    // 1. Initialize local CPU interrupt interface and generic timer
-    crate::drivers::gic::init_local_cpu_interface();
-    crate::drivers::timer::init();
-
-    crate::log_info!("SMP-SECONDARY", "Core {} fully initialized, enabling local IRQs...", core_id);
-
-    // 2. Enable local CPU interrupts
-    crate::arch::aarch64::trap::enable_irqs();
-
-    // 3. Enter the preemptive multitasking loop
-    loop {
-        unsafe {
-            crate::task::scheduler::SCHEDULER.schedule();
-        }
-        // If there are no threads ready to execute, sleep in low-power state
-        unsafe {
-            crate::arch::CurrentArch::wait_for_event();
-        }
-    }
+/// Called by a secondary core (or by `boot_secondary_cores()`
+/// itself for slot 0) once it has cleared the boot mailbox and
+/// owns its own kernel stack.  Stores its slot in
+/// `CURRENT_CORE_SLOT` and increments `BOOTED_CORES`.
+pub fn register_core(slot: usize) {
+    CURRENT_CORE_SLOT.store(slot, Ordering::Relaxed);
+    BOOTED_CORES.fetch_add(1, Ordering::Relaxed);
+    // The slot itself is now confirmed running: explicitly mark
+    // ONLINE in case the probe didn't already do so via PSCI.
+    ONLINE_MASK.set(slot);
 }

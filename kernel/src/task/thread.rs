@@ -52,6 +52,13 @@ pub struct Thread {
     pub ipc_transfer_slots: [Option<(crate::object::handle_table::KernelObject, u32)>; 2],
     pub port_packet_slot: Option<crate::ipc::port::PortPacket>,
     pub sleep_until: Option<u64>,
+
+    /// SMP-only: physical CPU slot that currently owns this thread.
+    /// `None` when the thread is free to be scheduled; `Some(c)`
+    /// while the thread is running on CPU slot `c`.  Updated
+    /// atomically inside the scheduler lock, never read outside of
+    /// the lock except by the scheduler itself.
+    pub owner_core: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +124,7 @@ impl Thread {
             ipc_transfer_slots: [None, None],
             port_packet_slot: None,
             sleep_until: None,
+            owner_core: None,
         })
     }
 
@@ -151,6 +159,7 @@ impl Thread {
             ipc_transfer_slots: [None, None],
             port_packet_slot: None,
             sleep_until: None,
+            owner_core: None,
         })
     }
 
@@ -185,6 +194,7 @@ impl Thread {
             ipc_transfer_slots: [None, None],
             port_packet_slot: None,
             sleep_until: None,
+            owner_core: None,
         })
     }
 
@@ -219,6 +229,7 @@ impl Thread {
             ipc_transfer_slots: [None, None],
             port_packet_slot: None,
             sleep_until: None,
+            owner_core: None,
         })
     }
 

@@ -68,6 +68,10 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
         BOOTFS_PHYS_SIZE = bootfs_size;
     }
 
+    // Slot 0 is the primary CPU.  Record it before any SMP code
+    // path expects `current_core_id()` to return a known value.
+    smp::register_core(0);
+
     match fdt::parse(dtb_ptr) {
         Ok(boot) => {
             unsafe {
@@ -154,8 +158,14 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
             // Start preemptive scheduling!
             crate::log_info!("SCHED", "Starting preemptive multitasking...");
 
-            // Boot secondary multi-core CPUs
-            smp::boot_secondary_cores();
+            // Probe DTB + PSCI; record topology.  Cheap & idempotent.
+            smp::probe::probe_cpus();
+            smp::boot::log_topology();
+
+            // Boot secondary multi-core CPUs (PSCI CPU_ON,
+            // possibly skipped if firmware already brought them
+            // up).
+            smp::boot::boot_secondary_cores();
 
             // Enable IRQs globally so interrupts work
             crate::arch::aarch64::trap::enable_irqs();

@@ -81,6 +81,7 @@ impl Port {
         let cur_thread = unsafe { &mut *cur_thread_ptr };
 
         cur_thread.port_packet_slot = None;
+        cur_thread.owner_core = None;
         cur_thread.state = crate::task::thread::ThreadState::Blocked;
         self.waiter = Some(cur_thread.id);
 
@@ -113,6 +114,7 @@ impl Port {
         let cur_thread = unsafe { &mut *cur_thread_ptr };
 
         cur_thread.port_packet_slot = None;
+        cur_thread.owner_core = None;
         cur_thread.state = crate::task::thread::ThreadState::Blocked;
         self.waiter = Some(cur_thread.id);
 

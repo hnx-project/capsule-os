@@ -165,6 +165,7 @@ impl Channel {
         cur_thread.ipc_buf_ptr = data.as_mut_ptr() as usize;
         cur_thread.ipc_buf_len = data.len();
         cur_thread.ipc_actual_len = 0;
+        cur_thread.owner_core = None;
         cur_thread.state = crate::task::thread::ThreadState::Blocked;
         for h in cur_thread.ipc_transfer_handles.iter_mut() {
             *h = None;
@@ -258,6 +259,7 @@ impl Channel {
         cur_thread.ipc_buf_ptr = data.as_ptr() as usize;
         cur_thread.ipc_buf_len = data.len();
         cur_thread.ipc_actual_len = 0;
+        cur_thread.owner_core = None;
         cur_thread.state = crate::task::thread::ThreadState::Blocked;
         
         for slot in cur_thread.ipc_transfer_slots.iter_mut() {
@@ -362,6 +364,7 @@ impl Channel {
         cur_thread.ipc_buf_ptr = data.as_mut_ptr() as usize;
         cur_thread.ipc_buf_len = data.len();
         cur_thread.ipc_actual_len = 0;
+        cur_thread.owner_core = None;
         cur_thread.state = crate::task::thread::ThreadState::Blocked;
 
         let tid = cur_thread.id;

@@ -161,6 +161,7 @@ pub extern "C" fn aarch64_sync_el0_handler(frame: *mut TrapFrame) {
                     ec, esr, elr, far, spsr, (*t).id, pid
                 );
                 crate::task::init_respawn::respawn_init_if_anchor(pid);
+                (*t).owner_core = None;
                 (*t).state = crate::task::thread::ThreadState::Dead;
                 crate::task::scheduler::SCHEDULER.schedule();
             } else {
@@ -235,6 +236,7 @@ pub extern "C" fn aarch64_serror_el0_handler(frame: *mut TrapFrame) {
             // `task::init_respawn` for the rationale on the
             // "consume once" budget.
             crate::task::init_respawn::respawn_init_if_anchor(pid);
+            (*t).owner_core = None;
             (*t).state = crate::task::thread::ThreadState::Dead;
             crate::task::scheduler::SCHEDULER.schedule();
         } else {

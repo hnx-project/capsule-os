@@ -1,4 +1,5 @@
 use core::fmt;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 pub struct BootInfo {
     pub uart_base: usize,
@@ -22,6 +23,73 @@ impl BootInfo {
             gicd_base: 0,
             gicc_base: 0,
         }
+    }
+}
+
+/// Single CPU core descriptor extracted from `/cpus`.  Mirrors the
+/// relevant subset of `cpu@N` properties used by the SMP bootstrap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CpuDescriptor {
+    /// 0-based `cpu@N` index (= `reg[0]` in the DTB).
+    pub reg: u32,
+    /// True if the node carries `status = "okay"` or omits the
+    /// `status` property altogether (= "okay" by default per spec).
+    pub enabled: bool,
+    /// `enable-method` string copied from the property, if present.
+    pub enable_method: heapless::String<16>,
+    /// `compatible` string copy.  E.g. `"arm,cortex-a72"`.
+    pub compatible: heapless::String<32>,
+}
+
+impl CpuDescriptor {
+    pub const fn empty() -> Self {
+        CpuDescriptor {
+            reg: 0,
+            enabled: false,
+            enable_method: heapless::String::new(),
+            compatible: heapless::String::new(),
+        }
+    }
+}
+
+/// Result of scanning `/cpus` — at most `MAX_CPUS_IN_DTB` entries
+/// returned in `reg`-sorted order.
+pub const MAX_CPUS_IN_DTB: usize = 16;
+
+pub struct CpuScanResult {
+    pub count: usize,
+    pub cpus: [CpuDescriptor; MAX_CPUS_IN_DTB],
+}
+
+impl CpuScanResult {
+    pub const fn empty() -> Self {
+        CpuScanResult {
+            count: 0,
+            cpus: [const { CpuDescriptor::empty() }; MAX_CPUS_IN_DTB],
+        }
+    }
+}
+
+/// Bit-set bitmask of online CPU slots (post-probe, post-PSCI confirm).
+pub struct CpuMask {
+    bits: AtomicU64,
+}
+
+impl CpuMask {
+    pub const fn new() -> Self {
+        CpuMask { bits: AtomicU64::new(0) }
+    }
+    pub fn set(&self, b: usize) {
+        self.bits.fetch_or(1u64 << b, Ordering::Relaxed);
+    }
+    pub fn clear(&self, b: usize) {
+        self.bits.fetch_and(!(1u64 << b), Ordering::Relaxed);
+    }
+    pub fn test(&self, b: usize) -> bool {
+        (self.bits.load(Ordering::Relaxed) >> b) & 1 == 1
+    }
+    pub fn count(&self) -> usize {
+        self.bits.load(Ordering::Relaxed).count_ones() as usize
     }
 }
 
@@ -292,4 +360,203 @@ pub fn parse(dtb_ptr: *const u8) -> Result<BootInfo, &'static str> {
     }
 
     Ok(boot)
+}
+
+/// Walk `/cpus` and emit a `CpuScanResult` describing each child.
+///
+/// The Linux-style FDT contract: every `cpu@N` child carries
+/// `device_type = "cpu"`, a `reg` cell, an optional `enable-method`
+/// and an optional `status`.  Anything lacking `device_type =
+/// "cpu"` is skipped (this filters out the `cpu-map` / cluster
+/// metadata tree — which QEMU and most firmwares use only for
+/// hierarchy hints, not as actual cores).
+pub fn scan_cpus_node(dtb_ptr: *const u8) -> Result<CpuScanResult, &'static str> {
+    if dtb_ptr.is_null() {
+        return Err("DTB pointer is null");
+    }
+    let header = unsafe { FdtHeader::parse(dtb_ptr)? };
+    let mut parser = Parser::new(dtb_ptr, &header);
+
+    let mut out = CpuScanResult::empty();
+
+    struct Acc {
+        current_reg: u32,
+        current_enabled: bool,
+        current_method: heapless::String<16>,
+        current_compat: heapless::String<32>,
+        reg_seen: bool,
+        device_type_ok: bool,
+        enabled_seen: bool,
+    }
+    impl Acc {
+        fn reset(&mut self) {
+            self.current_reg = 0;
+            self.current_enabled = true;
+            self.current_method.clear();
+            self.current_compat.clear();
+            self.reg_seen = false;
+            self.device_type_ok = false;
+            self.enabled_seen = false;
+        }
+        fn flush_if_valid(&mut self, out: &mut CpuScanResult) {
+            if !self.device_type_ok || !self.reg_seen {
+                self.reset();
+                return;
+            }
+            if out.count < MAX_CPUS_IN_DTB {
+                let idx = out.count;
+                out.cpus[idx] = CpuDescriptor {
+                    reg: self.current_reg,
+                    enabled: self.current_enabled,
+                    enable_method: heapless::String::new(),
+                    compatible: heapless::String::new(),
+                };
+                let _ = out.cpus[idx].enable_method.push_str(&self.current_method);
+                let _ = out.cpus[idx].compatible.push_str(&self.current_compat);
+                out.count += 1;
+            }
+            self.reset();
+        }
+    }
+
+    let mut acc = Acc {
+        current_reg: 0,
+        current_enabled: true,
+        current_method: heapless::String::new(),
+        current_compat: heapless::String::new(),
+        reg_seen: false,
+        device_type_ok: false,
+        enabled_seen: false,
+    };
+    acc.reset();
+
+    #[derive(PartialEq)]
+    enum State {
+        Top,
+        InCpus,
+    }
+    let mut state = State::Top;
+    let mut cpus_depth: i32 = -1;
+    let mut child_active = false;
+
+    // We track child's begin depth relative to cpus_depth.  When
+    // we see a BEGIN_NODE at depth == cpus_depth + 1, we start
+    // collecting properties until the matching END_NODE.
+    let mut depth: i32 = 0;
+    let mut pos = 0usize;
+    while pos < parser.struct_block.len() {
+        if pos + 4 > parser.struct_block.len() { break; }
+        let token = unsafe { read_u32(parser.struct_block.as_ptr().add(pos)).to_be() };
+        pos += 4;
+
+        match token {
+            FDT_BEGIN_NODE => {
+                let name_start = pos;
+                let mut name_end = name_start;
+                while name_end < parser.struct_block.len()
+                    && parser.struct_block[name_end] != 0
+                { name_end += 1; }
+                if name_end >= parser.struct_block.len() { break; }
+                let name = core::str::from_utf8(
+                    &parser.struct_block[name_start..name_end]
+                ).unwrap_or("");
+                let simple = if let Some(at_pos) = name.find('@') { &name[..at_pos] } else { name };
+
+                match state {
+                    State::Top if simple == "cpus" => {
+                        state = State::InCpus;
+                        cpus_depth = depth;
+                    }
+                    State::InCpus if depth == cpus_depth + 1 => {
+                        // New child of /cpus.
+                        acc.reset();
+                        // Parse the trailing `@<digits>` to extract reg,
+                        // preferring the property over the name.
+                        if let Some(at_pos) = name.find('@') {
+                            let (_, rest) = name.split_at(at_pos + 1);
+                            if let Ok(v) = rest.parse::<u32>() {
+                                acc.current_reg = v;
+                                acc.reg_seen = true;
+                            }
+                        }
+                        child_active = true;
+                    }
+                    _ => {}
+                }
+
+                depth += 1;
+                pos = align4(name_end + 1);
+            }
+            FDT_END_NODE => {
+                depth -= 1;
+                if state == State::InCpus && child_active
+                    && depth == cpus_depth + 1
+                {
+                    acc.flush_if_valid(&mut out);
+                    child_active = false;
+                } else if state == State::InCpus && depth == cpus_depth {
+                    state = State::Top;
+                }
+            }
+            FDT_PROP => {
+                if pos + 8 > parser.struct_block.len() { break; }
+                let data_size = unsafe { read_u32(parser.struct_block.as_ptr().add(pos)).to_be() } as usize;
+                pos += 4;
+                let name_offset = unsafe { read_u32(parser.struct_block.as_ptr().add(pos)).to_be() } as usize;
+                pos += 4;
+                let pname = parser.get_string(name_offset).unwrap_or("");
+                let data_start = pos;
+                if data_start + data_size <= parser.struct_block.len() {
+                    let data = &parser.struct_block[data_start..data_start + data_size];
+                    if state == State::InCpus && child_active
+                        && depth == cpus_depth + 2
+                    {
+                        match pname {
+                            "device_type" => {
+                                if let Ok(s) = core::str::from_utf8(data) {
+                                    let _ = s.trim_end_matches('\0');
+                                    if s.trim_end_matches('\0') == "cpu" {
+                                        acc.device_type_ok = true;
+                                    }
+                                }
+                            }
+                            "reg" => {
+                                if data.len() >= 4 {
+                                    let v = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+                                    acc.current_reg = v;
+                                    acc.reg_seen = true;
+                                }
+                            }
+                            "enable-method" => {
+                                if let Ok(s) = core::str::from_utf8(data) {
+                                    acc.current_method.clear();
+                                    let _ = acc.current_method.push_str(s.trim_end_matches('\0'));
+                                }
+                            }
+                            "compatible" => {
+                                if let Ok(s) = core::str::from_utf8(data) {
+                                    acc.current_compat.clear();
+                                    let _ = acc.current_compat.push_str(s.trim_end_matches('\0'));
+                                }
+                            }
+                            "status" => {
+                                if let Ok(s) = core::str::from_utf8(data) {
+                                    let t = s.trim_end_matches('\0');
+                                    acc.current_enabled = t == "okay";
+                                    acc.enabled_seen = true;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                pos = align4(pos + data_size);
+            }
+            FDT_NOP => {}
+            FDT_END => break,
+            _ => break,
+        }
+    }
+
+    Ok(out)
 }

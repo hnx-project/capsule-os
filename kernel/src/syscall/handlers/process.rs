@@ -77,6 +77,7 @@ pub fn sys_exit(code: i32) -> ! {
 
         crate::task::init_respawn::respawn_init_if_anchor(pid);
         unsafe {
+            (*caller).owner_core = None;
             (*caller).state = crate::task::thread::ThreadState::Dead;
             // Park the dead context at a non-zero PC / EL0t so a
             // racing tick that snapshots it before schedule() takes
@@ -151,6 +152,7 @@ pub fn sys_exec(table: &HandleTable, program_name: &str) -> Result<()> {
     // ELR=0x0 fault).
     if let Some(caller) = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() } {
         unsafe {
+            (*caller).owner_core = None;
             (*caller).state = crate::task::thread::ThreadState::Dead;
             // Park the dead thread at a non-zero halt address inside the
             // user region so a future context-restore (which won't pick
@@ -288,6 +290,7 @@ pub fn sys_execve(
     // 4. Mark the calling thread as Dead and schedule
     if let Some(caller) = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() } {
         unsafe {
+            (*caller).owner_core = None;
             (*caller).state = crate::task::thread::ThreadState::Dead;
             (*caller).context.elr = 0x1usize as u64;
             (*caller).context.spsr = 0x000;
@@ -1369,6 +1372,7 @@ pub fn sys_thread_sleep(ticks: u64) -> Result<()> {
 
     if let Some(t) = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() } {
         unsafe {
+            (*t).owner_core = None;
             (*t).state = crate::task::thread::ThreadState::Sleeping;
             (*t).sleep_until = Some(wakeup_tick);
             crate::task::scheduler::SCHEDULER.schedule();

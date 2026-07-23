@@ -182,6 +182,7 @@ impl Futex {
                 return Err(Status::NoMemory);
             }
 
+            (*thread_ptr).owner_core = None;
             (*thread_ptr).state = ThreadState::Blocked;
             SCHEDULER.schedule();
 
