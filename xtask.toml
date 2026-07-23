@@ -36,6 +36,7 @@ bin = "qemu-system-aarch64"
 args = [
     "-M", "virt,secure=off",
     "-cpu", "cortex-a72",
+    "-smp", "4",
     "-m", "512M",
     "-nographic",
     "-device", "loader,file={bootloader_bin},addr={boot_addr},cpu-num=0,force-raw=on",

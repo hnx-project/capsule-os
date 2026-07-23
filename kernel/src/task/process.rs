@@ -810,27 +810,35 @@ pub fn register_page_table_for_l0(l0_pa: usize, pa: usize) {
 
 pub fn allocate_process(name: &'static str) -> Result<&'static mut Process> {
     unsafe {
+        let flags = crate::task::scheduler::SCHEDULER.lock();
         for slot in PROCESSES.iter_mut() {
             if slot.is_none() {
                 *slot = Some(Process::new_dummy());
                 let proc_ref = slot.as_mut().unwrap();
-                proc_ref.init_in_place(name)?;
+                let res = proc_ref.init_in_place(name);
+                crate::task::scheduler::SCHEDULER.unlock(flags);
+                res?;
                 return Ok(proc_ref);
             }
         }
+        crate::task::scheduler::SCHEDULER.unlock(flags);
     }
     Err(Status::NoMemory)
 }
 
 pub fn find_process_mut(id: u64) -> Option<&'static mut Process> {
     unsafe {
+        let flags = crate::task::scheduler::SCHEDULER.lock();
         for slot in PROCESSES.iter_mut() {
             if let Some(p) = slot {
                 if p.id == id {
-                    return Some(p);
+                    let ptr = p as *mut Process;
+                    crate::task::scheduler::SCHEDULER.unlock(flags);
+                    return Some(&mut *ptr);
                 }
             }
         }
+        crate::task::scheduler::SCHEDULER.unlock(flags);
     }
     None
 }

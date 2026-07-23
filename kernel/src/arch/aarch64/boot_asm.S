@@ -3,6 +3,12 @@
 .global _start
 .type _start, @function
 _start:
+    // 0a. Check core ID. Only Core 0 goes through main boot; others spin
+    mrs     x3, mpidr_el1
+    and     x3, x3, #0xFF
+    cmp     x3, #0
+    b.ne    secondary_spin
+
     // 0. EL2 to EL1 drop.  QEMU PSCI firmware sets HCR_EL2 IMO+FMO bits
     //    when booting at EL1, routing IRQs/FIQs to EL2.  If we start at
     //    EL2 (e.g. psci=off) we clear those bits before entering EL1.
@@ -66,6 +72,57 @@ bss_zero_done:
 
 halt:
     b halt
+
+secondary_spin:
+    // Disable interrupts initially
+    msr     daifset, #0xf
+
+    // Use SP_EL1 for the kernel's stack
+    msr     spsel, #1
+
+    // Enable FP/SIMD at EL1 & EL0
+    mov     x1, #0x300000
+    msr     cpacr_el1, x1
+    isb
+
+    // Install vector table at vbar_el1
+    adr     x0, vector_table
+    msr     vbar_el1, x0
+    isb
+
+spin_loop:
+    wfe
+    ldr     x1, =SECONDARY_CORE_ENTRY
+    ldr     x0, [x1]
+    cmp     x0, #0
+    b.eq    spin_loop
+
+    // We have been woken up! Read the stack pointer
+    ldr     x2, =SECONDARY_CORE_SP
+    ldr     x3, [x2]
+    mov     sp, x3
+
+    // Move entry point to x16
+    mov     x16, x0
+
+    // Clear the mailbox to signal to Core 0 that we've taken ENTRY and SP
+    str     xzr, [x1]
+    dsb     sy
+    isb
+
+    // Pass our core ID in x0 as the first argument
+    mrs     x0, mpidr_el1
+    and     x0, x0, #0xFF
+    br      x16
+
+.align 3
+.global SECONDARY_CORE_ENTRY
+SECONDARY_CORE_ENTRY:
+    .quad 0
+
+.global SECONDARY_CORE_SP
+SECONDARY_CORE_SP:
+    .quad 0
 
 // ───────────────────────────────────────────────────────────────────
 // Exception vector table.  Each entry is exactly 128 bytes (AArch64

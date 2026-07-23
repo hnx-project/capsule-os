@@ -69,7 +69,7 @@ impl Scheduler {
         }
     }
 
-    fn lock(&self) -> usize {
+    pub fn lock(&self) -> usize {
         // H5 (KERNEL_HEALTH): save the current DAIF mask and only
         // re-enable IRQs on unlock if they were enabled at the
         // matching `lock()`.  AArch64 has no
@@ -83,7 +83,7 @@ impl Scheduler {
         flags
     }
 
-    fn unlock(&self, flags: usize) {
+    pub fn unlock(&self, flags: usize) {
         SCHEDULER_LOCK.store(false, Ordering::Release);
         unsafe {
             crate::arch::CurrentArch::local_irq_restore(flags);

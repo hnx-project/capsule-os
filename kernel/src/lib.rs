@@ -17,6 +17,7 @@ pub mod kcore;
 pub mod vfs;
 pub mod loader;
 pub mod rootfs;
+pub mod smp;
 
 use crate::arch::ArchHardware;
 
@@ -152,6 +153,9 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
 
             // Start preemptive scheduling!
             crate::log_info!("SCHED", "Starting preemptive multitasking...");
+
+            // Boot secondary multi-core CPUs
+            smp::boot_secondary_cores();
 
             // Enable IRQs globally so interrupts work
             crate::arch::aarch64::trap::enable_irqs();

@@ -79,6 +79,18 @@ pub fn init(dist_base: usize, cpu_base: usize) {
     crate::log_info!("GIC", "GICD_CTLR={:#x} GICC_CTLR={:#x}", dctl, cctl);
 }
 
+/// Initialize the GIC CPU interface locally for the current CPU core.
+pub fn init_local_cpu_interface() {
+    unsafe {
+        if GICC_BASE != 0 {
+            // Priority mask: lowest priority, accept everything.
+            write_volatile(gicc(GICC_PMR), 0xff);
+            // Enable group 0 on CPU interface.
+            write_volatile(gicc(GICC_CTLR), 1);
+        }
+    }
+}
+
 /// Acknowledge an IRQ and return its ID.  Called from the IRQ stub
 /// after `daifclr` clears the CPU's I-bit mask.
 pub fn ack() -> u32 {
