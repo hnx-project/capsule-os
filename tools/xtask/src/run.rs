@@ -27,7 +27,7 @@ pub fn run(config: &Config, plat: &Platform, gdb: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn resolve_artifact_paths(
+pub fn resolve_artifact_paths(
     config: &Config,
     plat: &Platform,
 ) -> Result<(String, String, String, String), String> {
@@ -67,7 +67,7 @@ fn resolve_artifact_paths(
     Ok((bootloader_bin, bootloader_bin_raw, kernel_bin, rootfs_img))
 }
 
-fn generate_qemu_dtb(
+pub fn generate_qemu_dtb(
     plat: &Platform,
     bootloader_bin: &str,
     bootloader_bin_raw: &str,
@@ -190,4 +190,24 @@ fn render_variables(
         .replace("{kernel_bin}", kernel_bin)
         .replace("{rootfs_img}", rootfs_img)
         .replace("{qemu_dtb}", "build/dist/qemu.dtb")
+        .replace("{smp}", &plat.qemu_smp.to_string())
+}
+
+/// Public entry point used by `xtask code build` to regenerate
+/// `build/dist/qemu.dtb` after a clean build, so that downstream
+/// tooling that depends on the DTB doesn't have to wait for a
+/// separate `xtask code run` step.
+pub fn generate_qemu_dtb_artifact_paths(
+    config: &Config,
+    plat: &Platform,
+) -> Result<(), String> {
+    let (boot_bin, boot_bin_raw, kern_bin, r_img) =
+        resolve_artifact_paths(config, plat)?;
+    // build.rs calls this against the non-"virt" Platform, so we
+    // re-resolve a "virt" view to get the actual qemu_* args +
+    // SMP value.
+    let virt = crate::platform::Platform::from_config(
+        &plat.arch, "virt", config,
+    ).ok_or_else(|| "virt profile missing for dtb generation".to_string())?;
+    generate_qemu_dtb(&virt, &boot_bin, &boot_bin_raw, &kern_bin, &r_img)
 }

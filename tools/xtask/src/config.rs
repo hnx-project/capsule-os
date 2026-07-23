@@ -80,6 +80,14 @@ pub struct QemuConfig {
     pub bin: String,
     pub args: Vec<String>,
     pub dtb_dump_args: Vec<String>,
+    /// Number of guest CPUs exposed both to the running VM and to
+    /// the `dumpdtb` machinery.  Defaults to 1 if omitted.
+    #[serde(default = "default_smp")]
+    pub smp: u32,
+}
+
+fn default_smp() -> u32 {
+    1
 }
 
 #[derive(Debug, Deserialize, Clone)]

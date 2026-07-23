@@ -33,10 +33,11 @@ rootfs_addr = "0x46000000"
 
 [platform.aarch64.profiles.virt.qemu]
 bin = "qemu-system-aarch64"
+smp = 4
 args = [
     "-M", "virt,secure=off",
     "-cpu", "cortex-a72",
-    "-smp", "4",
+    "-smp", "{smp}",
     "-m", "512M",
     "-nographic",
     "-device", "loader,file={bootloader_bin},addr={boot_addr},cpu-num=0,force-raw=on",
@@ -50,6 +51,7 @@ args = [
 dtb_dump_args = [
     "-M", "virt,secure=off",
     "-cpu", "cortex-a72",
+    "-smp", "{smp}",
     "-m", "512M",
     "-machine", "dumpdtb=/tmp/qemu_raw.dtb",
     "-display", "none"

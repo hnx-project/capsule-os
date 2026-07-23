@@ -170,6 +170,23 @@ pub fn build(config: &Config, plat: &Platform, generate_dist: bool) -> Result<()
     }
 
     print_build_summary(config, plat);
+
+    // Generate the QEMU DTB now (rather than only at `run` time) so
+    // that any tool that depends on `build/dist/qemu.dtb` can rely
+    // on it being up-to-date after a build.
+    match crate::platform::Platform::from_config(
+        &plat.arch, "virt", config,
+    ) {
+        Some(virt) if virt.qemu_smp > 0 => {
+            if let Err(e) = crate::run::generate_qemu_dtb_artifact_paths(
+                config, plat,
+            ) {
+                eprintln!("warning: QEMU DTB regeneration failed: {}", e);
+            }
+        }
+        _ => {}
+    }
+
     if generate_dist {
         generate_dist_image(config, plat, &v)?;
     }

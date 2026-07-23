@@ -13,6 +13,9 @@ pub struct Platform {
     pub qemu_bin: String,
     pub qemu_args: Vec<String>,
     pub qemu_dtb_dump_args: Vec<String>,
+    /// Effective guest CPU count (also seeded into `dumpdtb`).
+    /// `0` means "not a qemu profile" or "default to 1".
+    pub qemu_smp: u32,
 }
 
 impl Platform {
@@ -34,6 +37,7 @@ impl Platform {
             qemu_bin: p_cfg.qemu.as_ref().map(|q| q.bin.clone()).unwrap_or_default(),
             qemu_args: p_cfg.qemu.as_ref().map(|q| q.args.clone()).unwrap_or_default(),
             qemu_dtb_dump_args: p_cfg.qemu.as_ref().map(|q| q.dtb_dump_args.clone()).unwrap_or_default(),
+            qemu_smp: p_cfg.qemu.as_ref().map(|q| q.smp).unwrap_or(1),
         })
     }
 }
