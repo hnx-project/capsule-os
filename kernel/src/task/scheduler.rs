@@ -51,9 +51,6 @@ pub struct Scheduler {
     queues: [ThreadQueue; PRIORITY_LEVELS],
     current_idx: Option<usize>,
     running: bool,
-    /// H5: DAIF mask saved by `lock()`, restored by `unlock()`.
-    /// Stored as a bare `core::cell::Cell<usize>` to allow interior mutability without undefined casting.
-    daif_save: core::cell::Cell<usize>,
 }
 
 static SCHEDULER_LOCK: AtomicBool = AtomicBool::new(false);
@@ -69,32 +66,26 @@ impl Scheduler {
             queues: [const { ThreadQueue::new() }; PRIORITY_LEVELS],
             current_idx: None,
             running: false,
-            daif_save: core::cell::Cell::new(0),
         }
     }
 
-    fn lock(&self) {
+    fn lock(&self) -> usize {
         // H5 (KERNEL_HEALTH): save the current DAIF mask and only
         // re-enable IRQs on unlock if they were enabled at the
-        // matching `lock()`.  The previous implementation
-        // unconditionally called `enable_irqs()` on unlock, which
-        // races IRQ nesting and SSP-on contention.  AArch64 has no
+        // matching `lock()`.  AArch64 has no
         // dedicated IRQ-on-PUSH, so the saved-and-restored pair is
         // the PSTATE-safe equivalent of Linux's
         // `local_irq_save` / `local_irq_restore`.
-        unsafe {
-            let flags = crate::arch::CurrentArch::local_irq_save();
-            self.daif_save.set(flags);
-        }
-        while SCHEDULER_LOCK.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        let flags = unsafe { crate::arch::CurrentArch::local_irq_save() };
+        while SCHEDULER_LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
             core::hint::spin_loop();
         }
+        flags
     }
 
-    fn unlock(&self) {
+    fn unlock(&self, flags: usize) {
         SCHEDULER_LOCK.store(false, Ordering::Release);
         unsafe {
-            let flags = self.daif_save.get();
             crate::arch::CurrentArch::local_irq_restore(flags);
         }
     }
@@ -113,7 +104,7 @@ impl Scheduler {
     }
 
     pub fn add(&mut self, mut thread: Thread) {
-        self.lock();
+        let flags = self.lock();
 
         let slot = self.find_empty_slot();
         if let Some(idx) = slot {
@@ -132,7 +123,7 @@ impl Scheduler {
             panic!("[SCHED] Max thread count exceeded!");
         }
 
-        self.unlock();
+        self.unlock(flags);
     }
 
     /// Pop the highest-priority ready thread, skipping any thread that
@@ -205,7 +196,7 @@ impl Scheduler {
     }
 
     pub fn run(&mut self) -> ! {
-        self.lock();
+        let flags = self.lock();
         self.running = true;
 
         if let Some(idx) = self.pop_next_from_all_queues() {
@@ -223,7 +214,7 @@ impl Scheduler {
             }
 
             let mut dummy_ctx = crate::task::thread::ThreadContext::default();
-            self.unlock();
+            self.unlock(flags);
             unsafe {
                 CurrentArch::switch_context(&mut dummy_ctx, &mut self.threads[idx].as_mut().unwrap().context);
             }
@@ -233,10 +224,10 @@ impl Scheduler {
     }
 
     pub fn schedule(&mut self) {
-        self.lock();
+        let flags = self.lock();
 
         if !self.running {
-            self.unlock();
+            self.unlock(flags);
             return;
         }
 
@@ -246,7 +237,7 @@ impl Scheduler {
         let prev_idx = match self.current_idx {
             Some(idx) => idx,
             None => {
-                self.unlock();
+                self.unlock(flags);
                 return;
             }
         };
@@ -399,7 +390,7 @@ impl Scheduler {
                 }
                 }
                 }
-                self.unlock();
+                self.unlock(flags);
                 // Use a volatile write to ensure the compiler doesn't elide
                 // our early return: the dummy `static mut` sink prevents the
                 // LLVM optimizer from realizing that we just fall through
@@ -493,7 +484,7 @@ impl Scheduler {
                     }
                 }
             }
-            self.unlock();
+            self.unlock(flags);
 
             unsafe {
                 CurrentArch::switch_context(&mut *prev_context_ptr, &*next_context_ptr);
@@ -540,7 +531,7 @@ impl Scheduler {
                 Some(thread) => thread.state == ThreadState::Dead,
             });
 
-            self.unlock();
+            self.unlock(flags);
 
             if all_dead {
                 crate::log_error!("SCHED", "No runnable threads left! Halting CPU safely...");
@@ -557,14 +548,14 @@ impl Scheduler {
     }
 
     pub fn get_current_thread_ptr(&mut self) -> Option<*mut Thread> {
-        self.lock();
+        let flags = self.lock();
         let ptr = self.current_idx.and_then(|idx| self.threads[idx].as_mut().map(|t| t as *mut Thread));
-        self.unlock();
+        self.unlock(flags);
         ptr
     }
 
     pub fn get_thread_ptr(&mut self, thread_id: usize) -> Option<*mut Thread> {
-        self.lock();
+        let flags = self.lock();
         let mut ptr = None;
         for i in 0..MAX_THREADS {
             if let Some(ref mut t) = self.threads[i] {
@@ -574,12 +565,12 @@ impl Scheduler {
                 }
             }
         }
-        self.unlock();
+        self.unlock(flags);
         ptr
     }
 
     pub fn wake_thread(&mut self, thread_id: usize) {
-        self.lock();
+        let flags = self.lock();
         for i in 0..MAX_THREADS {
             if let Some(ref mut t) = self.threads[i] {
                 if t.id == thread_id && (t.state == ThreadState::Blocked || t.state == ThreadState::Sleeping) {
@@ -589,7 +580,7 @@ impl Scheduler {
                 }
             }
         }
-        self.unlock();
+        self.unlock(flags);
     }
 
     /// Scan all threads in the system. Any thread in `ThreadState::Sleeping` state whose
