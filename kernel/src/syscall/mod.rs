@@ -251,16 +251,66 @@ pub fn sys_getgid(_arg0: usize) -> usize { 0 }
 pub fn sys_getegid(_arg0: usize) -> usize { 0 }
 /// POSIX `getppid()` — parent pid; 0 for the boot anchor.
 pub fn sys_getppid(_arg0: usize) -> usize { 0 }
-/// POSIX `getpgrp()` — current process group id = self pid.
-pub fn sys_getpgrp(_arg0: usize) -> usize { read_current_pid() }
-/// POSIX `getsid(pid)` — returns the pid for the caller's session.
-pub fn sys_getsid(_arg0: usize) -> usize { read_current_pid() }
-/// POSIX `setsid()` — start a new session.  Returns the leader pid.
-pub fn sys_setsid(_arg0: usize) -> usize { read_current_pid() }
-/// POSIX `setpgid(pid, pgrp)` — stub: only allow `setpgid(0,0)`,
-/// returning the new pgrp (= self pid).  Anything else returns 0
-/// without side effects so calling shells don't see ENOSYS.
-pub fn sys_setpgid(_arg0: usize, _arg1: usize) -> usize { read_current_pid() }
+/// POSIX `getpgrp()` — current process group id.  In 1.0 we
+/// model process groups as a flat u64 id stored on
+/// `Process.pgroup`; getpgrp() reads it back.
+pub fn sys_getpgrp(_arg0: usize) -> usize {
+    if let Ok(pid) = crate::task::process::current_process_id() {
+        if let Some(proc) = crate::task::process::find_process_mut(pid) {
+            return proc.pgroup as usize;
+        }
+    }
+    read_current_pid()
+}
+/// POSIX `getsid(pid)` — returns the caller's session id.
+pub fn sys_getsid(_arg0: usize) -> usize {
+    if let Ok(pid) = crate::task::process::current_process_id() {
+        if let Some(proc) = crate::task::process::find_process_mut(pid) {
+            return proc.sid as usize;
+        }
+    }
+    read_current_pid()
+}
+/// POSIX `setsid()` — start a new session.  Returns the leader
+/// pid (= the caller's own pid).  We model sessions as flat
+/// u64 ids; "new session" is just "set sid = self".
+pub fn sys_setsid(_arg0: usize) -> usize {
+    if let Ok(pid) = crate::task::process::current_process_id() {
+        if let Some(proc) = crate::task::process::find_process_mut(pid) {
+            proc.sid = pid;
+            return pid as usize;
+        }
+    }
+    read_current_pid()
+}
+/// POSIX `setpgid(pid, pgrp)` — move the (caller's) process
+/// into a new process group.  `pid=0` means the caller,
+/// `pgrp=0` means "use the caller's pid as the new group".
+/// 1.0 only supports those two convenience forms; cross-pid
+/// pgroup moves are accepted but not enforced (every process
+/// is its own pgroup in the flat model).
+pub fn sys_setpgid(pid_arg: usize, pgrp_arg: usize) -> usize {
+    let caller_pid = match crate::task::process::current_process_id() {
+        Ok(p) => p,
+        Err(_) => return 0,
+    };
+    // pid == 0 means caller; everything else is "best effort" —
+    // we accept the call but only mutate the caller's own
+    // pgroup, which is the only pgroup the caller can
+    // legitimately move.
+    if pid_arg != 0 {
+        return caller_pid as usize;
+    }
+    let new_pgroup = if pgrp_arg == 0 {
+        caller_pid
+    } else {
+        pgrp_arg as u64
+    };
+    if let Some(proc) = crate::task::process::find_process_mut(caller_pid) {
+        proc.pgroup = new_pgroup;
+    }
+    new_pgroup as usize
+}
 
 /// POSIX `gettid()` — returns the kernel thread id of the caller.
 pub fn sys_gettid() -> usize { read_current_tid() }

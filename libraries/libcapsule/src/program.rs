@@ -84,6 +84,10 @@ impl ProgramLoader {
     /// built by `build_file_actions_vmo`.  Pass `0` when no
     /// actions are needed (kernel treats 0 as "skip").
     ///
+    /// `attr_vmo` carries the spawn attribute VMO (flags +
+    /// pgroup) built by `posix_spawn::build_attr_vmo`.  Pass
+    /// `0` when no attr was passed (kernel applies no attr).
+    ///
     /// The wrapper is intentionally kept thin — everything else
     /// (the binary VMO walk, argv VMO construction, etc.) is
     /// identical to the non-std path.  We avoid the
@@ -99,6 +103,7 @@ impl ProgramLoader {
         argv: &[&[u8]],
         envp: &[&[u8]],
         file_actions_vmo: usize,
+        attr_vmo: usize,
     ) -> Result<usize> {
         // 1. Resolve offset and size of the program within BootFS
         let (offset, size) = self.loader.resolve_file(name)?;
@@ -159,7 +164,7 @@ impl ProgramLoader {
             std_fds_vmo as usize,
             envp_vmo as usize,
             file_actions_vmo as usize,
-            0
+            attr_vmo as usize
         );
 
         // 7. Close our local handles — the kernel has its own
@@ -170,6 +175,9 @@ impl ProgramLoader {
         let _ = crate::syscalls::close(envp_vmo);
         if file_actions_vmo != 0 {
             let _ = crate::syscalls::close(file_actions_vmo);
+        }
+        if attr_vmo != 0 {
+            let _ = crate::syscalls::close(attr_vmo);
         }
 
         if (pid as isize) < 0 {

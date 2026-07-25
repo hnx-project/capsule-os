@@ -316,6 +316,7 @@ pub fn sys_spawn(
     argv_vmo_handle: u32,
     envp_vmo_handle: u32,
     file_actions_vmo_handle: u32,
+    attr_vmo_handle: u32,
 ) -> Result<u64> {
     if binary_vmo_handle == 0 {
         return Err(Status::InvalidArgs);
@@ -440,7 +441,47 @@ pub fn sys_spawn(
         caller_pid,
     )?;
 
-    // 4. Register the Process handle so the caller can wait/terminate it
+    // 4. Apply the spawn attribute (flags + pgroup) to the
+    //    freshly-spawned child.  Same logic as `sys_spawn_std`'s
+    //    step 6 — kept inline here so the std-fds-less path
+    //    honours `POSIX_SPAWN_SETSID` / `POSIX_SPAWN_SETPGROUP`
+    //    too.
+    if attr_vmo_handle != 0 {
+        use crate::object::rights::Rights as _R;
+        let attr_vmo_hv = HandleValue::new(attr_vmo_handle);
+        let mut attr_buf = [0u8; 32];
+        let read = table.with_vmo(attr_vmo_hv, _R::READ.bits(), |vmo| {
+            let len = core::cmp::min(vmo.size(), attr_buf.len());
+            vmo.read(0, &mut attr_buf[..len]).unwrap_or(0)
+        })?;
+        if read >= 8 {
+            let flags = u32::from_le_bytes([
+                attr_buf[0], attr_buf[1], attr_buf[2], attr_buf[3],
+            ]);
+            let pgroup_arg = i32::from_le_bytes([
+                attr_buf[4], attr_buf[5], attr_buf[6], attr_buf[7],
+            ]);
+            if let Some(child) =
+                crate::task::process::find_process_mut(pid)
+            {
+                const POSIX_SPAWN_SETSID: u32 = 16;
+                const POSIX_SPAWN_SETPGROUP: u32 = 2;
+                if (flags & POSIX_SPAWN_SETSID) != 0 {
+                    child.sid = child.id;
+                }
+                if (flags & POSIX_SPAWN_SETPGROUP) != 0 {
+                    let new_pgroup = if pgroup_arg == 0 {
+                        child.id
+                    } else {
+                        pgroup_arg as u64
+                    };
+                    child.pgroup = new_pgroup;
+                }
+            }
+        }
+    }
+
+    // 5. Register the Process handle so the caller can wait/terminate it
     let rights = Rights::READ.bits() | Rights::WRITE.bits();
     let _ = table.add(crate::object::handle_table::KernelObject::Process(pid), rights);
 
@@ -481,6 +522,7 @@ pub fn sys_spawn_std(
     std_fds_vmo_handle: u32,
     envp_vmo_handle: u32,
     file_actions_vmo_handle: u32,
+    attr_vmo_handle: u32,
 ) -> Result<u64> {
     // 1. Run the same path as `sys_spawn` to get a fresh pid.
     //    Pass `0` for envp + file_actions because `sys_spawn_std`
@@ -494,6 +536,7 @@ pub fn sys_spawn_std(
         argv_vmo_handle,
         0, // envp: applied by sys_spawn_std after
         0, // file_actions: applied by sys_spawn_std after
+        0, // attr: applied by sys_spawn_std after
     )?;
 
     // 2. Pull the three handle numbers out of the std-fds vmo.
@@ -632,6 +675,54 @@ pub fn sys_spawn_std(
                 "SPAWN_STD",
                 "pid={} file_actions applied={}",
                 pid, applied
+            );
+        }
+    }
+
+    // 6. Apply the spawn attribute (flags + pgroup) to the
+    //    freshly-spawned child.  See `posix_spawn/API.md` for
+    //    the 1.0 VMO format.  SETSID / SETPGROUP are the only
+    //    bits honoured in 1.0; sigdefault / sigmask are reserved
+    //    for S14.
+    if attr_vmo_handle != 0 {
+        use crate::object::rights::Rights;
+        let attr_vmo_hv = HandleValue::new(attr_vmo_handle);
+        let mut attr_buf = [0u8; 32];
+        let read = table.with_vmo(attr_vmo_hv, Rights::READ.bits(), |vmo| {
+            let len = core::cmp::min(vmo.size(), attr_buf.len());
+            vmo.read(0, &mut attr_buf[..len]).unwrap_or(0)
+        })?;
+        if read >= 8 {
+            let flags = u32::from_le_bytes([
+                attr_buf[0], attr_buf[1], attr_buf[2], attr_buf[3],
+            ]);
+            let pgroup_arg = i32::from_le_bytes([
+                attr_buf[4], attr_buf[5], attr_buf[6], attr_buf[7],
+            ]);
+            if let Some(child) =
+                crate::task::process::find_process_mut(pid)
+            {
+                const POSIX_SPAWN_SETSID: u32 = 16;
+                const POSIX_SPAWN_SETPGROUP: u32 = 2;
+                if (flags & POSIX_SPAWN_SETSID) != 0 {
+                    // setsid(): new session, leader = self.
+                    child.sid = child.id;
+                }
+                if (flags & POSIX_SPAWN_SETPGROUP) != 0 {
+                    // setpgid(0, pgroup): pgroup=0 means "use
+                    // caller's pid as the new pgroup".
+                    let new_pgroup = if pgroup_arg == 0 {
+                        child.id
+                    } else {
+                        pgroup_arg as u64
+                    };
+                    child.pgroup = new_pgroup;
+                }
+            }
+            crate::log_info!(
+                "SPAWN_STD",
+                "pid={} attr flags={:#x} pgroup={}",
+                pid, flags, pgroup_arg
             );
         }
     }

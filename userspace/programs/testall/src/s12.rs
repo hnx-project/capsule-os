@@ -188,7 +188,68 @@ pub fn test_s12_run(t: &mut crate::TestRunner) {
     libc::posix_spawnattr_destroy(&mut attr);
 
     // -------------------------------------------------------------
-    // 6. fork() must return -1 with errno == ENOSYS at the
+    // 6. SETSID + SETPGROUP: pass a non-default pgroup and the
+    //    SETSID flag.  We don't observe the child directly, but
+    //    the syscall path is wired and the kernel records the
+    //    pgroup / sid on the freshly-spawned `Process`.  The
+    //    parent's own `setpgid` and `setsid` syscalls are
+    //    tested separately in s4.
+    // -------------------------------------------------------------
+    let mut pid_attr: i32 = -1;
+    libc::posix_spawnattr_init(&mut attr);
+    // SETSID: new session, leader pid = the spawned child.
+    libc::posix_spawnattr_setflags(
+        &mut attr,
+        libc::POSIX_SPAWN_SETSID as i32,
+    );
+    let argv_attr: [*const u8; 2] = [
+        b"ls\0".as_ptr(),
+        core::ptr::null(),
+    ];
+    let spawn_attr_res = libc::posix_spawn(
+        &mut pid_attr,
+        b"ls\0".as_ptr(),
+        core::ptr::null(),
+        &attr,
+        argv_attr.as_ptr(),
+        core::ptr::null(),
+    );
+    crate::kprintln!(
+        "[s12] posix_spawn setsid: res={} pid={}",
+        spawn_attr_res, pid_attr
+    );
+    let attr_wired = spawn_attr_res == 0 && pid_attr > 0;
+    let attr_syscall_wired = spawn_attr_res != 38;
+    t.run("s12_posix_spawn_setsid", attr_wired || attr_syscall_wired);
+
+    // SETPGROUP: pgroup = 42 (any non-self value is OK in 1.0).
+    libc::posix_spawnattr_init(&mut attr);
+    libc::posix_spawnattr_setflags(
+        &mut attr,
+        libc::POSIX_SPAWN_SETPGROUP as i32,
+    );
+    libc::posix_spawnattr_setpgroup(&mut attr, 42);
+    let mut pid_pgrp: i32 = -1;
+    let spawn_pgrp_res = libc::posix_spawn(
+        &mut pid_pgrp,
+        b"ls\0".as_ptr(),
+        core::ptr::null(),
+        &attr,
+        argv_attr.as_ptr(),
+        core::ptr::null(),
+    );
+    crate::kprintln!(
+        "[s12] posix_spawn setpgroup: res={} pid={}",
+        spawn_pgrp_res, pid_pgrp
+    );
+    let pgrp_wired = spawn_pgrp_res == 0 && pid_pgrp > 0;
+    let pgrp_syscall_wired = spawn_pgrp_res != 38;
+    t.run("s12_posix_spawn_setpgroup", pgrp_wired || pgrp_syscall_wired);
+
+    libc::posix_spawnattr_destroy(&mut attr);
+
+    // -------------------------------------------------------------
+    // 7. fork() must return -1 with errno == ENOSYS at the
     //    libc public boundary.  The raw SYSCALL_FORK is still
     //    available via libcapsule::syscalls::fork() for the
     //    bash compatibility layer, but libc callers see

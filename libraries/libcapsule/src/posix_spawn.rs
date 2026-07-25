@@ -383,14 +383,22 @@ fn spawn_impl(
     const BOOTFS_VMO_HANDLE: u32 = 1;
     let loader = ProgramLoader::new(BOOTFS_VMO_HANDLE as usize);
 
-    // 4. Honour `POSIX_SPAWN_SETSID` / `POSIX_SPAWN_SETPGROUP` if
-    //    the caller passed an attribute object.  We can't
-    //    change the spawned process's session / pgroup from
-    //    outside the kernel yet — flag the gap but still allow
-    //    the spawn to proceed.
+    // 4. Honour `POSIX_SPAWN_SETSID` / `POSIX_SPAWN_SETPGROUP` by
+    //    packaging the attr into a 4th VMO.  Format:
+    //
+    //      [u32 flags][u32 pgroup][u32 _pad0][u32 _pad1]
+    //      [u32 _pad2][u32 _pad3][u32 _pad4][u32 _pad5]
+    //
+    //    Two 32-bit fields suffice for 1.0 (we only honour
+    //    SETSID / SETPGROUP).  `sigdefault` and `sigmask` are
+    //    accepted in the user-side attr but not forwarded —
+    //    see S14.
+    //
+    //    The kernel reads `flags` and `pgroup` and applies
+    //    them to the freshly-spawned child's `Process.pgroup`
+    //    / `Process.sid` fields before returning to user-mode.
+    let attr_vmo = build_attr_vmo(attrp);
     if let Some(a) = unsafe { attrp.as_ref() } {
-        let _ = a.flags;
-        let _ = a.pgroup;
         let _ = a.sigdefault;
         let _ = a.sigmask;
     }
@@ -437,6 +445,7 @@ fn spawn_impl(
     //    succeed than report a confusing ENOENT.
     let spawn_res = loader.spawn_program_with_std_fds(
         name, stdin, stdout, stderr, argv_slice, envp_slice, file_actions_vmo,
+        attr_vmo,
     );
     let pid = match spawn_res {
         Ok(p) => p,
@@ -709,6 +718,46 @@ fn build_file_actions_vmo(
         Err(_) => return 0,
     };
     if crate::syscalls::vmo_write(vmo, 0, &buf[..total]).is_err() {
+        return 0;
+    }
+    vmo as usize
+}
+
+/// Package the spawn attribute (flags + pgroup) into a VMO the
+/// kernel can consume.  Format:
+///
+///     [u32 flags][u32 pgroup][u32 pad0..5]
+///
+/// 32 bytes total (8 × u32).  Only `flags` and `pgroup` are
+/// read in 1.0; the trailing 6 u32s are reserved for
+/// `sigdefault` / `sigmask` (S14) so we don't have to
+/// re-shape the VMO later.
+///
+/// Returns 0 when no attr was passed or the attr carries no
+/// interesting bits — kernel treats attr_vmo == 0 as
+/// "no overrides".
+fn build_attr_vmo(attrp: *const posix_spawnattr_t) -> usize {
+    if attrp.is_null() {
+        return 0;
+    }
+    let a = unsafe { &*attrp };
+    // Only ship a VMO when at least one attr bit will be
+    // applied; we still ship on SETPGROUP even when pgroup
+    // matches self.pid so the kernel sees an explicit attr.
+    let interesting = (a.flags & (POSIX_SPAWN_SETSID | POSIX_SPAWN_SETPGROUP)) != 0
+        || a.pgroup != 0;
+    if !interesting {
+        return 0;
+    }
+    let total = 32;
+    let vmo = match crate::syscalls::vmo_create(total) {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+    let mut buf = [0u8; 32];
+    buf[0..4].copy_from_slice(&(a.flags as u32).to_le_bytes());
+    buf[4..8].copy_from_slice(&(a.pgroup as u32).to_le_bytes());
+    if crate::syscalls::vmo_write(vmo, 0, &buf).is_err() {
         return 0;
     }
     vmo as usize

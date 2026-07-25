@@ -85,9 +85,6 @@ ships.
 ### What is NOT yet implemented
 
 * Real `addopen` (recorded but not exercised — see above).
-* `POSIX_SPAWN_SETPGROUP` / `POSIX_SPAWN_SETSID` — accepted but
-  not applied.  The child inherits the spawner's session in
-  1.0.
 
 ## Exposed Interfaces
 
@@ -160,12 +157,9 @@ ships.
   this requires a third VMO carrying the path blob so the
   kernel can complete the `open` against `fileagent`'s IPC
   VFS protocol.  `addclose` already works.
-* Honour `POSIX_SPAWN_SETPGROUP` / `POSIX_SPAWN_SETSID` by
-  threading the requested session/pgroup into the kernel's
-  `process_create` argument.
 * Promote `POSIX_SPAWN_SETSIGDEF` / `POSIX_SPAWN_SETSIGMASK`
   to first-class once the signal subsystem has per-process
-  state.
+  state.  The attr VMO already reserves space for them.
 * Generalise `adddup2` beyond the std-fd range: this requires
   the kernel to walk an open-fd table inside the child's
   freshly-built container, which currently only carries the

@@ -83,6 +83,15 @@ pub struct Process {
     /// `SYSCALL_GETPPID` and by the kernel scheduler to decide
     /// which process is allowed to `wait` on which children.
     pub parent_pid: u64,
+    /// Process group id.  Defaults to `self.id`; `setpgid` /
+    /// `POSIX_SPAWN_SETPGROUP` may move the process into a
+    /// different group.  In 1.0 we model process groups as
+    /// flat — a group is just a u64 id, no separate table.
+    pub pgroup: u64,
+    /// Session id.  Defaults to `self.id`; `setsid` /
+    /// `POSIX_SPAWN_SETSID` may create a new session.  Like
+    /// pgroup, sessions are a flat id space in 1.0.
+    pub sid: u64,
     /// Signal dispositions for this process.  Index `n` is the
     /// handler for signal `n + 1` (we use a 32-bit bitfield on
     /// `NSIG=32` to keep signal state compact).  Values:
@@ -126,6 +135,8 @@ impl Process {
                 cwd_len: 0,
                 exit_status: None,
                 parent_pid: 0,
+                pgroup: 0,
+                sid: 0,
                 sig_handlers: [0u8; 32],
                 pending_signals: 0u32,
                 fd_table: [const { None }; FD_TABLE_SIZE],
@@ -147,6 +158,13 @@ impl Process {
         cwd[..cwd_len].copy_from_slice(&cwd_bytes[..cwd_len]);
 
         self.id = PROCESS_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+        // Default pgroup / sid to the new process's own id so
+        // getpgrp() / getsid() return a sensible value before any
+        // explicit setpgid / setsid call.  posix_spawn's
+        // SETPGROUP / SETSID override these immediately after
+        // launch.
+        self.pgroup = self.id;
+        self.sid = self.id;
         self.name = name;
         self.state = ProcessState::Initial;
         self.root_vmar = root_vmar;
@@ -157,6 +175,11 @@ impl Process {
         self.cwd_len = cwd_len;
         self.exit_status = None;
         self.parent_pid = 0;
+        // Default: every process is its own process group and its
+        // own session.  `setsid` / `setpgid` (or `POSIX_SPAWN_SETSID`
+        // / `POSIX_SPAWN_SETPGROUP` at spawn) override these.
+        self.pgroup = 0; // overwritten to `self.id` once we have it
+        self.sid = 0;    // overwritten to `self.id` once we have it
         self.sig_handlers = [0u8; 32];
         self.pending_signals = 0u32;
         self.fd_table = [const { None }; FD_TABLE_SIZE];

@@ -43,7 +43,7 @@ pub fn test_s7_run(t: &mut crate::TestRunner) {
     //    doesn't matter; the syscall returning Ok(_) is the
     //    contract we care about.
     let res = loader.spawn_program_with_std_fds(
-        "ls", stdin, stdout, stderr, &[], &[], 0,
+        "ls", stdin, stdout, stderr, &[], &[], 0, 0,
     );
     let spawned = match res {
         Ok(_pid) => true,

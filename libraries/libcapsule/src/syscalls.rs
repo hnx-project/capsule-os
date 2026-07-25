@@ -525,10 +525,10 @@ pub fn spawn(binary_vmo: usize, argv_vmo: usize) -> Result<u64> {
         shared::syscall_nums::SYSCALL_SPAWN,
         binary_vmo,
         argv_vmo,
-        0,
-        0,
-        0,
-        0
+        0, // envp_vmo: 0 = no envp forwarding
+        0, // file_actions_vmo: 0 = skip
+        0, // attr_vmo: 0 = no attr
+        0  // reserved / future
     );
     if (ret as isize) < 0 {
         Err(Status::from_raw(ret as i32))

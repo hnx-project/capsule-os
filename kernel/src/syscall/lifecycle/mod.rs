@@ -96,8 +96,10 @@ pub fn dispatch_lifecycle(
             let argv_vmo = arg1 as u32;
             let envp_vmo = arg2 as u32;
             let file_actions_vmo = arg3 as u32;
+            let attr_vmo = arg4 as u32;
             match handlers::process::sys_spawn(
-                table, binary_vmo, argv_vmo, envp_vmo, file_actions_vmo,
+                table, binary_vmo, argv_vmo, envp_vmo,
+                file_actions_vmo, attr_vmo,
             ) {
                 Ok(pid) => pid as usize,
                 Err(e) => e.to_raw(),
@@ -110,6 +112,7 @@ pub fn dispatch_lifecycle(
             let std_fds_vmo = arg2 as u32;
             let envp_vmo = arg3 as u32;
             let file_actions_vmo = arg4 as u32;
+            let attr_vmo = arg5 as u32;
             match handlers::process::sys_spawn_std(
                 table,
                 binary_vmo,
@@ -117,6 +120,7 @@ pub fn dispatch_lifecycle(
                 std_fds_vmo,
                 envp_vmo,
                 file_actions_vmo,
+                attr_vmo,
             ) {
                 Ok(pid) => pid as usize,
                 Err(e) => e.to_raw(),
