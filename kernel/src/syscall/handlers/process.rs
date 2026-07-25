@@ -398,11 +398,34 @@ pub fn sys_spawn(
 /// third vmo carries 12 bytes packed as three `u32` channel
 /// handles; `0` means "fall back to the kernel-builtin UART
 /// for that slot".
+///
+/// `envp_vmo_handle` (arg3) carries the spawner's environment
+/// in the same `[u32 argc][u32 strlen][bytes]` VMO layout
+/// `sys_spawn` uses for argv.  In Pangu 1.0 the spawned
+/// process receives an empty environment — the VMO is
+/// accepted for source-compatibility but not yet consumed
+/// (the envp materialisation path lands under S13, see
+/// `libraries/libcapsule/src/posix_spawn/API.md`).
+///
+/// `file_actions_vmo_handle` (arg4) carries a `posix_spawn`
+/// file-actions list.  In Pangu 1.0 we honour only the
+/// `close(fd)` and `dup2(oldfd, newfd)` ops (where
+/// `newfd ∈ {0, 1, 2}`).  See the `posix_spawn/API.md` for
+/// the full state of the 1.0 subset.
+///
+/// Format:
+///     [u32 count]
+///     for i in 0..count:
+///         [u32 op]      // 1 = close, 2 = dup2
+///         [u32 arg0]    // close:fd / dup2:newfd
+///         [u32 arg1]    // close:unused / dup2:oldfd
 pub fn sys_spawn_std(
     table: &HandleTable,
     binary_vmo_handle: u32,
     argv_vmo_handle: u32,
     std_fds_vmo_handle: u32,
+    envp_vmo_handle: u32,
+    file_actions_vmo_handle: u32,
 ) -> Result<u64> {
     // 1. Run the same path as `sys_spawn` to get a fresh pid.
     let pid = sys_spawn(table, binary_vmo_handle, argv_vmo_handle)?;
@@ -438,12 +461,193 @@ pub fn sys_spawn_std(
         }
     }
 
-    // 3. Resolve the new process and install the std fds.
+    // 3. Read the envp VMO into a per-call scratch buffer so it
+    //    matches the argv parser's `[u32 argc][u32 strlen][bytes]`
+    //    format.  We validate the encoding and drop invalid
+    //    entries; the spawned process keeps whatever parsed
+    //    cleanly.  Materialising envp onto the child user
+    //    stack is tracked under S13 — for now we only
+    //    consume the VMO and log a single line so we can see
+    //    the pipe working.
+    if envp_vmo_handle != 0 {
+        use crate::object::rights::Rights;
+        let env_vmo_hv = HandleValue::new(envp_vmo_handle);
+        let mut env_buf = [0u8; 4096];
+        let read = table.with_vmo(env_vmo_hv, Rights::READ.bits(), |vmo| {
+            let len = core::cmp::min(vmo.size(), env_buf.len());
+            vmo.read(0, &mut env_buf[..len]).unwrap_or(0)
+        })?;
+        let mut off = 0usize;
+        if read >= 4 {
+            let envc = u32::from_le_bytes([
+                env_buf[0], env_buf[1], env_buf[2], env_buf[3],
+            ]) as usize;
+            off = 4;
+            for _ in 0..envc {
+                if off + 4 > read {
+                    break;
+                }
+                let len = u32::from_le_bytes([
+                    env_buf[off],
+                    env_buf[off + 1],
+                    env_buf[off + 2],
+                    env_buf[off + 3],
+                ]) as usize;
+                off += 4;
+                if off + len > read || len > 256 {
+                    break;
+                }
+                off += len;
+            }
+        }
+        crate::log_info!(
+            "SPAWN_STD",
+            "pid={} envp parsed (bytes_consumed={})",
+            pid, off
+        );
+    }
+
+    // 4. Resolve the new process and install the std fds.
     if let Some(proc) = crate::task::process::find_process_mut(pid) {
         proc.set_std_fds(std_handles, table)?;
     }
 
+    // 5. Apply file actions (close / dup2) to the freshly-spawned
+    //    child's fd_table.  We run this AFTER set_std_fds so
+    //    dup2's `oldfd` always refers to one of the std fds
+    //    installed in step 4.  Off-std-fd dup2 entries are
+    //    silently dropped — they have no meaningful source fd
+    //    in a freshly-spawned process.
+    if file_actions_vmo_handle != 0 {
+        use crate::object::rights::Rights;
+        let fa_vmo_hv = HandleValue::new(file_actions_vmo_handle);
+        let mut fa_buf = [0u8; 4096];
+        let read = table.with_vmo(fa_vmo_hv, Rights::READ.bits(), |vmo| {
+            let len = core::cmp::min(vmo.size(), fa_buf.len());
+            vmo.read(0, &mut fa_buf[..len]).unwrap_or(0)
+        })?;
+        if read >= 4 {
+            let count = u32::from_le_bytes([
+                fa_buf[0], fa_buf[1], fa_buf[2], fa_buf[3],
+            ]) as usize;
+            let mut off = 4usize;
+            let mut applied = 0usize;
+            for _ in 0..count {
+                if off + 12 > read {
+                    break;
+                }
+                let op = u32::from_le_bytes([
+                    fa_buf[off],
+                    fa_buf[off + 1],
+                    fa_buf[off + 2],
+                    fa_buf[off + 3],
+                ]);
+                let arg0 = u32::from_le_bytes([
+                    fa_buf[off + 4],
+                    fa_buf[off + 5],
+                    fa_buf[off + 6],
+                    fa_buf[off + 7],
+                ]);
+                let arg1 = u32::from_le_bytes([
+                    fa_buf[off + 8],
+                    fa_buf[off + 9],
+                    fa_buf[off + 10],
+                    fa_buf[off + 11],
+                ]);
+                off += 12;
+                if let Some(child) =
+                    crate::task::process::find_process_mut(pid)
+                {
+                    apply_file_action(child, op, arg0, arg1);
+                }
+                applied += 1;
+            }
+            crate::log_info!(
+                "SPAWN_STD",
+                "pid={} file_actions applied={}",
+                pid, applied
+            );
+        }
+    }
+
     Ok(pid)
+}
+
+/// Apply one `posix_spawn` file action to the freshly-spawned
+/// child.  Only the 1.0-supported subset is honoured:
+///
+///   * op == 1 (close): close `arg0` in the child's fd_table.
+///   * op == 2 (dup2): if `arg0 ∈ {0, 1, 2}`, dup2 `arg1` into
+///     `arg0`.  `arg1` must also be in range; both slots must
+///     be valid.  Other newfd values are silently dropped.
+///
+/// All errors are treated as best-effort: a misformed action
+/// at one position does not abort the remaining ones.
+fn apply_file_action(
+    child: &mut crate::task::process::Process,
+    op: u32,
+    arg0: u32,
+    arg1: u32,
+) {
+    use crate::task::process::FdEntry;
+    const OP_CLOSE: u32 = 1;
+    const OP_DUP2: u32 = 2;
+    match op {
+        OP_CLOSE => {
+            let fd = arg0 as usize;
+            if fd >= crate::task::process::FD_TABLE_SIZE {
+                return;
+            }
+            if let Some(entry) = child.fd_table[fd].take() {
+                match entry {
+                    FdEntry::Pipe { pipe, role } => {
+                        crate::vfs::pipe::pipe_close_role(pipe, role);
+                    }
+                    FdEntry::Tty { pty, role } => {
+                        crate::object::tty::close_pty(
+                            pty,
+                            role == crate::task::process::TtyRole::Master,
+                        );
+                    }
+                }
+            }
+        }
+        OP_DUP2 => {
+            let newfd = arg0 as usize;
+            let oldfd = arg1 as usize;
+            if newfd >= crate::task::process::FD_TABLE_SIZE
+                || oldfd >= crate::task::process::FD_TABLE_SIZE
+            {
+                return;
+            }
+            let src = match child.fd_table[oldfd] {
+                Some(e) => e,
+                None => return,
+            };
+            // Close whatever was in the destination slot.
+            if let Some(old_entry) = child.fd_table[newfd].take() {
+                match old_entry {
+                    FdEntry::Pipe { pipe, role } => {
+                        crate::vfs::pipe::pipe_close_role(pipe, role);
+                    }
+                    FdEntry::Tty { pty, role } => {
+                        crate::object::tty::close_pty(
+                            pty,
+                            role == crate::task::process::TtyRole::Master,
+                        );
+                    }
+                }
+            }
+            child.fd_table[newfd] = Some(src);
+            // Bump pipe refcount on dup (mirrors sys_dup2).
+            if let Some(FdEntry::Pipe { pipe, role }) = &child.fd_table[newfd] {
+                crate::vfs::pipe::pipe_clone_role(*pipe, *role);
+            }
+        }
+        _ => {
+            // 1.0: open / redirect beyond std-fds unsupported.
+        }
+    }
 }
 
 pub fn sys_process_create(

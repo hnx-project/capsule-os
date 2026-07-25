@@ -74,6 +74,16 @@ impl ProgramLoader {
     /// a `0` entry leaves the corresponding slot at the
     /// kernel-builtin UART path.
     ///
+    /// `argv` and `envp` are forwarded to the kernel's argv VMO
+    /// parser.  Pass `&[]` for either when the caller has no
+    /// additional slots to add beyond argv[0] / no envp.  The
+    /// kernel caps each slice at `EXECVE_MAX_ARGS` (16) entries
+    /// and 256 bytes per string.
+    ///
+    /// `file_actions_vmo` is the kernel-side action list VMO
+    /// built by `build_file_actions_vmo`.  Pass `0` when no
+    /// actions are needed (kernel treats 0 as "skip").
+    ///
     /// The wrapper is intentionally kept thin — everything else
     /// (the binary VMO walk, argv VMO construction, etc.) is
     /// identical to the non-std path.  We avoid the
@@ -86,6 +96,9 @@ impl ProgramLoader {
         stdin: u32,
         stdout: u32,
         stderr: u32,
+        argv: &[&[u8]],
+        envp: &[&[u8]],
+        file_actions_vmo: usize,
     ) -> Result<usize> {
         // 1. Resolve offset and size of the program within BootFS
         let (offset, size) = self.loader.resolve_file(name)?;
@@ -114,38 +127,50 @@ impl ProgramLoader {
         ];
         crate::syscalls::vmo_write(std_fds_vmo, 0, &std_packed)?;
 
-        // 4. Build the argv vmo.  For an `argv = [name]` of
-        //    1 argument the encoding is: `[u32 count=1]
-        //    [u32 strlen(name)] [bytes]`.
-        let argv = name.as_bytes();
-        let argv_len = argv.len();
-        let argv_vmo = crate::syscalls::vmo_create(4 + 4 + argv_len)?;
-        let mut argv_buf = [0u8; 4 + 4 + 64];
-        if argv_len > 64 {
-            let _ = crate::syscalls::close(argv_vmo);
-            return Err(shared::status::Status::InvalidArgs);
-        }
-        argv_buf[0..4].copy_from_slice(&1u32.to_le_bytes());
-        argv_buf[4..8].copy_from_slice(&(argv_len as u32).to_le_bytes());
-        argv_buf[8..8 + argv_len].copy_from_slice(argv);
-        crate::syscalls::vmo_write(argv_vmo, 0, &argv_buf[..8 + argv_len])?;
+        // 4. Build the argv vmo.  Format matches the kernel's
+        //    `sys_spawn` argv parser:
+        //
+        //      [u32 argc]
+        //      [u32 strlen(argv[0])][bytes argv[0]]
+        //      [u32 strlen(argv[1])][bytes argv[1]]
+        //      ...
+        //
+        //    When `argv` is empty we ship a single-element argv
+        //    containing just the program name, matching the
+        //    historic 1.0 behaviour.
+        let argv_vmo = build_argv_vmo(name, argv)?;
 
-        // 5. Hand control to the kernel.
+        // 5. Build the envp vmo, same format but for environment
+        //    strings.  When `envp` is empty we ship an empty
+        //    environment (`argc=0`).  The kernel's argv parser
+        //    does NOT touch envp — it's currently ignored.
+        //    Forwarding envp here is the necessary prerequisite
+        //    for the eventual envp VMO support landing in the
+        //    kernel-side `launch_user_program_with_argv`; until
+        //    then the VMO is built correctly but the spawned
+        //    process will still see an empty environment.
+        let envp_vmo = build_envp_vmo(envp);
+
+        // 6. Hand control to the kernel.
         let pid = crate::syscall!(
             shared::syscall_nums::SYSCALL_SPAWN_STD,
             program_vmo as usize,
             argv_vmo as usize,
             std_fds_vmo as usize,
-            0,
-            0,
+            envp_vmo as usize,
+            file_actions_vmo as usize,
             0
         );
 
-        // 6. Close our local handles — the kernel has its own
+        // 7. Close our local handles — the kernel has its own
         //    references to the underlying VMO objects.
         let _ = crate::syscalls::close(program_vmo);
         let _ = crate::syscalls::close(argv_vmo);
         let _ = crate::syscalls::close(std_fds_vmo);
+        let _ = crate::syscalls::close(envp_vmo);
+        if file_actions_vmo != 0 {
+            let _ = crate::syscalls::close(file_actions_vmo);
+        }
 
         if (pid as isize) < 0 {
             Err(shared::status::Status::from_raw(pid as i32))
@@ -153,4 +178,100 @@ impl ProgramLoader {
             Ok(pid as usize)
         }
     }
+}
+
+/// Build the argv VMO payload the kernel's `sys_spawn` already
+/// knows how to parse.  Returns the new VMO handle; caller is
+/// responsible for `close()` once the kernel has consumed it.
+///
+/// `name` becomes argv[0]; `extra` are argv[1..].  We cap the
+/// total at the kernel's `EXECVE_MAX_ARGS` (16) and the per-string
+/// length at 256 bytes — exceeding either returns
+/// `Status::InvalidArgs`.
+fn build_argv_vmo(name: &str, extra: &[&[u8]]) -> core::result::Result<usize, shared::status::Status> {
+    use shared::status::Status;
+    if extra.len() + 1 > 16 {
+        return Err(Status::InvalidArgs);
+    }
+    if name.len() > 256 {
+        return Err(Status::InvalidArgs);
+    }
+    for s in extra {
+        if s.len() > 256 {
+            return Err(Status::InvalidArgs);
+        }
+    }
+    let total = 4 + (4 + name.len()) + {
+        let mut t = 0usize;
+        for s in extra {
+            t += 4 + s.len();
+        }
+        t
+    };
+    let vmo = crate::syscalls::vmo_create(total)?;
+    let mut buf = [0u8; 4096];
+    let argc = (1 + extra.len()) as u32;
+    buf[0..4].copy_from_slice(&argc.to_le_bytes());
+    buf[4..8].copy_from_slice(&(name.len() as u32).to_le_bytes());
+    buf[8..8 + name.len()].copy_from_slice(name.as_bytes());
+    let mut off = 4 + 4 + name.len();
+    for s in extra {
+        buf[off..off + 4].copy_from_slice(&(s.len() as u32).to_le_bytes());
+        buf[off + 4..off + 4 + s.len()].copy_from_slice(*s);
+        off += 4 + s.len();
+    }
+    crate::syscalls::vmo_write(vmo, 0, &buf[..total])?;
+    Ok(vmo)
+}
+
+/// Build the envp VMO payload.  Same encoding as argv but
+/// without a `name` prefix — `envp` is `KEY=VALUE\0` strings.
+///
+/// When `envp` is empty the VMO encodes a single u32 = 0 (an
+/// empty environment list).  This is harmless: the kernel's
+/// current argv parser ignores the envp slot entirely, and
+/// once envp parsing lands, an empty list is the correct
+/// default for "caller passed nothing".
+fn build_envp_vmo(envp: &[&[u8]]) -> usize {
+    use shared::status::Status;
+    if envp.len() > 16 {
+        // Soft-fail: hand back a VMO that the kernel will read as
+        // a zero-length envp list rather than risking a corrupt
+        // VMO.  Real callers shouldn't pass more than 16 env
+        // entries; the kernel cap is the same.
+        let vmo = match crate::syscalls::vmo_create(4) {
+            Ok(v) => v,
+            Err(_) => return 0,
+        };
+        let buf = [0u8; 4];
+        let _ = crate::syscalls::vmo_write(vmo, 0, &buf);
+        return vmo;
+    }
+    for s in envp {
+        if s.len() > 256 {
+            return 0;
+        }
+    }
+    let total = 4 + {
+        let mut t = 0usize;
+        for s in envp {
+            t += 4 + s.len();
+        }
+        t
+    };
+    let vmo = match crate::syscalls::vmo_create(total) {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+    let mut buf = [0u8; 4096];
+    let envc = envp.len() as u32;
+    buf[0..4].copy_from_slice(&envc.to_le_bytes());
+    let mut off = 4;
+    for s in envp {
+        buf[off..off + 4].copy_from_slice(&(s.len() as u32).to_le_bytes());
+        buf[off + 4..off + 4 + s.len()].copy_from_slice(*s);
+        off += 4 + s.len();
+    }
+    let _ = crate::syscalls::vmo_write(vmo, 0, &buf[..total]);
+    vmo
 }

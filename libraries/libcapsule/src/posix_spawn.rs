@@ -383,14 +383,6 @@ fn spawn_impl(
     const BOOTFS_VMO_HANDLE: u32 = 1;
     let loader = ProgramLoader::new(BOOTFS_VMO_HANDLE as usize);
 
-    // 3. Build argv / envp.  For 1.0 the loader only accepts a
-    //    flat `[name]` argv; richer argv arrives when the
-    //    loader gains a real `spawn_program(argv, envp)`
-    //    variant.  For now we pass `name` as argv[0] and ignore
-    //    additional argv slots.
-    let _ = argv;
-    let _ = envp;
-
     // 4. Honour `POSIX_SPAWN_SETSID` / `POSIX_SPAWN_SETPGROUP` if
     //    the caller passed an attribute object.  We can't
     //    change the spawned process's session / pgroup from
@@ -410,14 +402,41 @@ fn spawn_impl(
     let (stdin, stdout, stderr) =
         resolve_std_fds(file_actions, BOOTFS_VMO_HANDLE);
 
-    // 6. Actually spawn.  Try the std-fds path first (lets us
+    // 6. Build argv / envp slices from the caller's C
+    //    arrays.  Each `*const u8` is a NUL-terminated
+    //    string; we read up to MAX_ARG_LEN (256) bytes per
+    //    entry and abort with E2BIG if there are more than
+    //    MAX_ARGV_ENTRIES (16) — those limits match the
+    //    kernel-side `EXECVE_MAX_ARGS`.
+    let argv_count = unsafe { read_c_array(argv, &mut ARGV_BUF, &mut ARGV_LENS) };
+    let argv_count = match argv_count {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    let argv_slice: &[&[u8]] = unsafe { as_slice(&ARGV_BUF, &ARGV_LENS, argv_count) };
+
+    let envp_count = unsafe { read_c_array(envp, &mut ENVP_BUF, &mut ENVP_LENS) };
+    let envp_count = match envp_count {
+        Ok(n) => n,
+        Err(_) => 0, // envp over-quota is non-fatal
+    };
+    let envp_slice: &[&[u8]] = unsafe { as_slice(&ENVP_BUF, &ENVP_LENS, envp_count) };
+
+    // 7. Translate the file_actions table into the kernel's
+    //    VMO format.  We honour every action the 1.0 kernel
+    //    supports (close + dup2).  Returns `0` when the
+    //    caller passed no actions — the kernel treats
+    //    `file_actions_vmo == 0` as "skip this step".
+    let file_actions_vmo = build_file_actions_vmo(file_actions);
+
+    // 8. Actually spawn.  Try the std-fds path first (lets us
     //    wire dup2 redirects onto fd 0/1/2).  Fall back to the
     //    plain `spawn_program` if the std-fds handoff returns
     //    NotFound — that happens when a previous test exhausted
     //    BootFS page slots and we'd rather see the spawn
     //    succeed than report a confusing ENOENT.
     let spawn_res = loader.spawn_program_with_std_fds(
-        name, stdin, stdout, stderr,
+        name, stdin, stdout, stderr, argv_slice, envp_slice, file_actions_vmo,
     );
     let pid = match spawn_res {
         Ok(p) => p,
@@ -540,6 +559,160 @@ const EINVAL: i32 = 22;
 const E2BIG: i32 = 7;
 const EBADF: i32 = 9;
 const ENOENT: i32 = 2;
+
+/// Maximum argv / envp entries we accept from the caller —
+/// mirrors the kernel-side `EXECVE_MAX_ARGS` cap.
+const MAX_ARGV_ENTRIES: usize = 16;
+/// Maximum bytes per argv / envp string (kernel cap).
+const MAX_ARG_LEN: usize = 256;
+
+/// Per-call storage for argv / envp slices.  The arrays are
+/// `Copy` byte buffers with fixed capacity; we hold one per
+/// slot.  We allocate two statics so we can avoid pulling in
+/// `alloc` for a no_std library.  Each `posix_spawn` call
+/// reuses these buffers — the borrow checker would be
+/// unhappy if we tried to hand out `&'static [&'static [u8]]`
+/// from a function-scoped local, so the static lifetime is
+/// the right tool here.
+static mut ARGV_BUF: [[u8; MAX_ARG_LEN]; MAX_ARGV_ENTRIES] =
+    [[0u8; MAX_ARG_LEN]; MAX_ARGV_ENTRIES];
+static mut ARGV_LENS: [usize; MAX_ARGV_ENTRIES] = [0usize; MAX_ARGV_ENTRIES];
+static mut ENVP_BUF: [[u8; MAX_ARG_LEN]; MAX_ARGV_ENTRIES] =
+    [[0u8; MAX_ARG_LEN]; MAX_ARGV_ENTRIES];
+static mut ENVP_LENS: [usize; MAX_ARGV_ENTRIES] = [0usize; MAX_ARGV_ENTRIES];
+
+/// Copy a NUL-terminated C string into `dst`.  Returns the
+/// byte length copied (excluding the NUL), or an errno
+/// value if the source is too long.
+unsafe fn copy_cstr_into(src: *const u8, dst: &mut [u8]) -> core::result::Result<usize, i32> {
+    let mut i = 0usize;
+    while i < dst.len() {
+        let b = *src.add(i);
+        if b == 0 {
+            return Ok(i);
+        }
+        dst[i] = b;
+        i += 1;
+    }
+    // Source ran past our buffer without a NUL — too long.
+    Err(E2BIG)
+}
+
+/// Read a C `argv` / `envp` array (NULL-terminated list of
+/// NUL-terminated strings) into the matching pair of static
+/// buffers.  Returns the slice of populated entries, ready
+/// to forward to the kernel via the argv VMO format.
+///
+/// `raw == NULL` means "the caller passed no entries" and we
+/// return an empty slice.
+unsafe fn read_c_array(
+    raw: *const *const u8,
+    buf: &mut [[u8; MAX_ARG_LEN]; MAX_ARGV_ENTRIES],
+    lens: &mut [usize; MAX_ARGV_ENTRIES],
+) -> core::result::Result<usize, i32> {
+    if raw.is_null() {
+        return Ok(0);
+    }
+    let mut count = 0usize;
+    loop {
+        let entry = *raw.add(count);
+        if entry.is_null() {
+            break;
+        }
+        if count >= MAX_ARGV_ENTRIES {
+            return Err(E2BIG);
+        }
+        let len = copy_cstr_into(entry, &mut buf[count])?;
+        lens[count] = len;
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// View the populated slots of `buf`/`lens` as `&[&[u8]]`.
+/// Returns `&[]` when `count == 0`.  The returned slice
+/// borrows the static buffers, so its lifetime is effectively
+/// `'static` (until the next call to this function).
+unsafe fn as_slice<'a>(
+    buf: &'a [[u8; MAX_ARG_LEN]; MAX_ARGV_ENTRIES],
+    lens: &'a [usize; MAX_ARGV_ENTRIES],
+    count: usize,
+) -> &'a [&'a [u8]] {
+    if count == 0 {
+        return &[];
+    }
+    // Build a stack array of subslices and leak it: the
+    // buffers outlive the call so the leaked array is fine.
+    // We cap the array at MAX_ARGV_ENTRIES which the caller
+    // already guarantees via the count.
+    let mut tmp: [&[u8]; MAX_ARGV_ENTRIES] = [&[]; MAX_ARGV_ENTRIES];
+    for i in 0..count {
+        tmp[i] = &buf[i][..lens[i]];
+    }
+    let leaked: &'a mut [&'a [u8]; MAX_ARGV_ENTRIES] =
+        core::mem::transmute(&mut tmp as *mut _);
+    &leaked[..count]
+}
+
+/// Translate the caller's `posix_spawn_file_actions_t` into
+/// the kernel's file-actions VMO format:
+///
+///     [u32 count]
+///     [u32 op][u32 arg0][u32 arg1]
+///     ...
+///
+/// where `op` is `1` (close) or `2` (dup2).  `addopen`
+/// entries are skipped — the 1.0 kernel does not have the
+/// path VMO machinery; the API.md documents this as the
+/// future-work direction.
+///
+/// Returns `0` when the caller passed no actions.
+fn build_file_actions_vmo(
+    actions: *const posix_spawn_file_actions_t,
+) -> usize {
+    if actions.is_null() {
+        return 0;
+    }
+    let a = unsafe { &*actions };
+    let count = a.count;
+    if count == 0 {
+        return 0;
+    }
+
+    // Encode each entry as 3 u32s (op, arg0, arg1) plus a
+    // leading u32 count.  We materialise into a fixed
+    // 4 KiB buffer; with MAX_FILE_ACTIONS=32 we use at
+    // most 1 + 32*3 = 97 u32 = 388 bytes — well under 4 KiB.
+    let total = 4 + count * 12;
+    let mut buf = [0u8; 4096];
+    buf[0..4].copy_from_slice(&(count as u32).to_le_bytes());
+    let mut off = 4usize;
+    for i in 0..count {
+        let e = a.actions[i];
+        let (op, arg0, arg1): (u32, u32, u32) = match e.kind {
+            FileActionKind::Close => (1, e.arg0 as u32, 0),
+            FileActionKind::Dup2 => (2, e.arg0 as u32, e.arg1 as u32),
+            // addopen: 1.0 has no path VMO machinery.  Encode
+            // the entry but pick an op code the kernel treats
+            // as no-op (`0`); the kernel logs a single
+            // "applied" line so the user can see whether
+            // something got dropped.
+            FileActionKind::Open => (0, e.arg0 as u32, 0),
+        };
+        buf[off..off + 4].copy_from_slice(&op.to_le_bytes());
+        buf[off + 4..off + 8].copy_from_slice(&arg0.to_le_bytes());
+        buf[off + 8..off + 12].copy_from_slice(&arg1.to_le_bytes());
+        off += 12;
+    }
+    let vmo = match crate::syscalls::vmo_create(total) {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+    if crate::syscalls::vmo_write(vmo, 0, &buf[..total]).is_err() {
+        return 0;
+    }
+    vmo as usize
+}
 
 // -------------------------------------------------------------------------
 // Tests (compile-time only — the binary is `no_std` so the

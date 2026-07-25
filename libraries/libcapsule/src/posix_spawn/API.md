@@ -37,8 +37,9 @@ to call `fork()` directly.
   open is *not yet* performed by the kernel-side loader.
   Recorded entries do take up a slot, so a future kernel-side
   open pass will see the action list intact.
-* `posix_spawn_file_actions_addclose` — recorded; the kernel
-  closure pass isn't wired in 1.0.
+* `posix_spawn_file_actions_addclose` — **fully wired**:
+  closed in the freshly-spawned child's fd_table by
+  `apply_file_action` in `sys_spawn_std`.
 * `posix_spawn_file_actions_adddup2` — **fully wired**: when
   the target slot is `0`/`1`/`2` the dup2 is folded into the
   std-fds VMO and the child boots with the redirected std fd.
@@ -49,15 +50,41 @@ to call `fork()` directly.
   `POSIX_SPAWN_SETSID`, plus the CapsuleOS extension
   `POSIX_SPAWN_WAITPID`.
 
+### argv / envp forwarding
+
+The 1.0 implementation walks the caller's C `argv` / `envp`
+arrays, copies each entry into a per-call static buffer
+(max 16 entries, max 256 bytes per entry), and packages
+them into the same `[u32 argc][u32 strlen][bytes]…` VMO
+layout the kernel's `sys_spawn` already parses.  Both arrays
+are forwarded to `SYSCALL_SPAWN_STD` as separate VMOs.
+
+In 1.0 the kernel-side `launch_user_program_with_argv`
+materialises argv onto the child user stack; envp is consumed
+at the syscall boundary but the bytes are not yet put on
+the stack — `getenv(3)` will return NULL for any string the
+caller forwarded.  S13 will close that gap.
+
+### File actions
+
+Each `posix_spawn_file_actions_add*` call records a typed
+entry in a stack-allocated `posix_spawn_file_actions_t`.  At
+spawn time the table is encoded into a third VMO with the
+format below and handed to `sys_spawn_std`, which calls
+`apply_file_action` against the freshly-spawned child's
+fd_table.  The 1.0 subset is `close(fd)` + `dup2(oldfd, newfd)`
+with `newfd ∈ {0, 1, 2}`; `addopen` is recorded but the
+kernel encodes it as op=0 (no-op) until the path VMO machinery
+ships.
+
 ### What is NOT yet implemented
 
-* Real `addopen` / `addclose` (see above).
+* Real `addopen` (recorded but not exercised — see above).
 * `POSIX_SPAWN_SETPGROUP` / `POSIX_SPAWN_SETSID` — accepted but
   not applied.  The child inherits the spawner's session in
   1.0.
-* Rich `argv` / `envp` — only `argv[0]` is forwarded.  The
-  underlying `ProgramLoader` does not yet accept a structured
-  argv/envp VMO; landing that is tracked under S13.
+* Materialising envp onto the child user stack — VMO is
+  consumed but not yet used at exec time.  Tracked under S13.
 
 ## Exposed Interfaces
 
@@ -126,13 +153,20 @@ to call `fork()` directly.
 
 ## Future Work
 
-* Push real `addopen` / `addclose` support into the kernel's
-  spawn path; carry the action list in a dedicated VMO.
-* Land structured `argv` / `envp` forwarding through
-  `ProgramLoader`.
+* Push real `addopen` support into the kernel's spawn path:
+  this requires a third VMO carrying the path blob so the
+  kernel can complete the `open` against `fileagent`'s IPC
+  VFS protocol.  `addclose` already works.
+* Land structured `envp` materialisation onto the child user
+  stack.  Today the kernel parses and validates the envp
+  VMO; S13 closes the loop.
 * Honour `POSIX_SPAWN_SETPGROUP` / `POSIX_SPAWN_SETSID` by
   threading the requested session/pgroup into the kernel's
   `process_create` argument.
 * Promote `POSIX_SPAWN_SETSIGDEF` / `POSIX_SPAWN_SETSIGMASK`
   to first-class once the signal subsystem has per-process
   state.
+* Generalise `adddup2` beyond the std-fd range: this requires
+  the kernel to walk an open-fd table inside the child's
+  freshly-built container, which currently only carries the
+  three std fds.
