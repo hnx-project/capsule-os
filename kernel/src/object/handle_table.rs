@@ -19,6 +19,7 @@ pub enum KernelObject {
     Port(Port),
     Process(u64),
     Thread(usize),
+    Pty(crate::object::tty::PtyId),
 }
 
 impl KernelObject {
@@ -30,6 +31,7 @@ impl KernelObject {
             KernelObject::Port(_) => ObjectType::Port,
             KernelObject::Process(_) => ObjectType::Process,
             KernelObject::Thread(_) => ObjectType::Thread,
+            KernelObject::Pty(_) => ObjectType::Tty,
         }
     }
 
@@ -181,6 +183,15 @@ impl HandleTable {
         let result = f(&mut slot.object);
         release_lock();
         result
+    }
+
+    /// Read the slot's `KernelObject` and return a duplicate
+    /// (clones the underlying VMO when one is held).  Used by
+    /// `sys_spawn_std` to copy the spawner's `(stdin, stdout,
+    /// stderr)` channel handles into the child's process handle
+    /// table.
+    pub fn read_clone(&self, hv: HandleValue) -> Result<KernelObject> {
+        self.with(hv, 0, |obj| obj.duplicate())
     }
 
     pub fn with_vmo<R>(&self, hv: HandleValue, required_rights: u32,

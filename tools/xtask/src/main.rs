@@ -2,13 +2,14 @@ mod build;
 mod clean;
 mod cli;
 mod config;
+mod doc;
 mod output;
 mod pack;
 mod platform;
 mod run;
+mod test;
 mod toolchain;
 mod version;
-mod doc;
 
 use clap::Parser;
 use cli::{Cli, CodeSubcommands, Commands};
@@ -68,7 +69,11 @@ fn main() {
                     std::process::exit(1);
                 }
             }
-            CodeSubcommands::Run { arch, platform, gdb } => {
+            CodeSubcommands::Run {
+                arch,
+                platform,
+                gdb,
+            } => {
                 let plat = match Platform::from_config(arch, platform, &config) {
                     Some(p) => p,
                     None => {
@@ -94,6 +99,23 @@ fn main() {
             CodeSubcommands::Doc { open } => {
                 if let Err(e) = doc::generate_doc(*open, &config) {
                     eprintln!("Document generation failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+            CodeSubcommands::Test {
+                arch,
+                platform,
+                timeout,
+            } => {
+                let plat = match Platform::from_config(arch, platform, &config) {
+                    Some(p) => p,
+                    None => {
+                        eprintln!("Unsupported architecture/platform: {}/{}", arch, platform);
+                        std::process::exit(1);
+                    }
+                };
+                if let Err(e) = test::test(&config, &plat, *timeout) {
+                    eprintln!("Test failed: {}", e);
                     std::process::exit(1);
                 }
             }

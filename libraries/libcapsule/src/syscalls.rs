@@ -457,6 +457,22 @@ pub fn wait4(pid: i64, status_ptr: *mut i32, options: i32) -> Result<u64> {
     }
 }
 
+/// POSIX `fork(2)` — duplicate the calling process.  Returns the
+/// child's pid in the parent, 0 in the child.  See DEVELOPMENT.md
+/// §3 / kernel::syscall::handlers::process::sys_fork for the
+/// kernel-side semantics (S11 kstack fix lives there).
+pub fn fork() -> Result<u64> {
+    let ret = syscall!(
+        shared::syscall_nums::SYSCALL_FORK,
+        0, 0, 0, 0, 0, 0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret as u64)
+    }
+}
+
 /// Atomically spawn a background service in kernel context.
 pub fn service_spawn(desc: &shared::launcher::ServiceDescriptor) -> Result<u64> {
     // Stage 1: print info before entering syscall
@@ -722,5 +738,49 @@ pub fn net_recv(buf: &mut [u8]) -> Result<usize> {
         Err(Status::from_raw(ret as i32))
     } else {
         Ok(ret)
+    }
+}
+
+// -------------------------------------------------------------------------
+// S1: helper for libc::getpid.
+//
+// libcapsule used to call straight into `SCHEDULER` via a kernel
+// trap, but libc is `no_std` and was happy to share the same
+// library as libcapsule.  Here we provide a thinner, panic-free
+// accessor that libcapsule's `users.rs::getpid` (and libc's own
+// shim) can call without dragging in the syscall macro.
+// -------------------------------------------------------------------------
+
+#[repr(C)]
+pub struct UserThreadView {
+    /// `id` is the kernel `Thread.id`, useful for diagnostics.
+    pub id: usize,
+    /// `process_id` is the user's perception of `getpid() == task.pid`.
+    pub process_id: u64,
+    /// Reserved for a future `ppid`/`pgid` field; set to 0 for now.
+    pub reserved: u64,
+}
+
+/// Fetch the calling thread's per-process identity triple.
+///
+/// Internally does a single `PROC_MGMT_GET_IDENTITY` syscall that
+/// returns `(tid << 32) | pid` packed in one u64; this avoids the
+/// race where the thread might be migrated between separate
+/// `gettid` / `getpid` calls.  Returns a `UserThreadView { 0, 0, 0 }`
+/// if there is no current thread (e.g. before `_start`).
+#[inline]
+pub fn get_current_thread_checked() -> UserThreadView {
+    let r = syscall!(
+        shared::syscall_nums::SYSCALL_PROC_MGMT,
+        5, // PROC_MGMT_GET_IDENTITY
+        0, 0, 0, 0, 0
+    );
+    if r == 0 || (r as isize) < 0 {
+        UserThreadView { id: 0, process_id: 0, reserved: 0 }
+    } else {
+        let v = r as u64;
+        let tid = (v >> 32) as usize;
+        let process_id = (v & 0xffff_ffff) as u64;
+        UserThreadView { id: tid, process_id, reserved: 0 }
     }
 }

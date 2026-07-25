@@ -1,10 +1,13 @@
+use crate::config::Config;
 use std::fs;
 use std::path::Path;
-use crate::config::Config;
 
 pub fn check_version(sync: bool, config: &Config) -> Result<(), String> {
     let xtask_version = &config.project.version;
-    println!("🔍 [Version Check] xtask.toml configured version: \x1b[1;36m{}\x1b[0m", xtask_version);
+    println!(
+        "🔍 [Version Check] xtask.toml configured version: \x1b[1;36m{}\x1b[0m",
+        xtask_version
+    );
 
     // 1. Read root Cargo.toml
     let root_cargo_path = Path::new("Cargo.toml");
@@ -38,9 +41,14 @@ pub fn check_version(sync: bool, config: &Config) -> Result<(), String> {
 
     let current_workspace_version = match workspace_version {
         Some(v) => v,
-        None => return Err("Could not find [workspace.package] version in root Cargo.toml".to_string()),
+        None => {
+            return Err("Could not find [workspace.package] version in root Cargo.toml".to_string())
+        }
     };
-    println!("🔍 [Version Check] Root Cargo.toml workspace version: \x1b[1;36m{}\x1b[0m", current_workspace_version);
+    println!(
+        "🔍 [Version Check] Root Cargo.toml workspace version: \x1b[1;36m{}\x1b[0m",
+        current_workspace_version
+    );
 
     let mut versions_match = current_workspace_version == *xtask_version;
 
@@ -63,7 +71,8 @@ pub fn check_version(sync: bool, config: &Config) -> Result<(), String> {
                 if in_workspace_package && trimmed.starts_with("version") {
                     if let Some(_eq_idx) = line.find('=') {
                         let indent = &line[..line.find("version").unwrap()];
-                        new_content.push_str(&format!("{}version = \"{}\"\n", indent, xtask_version));
+                        new_content
+                            .push_str(&format!("{}version = \"{}\"\n", indent, xtask_version));
                         continue;
                     }
                 }
@@ -99,7 +108,8 @@ pub fn check_version(sync: bool, config: &Config) -> Result<(), String> {
         }
 
         if in_members {
-            let clean_member = trimmed.trim_matches(|c| c == '"' || c == ',' || c == ' ' || c == '\'');
+            let clean_member =
+                trimmed.trim_matches(|c| c == '"' || c == ',' || c == ' ' || c == '\'');
             if !clean_member.is_empty() && !clean_member.starts_with('#') {
                 members.push(clean_member.to_string());
             }
@@ -112,7 +122,10 @@ pub fn check_version(sync: bool, config: &Config) -> Result<(), String> {
         }
         let member_cargo_path = Path::new(member).join("Cargo.toml");
         if !member_cargo_path.exists() {
-            println!("\x1b[1;33m⚠️ Warning: Member path '{}' does not have a Cargo.toml!\x1b[0m", member);
+            println!(
+                "\x1b[1;33m⚠️ Warning: Member path '{}' does not have a Cargo.toml!\x1b[0m",
+                member
+            );
             continue;
         }
 
@@ -161,15 +174,23 @@ pub fn check_version(sync: bool, config: &Config) -> Result<(), String> {
 
                         if in_package && trimmed.starts_with("version") {
                             let indent = &line[..line.find("version").unwrap()];
-                            new_member_content.push_str(&format!("{}version.workspace = true\n", indent));
+                            new_member_content
+                                .push_str(&format!("{}version.workspace = true\n", indent));
                             continue;
                         }
                         new_member_content.push_str(line);
                         new_member_content.push('\n');
                     }
-                    fs::write(&member_cargo_path, &new_member_content)
-                        .map_err(|e| format!("Failed to write updated member Cargo.toml for {}: {}", member, e))?;
-                    println!("✨ [Version Sync] \x1b[1;32m{}\x1b[0m Cargo.toml successfully migrated!", member);
+                    fs::write(&member_cargo_path, &new_member_content).map_err(|e| {
+                        format!(
+                            "Failed to write updated member Cargo.toml for {}: {}",
+                            member, e
+                        )
+                    })?;
+                    println!(
+                        "✨ [Version Sync] \x1b[1;32m{}\x1b[0m Cargo.toml successfully migrated!",
+                        member
+                    );
                 } else {
                     println!("\x1b[1;33m⚠️ Warning: Member '{}' does not have a version field under [package]!\x1b[0m", member);
                 }
@@ -201,7 +222,8 @@ pub fn check_version(sync: bool, config: &Config) -> Result<(), String> {
 
             if in_package && trimmed.starts_with("version") {
                 if let Some(eq_idx) = trimmed.find('=') {
-                    kernel_version = Some(trimmed[eq_idx + 1..].trim().trim_matches('"').to_string());
+                    kernel_version =
+                        Some(trimmed[eq_idx + 1..].trim().trim_matches('"').to_string());
                     break;
                 }
             }
@@ -216,9 +238,14 @@ pub fn check_version(sync: bool, config: &Config) -> Result<(), String> {
     }
 
     if !versions_match {
-        return Err("Version validation failed: xtask.toml and root Cargo.toml are out of sync.".to_string());
+        return Err(
+            "Version validation failed: xtask.toml and root Cargo.toml are out of sync."
+                .to_string(),
+        );
     }
 
-    println!("🎉 \x1b[1;32mAll version and workspace inheritance checks passed successfully!\x1b[0m");
+    println!(
+        "🎉 \x1b[1;32mAll version and workspace inheritance checks passed successfully!\x1b[0m"
+    );
     Ok(())
 }

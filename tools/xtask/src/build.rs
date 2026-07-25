@@ -1,4 +1,4 @@
-use std::io::{self, Read, Write, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::process::Command;
 
@@ -29,7 +29,8 @@ impl<'a> Read for PartitionSlice<'a> {
         }
         let remaining = self.size - self.current_pos;
         let max_read = buf.len().min(remaining as usize);
-        self.inner.seek(SeekFrom::Start(self.start_offset + self.current_pos))?;
+        self.inner
+            .seek(SeekFrom::Start(self.start_offset + self.current_pos))?;
         let bytes_read = self.inner.read(&mut buf[..max_read])?;
         self.current_pos += bytes_read as u64;
         Ok(bytes_read)
@@ -43,7 +44,8 @@ impl<'a> Write for PartitionSlice<'a> {
         }
         let remaining = self.size - self.current_pos;
         let max_write = buf.len().min(remaining as usize);
-        self.inner.seek(SeekFrom::Start(self.start_offset + self.current_pos))?;
+        self.inner
+            .seek(SeekFrom::Start(self.start_offset + self.current_pos))?;
         let bytes_written = self.inner.write(&buf[..max_write])?;
         self.current_pos += bytes_written as u64;
         Ok(bytes_written)
@@ -72,30 +74,49 @@ impl<'a> Seek for PartitionSlice<'a> {
     }
 }
 
-type RpiDir<'a, 'b> = fatfs::Dir<'b, fatfs::StdIoWrapper<PartitionSlice<'a>>, fatfs::ChronoTimeProvider, fatfs::LossyOemCpConverter>;
+type RpiDir<'a, 'b> = fatfs::Dir<
+    'b,
+    fatfs::StdIoWrapper<PartitionSlice<'a>>,
+    fatfs::ChronoTimeProvider,
+    fatfs::LossyOemCpConverter,
+>;
 
-fn copy_file_to_fat32<'a, 'b>(root_dir: &RpiDir<'a, 'b>, src_path: &str, dst_name: &str) -> Result<(), String> {
-    let mut dst_file = root_dir.create_file(dst_name)
+fn copy_file_to_fat32<'a, 'b>(
+    root_dir: &RpiDir<'a, 'b>,
+    src_path: &str,
+    dst_name: &str,
+) -> Result<(), String> {
+    let mut dst_file = root_dir
+        .create_file(dst_name)
         .map_err(|e| format!("Failed to create file {} in virtual FAT: {:?}", dst_name, e))?;
     let data = std::fs::read(src_path)
         .map_err(|e| format!("Failed to read source file {}: {}", src_path, e))?;
-    dst_file.write_all(&data)
+    dst_file
+        .write_all(&data)
         .map_err(|e| format!("Failed to write {} data to virtual FAT: {:?}", dst_name, e))?;
     Ok(())
 }
 
-fn copy_dir_to_fat32_recursive<'a, 'b>(src_dir: &Path, parent_dir: &RpiDir<'a, 'b>) -> Result<(), String> {
+fn copy_dir_to_fat32_recursive<'a, 'b>(
+    src_dir: &Path,
+    parent_dir: &RpiDir<'a, 'b>,
+) -> Result<(), String> {
     for entry in std::fs::read_dir(src_dir).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
         let file_name = entry.file_name().to_string_lossy().into_owned();
         if path.is_dir() {
-            let sub_dir = parent_dir.create_dir(&file_name)
-                .map_err(|e| format!("Failed to create dir {} in virtual FAT: {:?}", file_name, e))?;
+            let sub_dir = parent_dir.create_dir(&file_name).map_err(|e| {
+                format!("Failed to create dir {} in virtual FAT: {:?}", file_name, e)
+            })?;
             copy_dir_to_fat32_recursive(&path, &sub_dir)?;
         } else {
-            let mut dst_file = parent_dir.create_file(&file_name)
-                .map_err(|e| format!("Failed to create file {} in virtual FAT: {:?}", file_name, e))?;
+            let mut dst_file = parent_dir.create_file(&file_name).map_err(|e| {
+                format!(
+                    "Failed to create file {} in virtual FAT: {:?}",
+                    file_name, e
+                )
+            })?;
             let data = std::fs::read(&path).map_err(|e| e.to_string())?;
             dst_file.write_all(&data).map_err(|e| e.to_string())?;
         }
@@ -116,10 +137,12 @@ fn generate_c_bindings() -> Result<(), String> {
     let crate_dir = "libraries/libcapsule";
     let bindings = cbindgen::Builder::new()
         .with_crate(crate_dir)
-        .with_config(cbindgen::Config::from_file("libraries/libcapsule/cbindgen.toml").unwrap_or_default())
+        .with_config(
+            cbindgen::Config::from_file("libraries/libcapsule/cbindgen.toml").unwrap_or_default(),
+        )
         .generate()
         .map_err(|e| format!("cbindgen failed: {:?}", e))?;
-    
+
     std::fs::create_dir_all("libraries/libcapsule/include").map_err(|e| e.to_string())?;
     bindings.write_to_file("libraries/libcapsule/include/capsule.h");
     Ok(())
@@ -174,13 +197,9 @@ pub fn build(config: &Config, plat: &Platform, generate_dist: bool) -> Result<()
     // Generate the QEMU DTB now (rather than only at `run` time) so
     // that any tool that depends on `build/dist/qemu.dtb` can rely
     // on it being up-to-date after a build.
-    match crate::platform::Platform::from_config(
-        &plat.arch, "virt", config,
-    ) {
+    match crate::platform::Platform::from_config(&plat.arch, "virt", config) {
         Some(virt) if virt.qemu_smp > 0 => {
-            if let Err(e) = crate::run::generate_qemu_dtb_artifact_paths(
-                config, plat,
-            ) {
+            if let Err(e) = crate::run::generate_qemu_dtb_artifact_paths(config, plat) {
                 eprintln!("warning: QEMU DTB regeneration failed: {}", e);
             }
         }
@@ -224,7 +243,11 @@ fn bootstrap_ohlink_tools(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
-fn build_userspace_program(plat: &Platform, u_crate: &UserCrate, v: &ParsedVersion) -> Result<(), String> {
+fn build_userspace_program(
+    plat: &Platform,
+    u_crate: &UserCrate,
+    v: &ParsedVersion,
+) -> Result<(), String> {
     print!(
         "{}  Building{} {} (EL0)...",
         BOLD_GREEN, RESET, u_crate.crate_name
@@ -587,28 +610,50 @@ fn generate_dist_image(config: &Config, plat: &Platform, v: &ParsedVersion) -> R
         // Step 1: Create build output directory and dynamic firmware cache
         std::fs::create_dir_all(&config.distribution.output_dir)
             .map_err(|e| format!("Failed to create distribution directory: {}", e))?;
-        
+
         let cache_dir = "build/dist/rpi_firmware_cache";
-        std::fs::create_dir_all(cache_dir).map_err(|e| format!("Failed to create cache dir: {}", e))?;
+        std::fs::create_dir_all(cache_dir)
+            .map_err(|e| format!("Failed to create cache dir: {}", e))?;
 
         // Download official Broadcom firmware dynamically from stable GitHub URL
         const RPI_FIRMWARE_URLS: &[(&str, &str)] = &[
-            ("bootcode.bin", "https://github.com/raspberrypi/firmware/raw/master/boot/bootcode.bin"),
-            ("start.elf", "https://github.com/raspberrypi/firmware/raw/master/boot/start.elf"),
-            ("fixup.dat", "https://github.com/raspberrypi/firmware/raw/master/boot/fixup.dat"),
-            ("start4.elf", "https://github.com/raspberrypi/firmware/raw/master/boot/start4.elf"),
-            ("fixup4.dat", "https://github.com/raspberrypi/firmware/raw/master/boot/fixup4.dat"),
+            (
+                "bootcode.bin",
+                "https://github.com/raspberrypi/firmware/raw/master/boot/bootcode.bin",
+            ),
+            (
+                "start.elf",
+                "https://github.com/raspberrypi/firmware/raw/master/boot/start.elf",
+            ),
+            (
+                "fixup.dat",
+                "https://github.com/raspberrypi/firmware/raw/master/boot/fixup.dat",
+            ),
+            (
+                "start4.elf",
+                "https://github.com/raspberrypi/firmware/raw/master/boot/start4.elf",
+            ),
+            (
+                "fixup4.dat",
+                "https://github.com/raspberrypi/firmware/raw/master/boot/fixup4.dat",
+            ),
         ];
 
         for (name, url) in RPI_FIRMWARE_URLS {
             let cached_path = format!("{}/{}", cache_dir, name);
             if !Path::new(&cached_path).exists() {
-                println!("{}  Downloading{} {} boot firmware dynamically from GitHub...", BOLD_CYAN, RESET, name);
+                println!(
+                    "{}  Downloading{} {} boot firmware dynamically from GitHub...",
+                    BOLD_CYAN, RESET, name
+                );
                 let mut cmd = Command::new("curl");
                 cmd.args(["-L", url, "-o", &cached_path]);
                 let result = run_silent(&mut cmd, || {});
                 if !result.success {
-                    return Err(format!("Failed to download official boot firmware: {}", name));
+                    return Err(format!(
+                        "Failed to download official boot firmware: {}",
+                        name
+                    ));
                 }
             }
         }
@@ -616,19 +661,20 @@ fn generate_dist_image(config: &Config, plat: &Platform, v: &ParsedVersion) -> R
         // Build dual-in-one kernel8.img (bootloader padded to 128KB + kernel hnxcore)
         let mut kernel8_data = Vec::new();
         let bootloader_path = "build/target/aarch64-unknown-none/release/capsule-bootloader.bin";
-        let mut boot_data = std::fs::read(bootloader_path).map_err(|e| {
-            format!("Failed to read bootloader: {}", e)
-        })?;
+        let mut boot_data = std::fs::read(bootloader_path)
+            .map_err(|e| format!("Failed to read bootloader: {}", e))?;
         if boot_data.len() > 131072 {
-            return Err(format!("Bootloader size exceeds 128KB: {}", boot_data.len()));
+            return Err(format!(
+                "Bootloader size exceeds 128KB: {}",
+                boot_data.len()
+            ));
         }
         boot_data.resize(131072, 0);
         kernel8_data.extend_from_slice(&boot_data);
 
         let kernel_path = "build/dist/kernel/hnxcore";
-        let kernel_data = std::fs::read(kernel_path).map_err(|e| {
-            format!("Failed to read kernel: {}", e)
-        })?;
+        let kernel_data =
+            std::fs::read(kernel_path).map_err(|e| format!("Failed to read kernel: {}", e))?;
         kernel8_data.extend_from_slice(&kernel_data);
 
         // Step 2: Create raw physical SD disk image file
@@ -707,7 +753,8 @@ fn generate_dist_image(config: &Config, plat: &Platform, v: &ParsedVersion) -> R
         fatfs::format_volume(&mut format_wrapper, format_opts)
             .map_err(|e| format!("Failed to programmatically format FAT32 partition: {:?}", e))?;
 
-        partition_slice.seek(SeekFrom::Start(0))
+        partition_slice
+            .seek(SeekFrom::Start(0))
             .map_err(|e| format!("Failed to seek to partition start: {}", e))?;
 
         let mount_wrapper = fatfs::StdIoWrapper::new(partition_slice);
@@ -731,17 +778,27 @@ kernel=kernel8.img
 kernel_address=0x44000000
 initramfs rootfs.img 0x46000000
 ";
-        let mut cfg_file = root_dir.create_file("config.txt").map_err(|e| e.to_string())?;
-        cfg_file.write_all(config_txt_content.as_bytes()).map_err(|e| e.to_string())?;
+        let mut cfg_file = root_dir
+            .create_file("config.txt")
+            .map_err(|e| e.to_string())?;
+        cfg_file
+            .write_all(config_txt_content.as_bytes())
+            .map_err(|e| e.to_string())?;
 
         // Write dual-in-one kernel8.img
-        let mut k8_file = root_dir.create_file("kernel8.img").map_err(|e| e.to_string())?;
-        k8_file.write_all(&kernel8_data).map_err(|e| e.to_string())?;
+        let mut k8_file = root_dir
+            .create_file("kernel8.img")
+            .map_err(|e| e.to_string())?;
+        k8_file
+            .write_all(&kernel8_data)
+            .map_err(|e| e.to_string())?;
 
         // Write rootfs.img
         let rootfs_src = "kernel/files/rootfs.img";
         if Path::new(rootfs_src).exists() {
-            let mut rfs_file = root_dir.create_file("rootfs.img").map_err(|e| e.to_string())?;
+            let mut rfs_file = root_dir
+                .create_file("rootfs.img")
+                .map_err(|e| e.to_string())?;
             let rfs_data = std::fs::read(rootfs_src).map_err(|e| e.to_string())?;
             rfs_file.write_all(&rfs_data).map_err(|e| e.to_string())?;
         }
@@ -871,7 +928,10 @@ pub struct ParsedVersion {
 
 impl ParsedVersion {
     pub fn to_display_string(&self) -> String {
-        format!("{} {} v{}.{}.{} ({})", self.os_name, self.codename, self.major, self.minor, self.patch, self.tag)
+        format!(
+            "{} {} v{}.{}.{} ({})",
+            self.os_name, self.codename, self.major, self.minor, self.patch, self.tag
+        )
     }
 }
 

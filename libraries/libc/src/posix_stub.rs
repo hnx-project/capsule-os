@@ -13,6 +13,19 @@ pub fn set_errno_and_fail(err: i32) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn fork() -> i32 {
+    // CapsuleOS deliberately does NOT support `fork()` at the
+    // libc public boundary.  See DEVELOPMENT.md §5 (Hybrid
+    // POSIX + Capability) and the header comment in
+    // `libraries/libcapsule/include/capsule.h` — POSIX programs
+    // should migrate to `posix_spawn(3)`, which is the
+    // Fuchsia / Zircon model this codebase follows.
+    //
+    // The underlying `SYSCALL_FORK` syscall is *still wired up*
+    // in the kernel because the bash compatibility layer
+    // (`/system/bin/bash` running as a privileged service) and
+    // `procmgr`'s internal service-spawn path both need it.
+    // Programs that genuinely need raw `fork` semantics can
+    // reach it through `libcapsule::syscalls::fork()`.
     set_errno_and_fail(ENOSYS)
 }
 
@@ -92,6 +105,12 @@ pub extern "C" fn execv(path: *const u8, argv: *const *const u8) -> i32 {
     if fd < 0 {
         return set_errno_and_fail(2); // ENOENT (No such file)
     }
+
+    // S5: close every fd marked with FD_CLOEXEC before exec.
+    // The kernel doesn't see `USER_FD_TABLE`; libc is the
+    // single owner of these flags, so the close has to happen
+    // here.
+    crate::close_cloexec_fds();
 
     // Create a binary VMO capability
     let vmo_handle = match libcapsule::syscalls::vmo_create(size) {
@@ -210,9 +229,3 @@ pub extern "C" fn symlink(_target: *const u8, _linkpath: *const u8) -> i32 {
     set_errno_and_fail(ENOSYS)
 }
 
-
-
-#[no_mangle]
-pub extern "C" fn ioctl(_fd: i32, _request: usize, _arg: *mut u8) -> i32 {
-    set_errno_and_fail(ENOSYS)
-}

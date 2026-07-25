@@ -1,10 +1,10 @@
+use crate::config::Config;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::Path;
 use std::process::Command;
-use std::net::TcpListener;
-use std::io::{Read, Write};
 use std::thread;
-use crate::config::Config;
 
 pub fn generate_doc(open: bool, _config: &Config) -> Result<(), String> {
     println!("\x1b[1;36m🏗️  Generating CapsuleOS Unified API Documentation...\x1b[0m");
@@ -12,29 +12,30 @@ pub fn generate_doc(open: bool, _config: &Config) -> Result<(), String> {
     // 1. Clean and initialize build/dist/docs directory
     let docs_dist_dir = "build/dist/docs";
     if Path::new(docs_dist_dir).exists() {
-        fs::remove_dir_all(docs_dist_dir).map_err(|e| format!("Failed to clear existing docs dir: {}", e))?;
+        fs::remove_dir_all(docs_dist_dir)
+            .map_err(|e| format!("Failed to clear existing docs dir: {}", e))?;
     }
-    fs::create_dir_all(docs_dist_dir).map_err(|e| format!("Failed to create docs distribution dir: {}", e))?;
+    fs::create_dir_all(docs_dist_dir)
+        .map_err(|e| format!("Failed to create docs distribution dir: {}", e))?;
 
     // 2. Generate L1 Kernel doc
     println!("📖 [\x1b[1;32m1/4\x1b[0m] Generating L1 Microkernel HNX Core documentation...");
     let mut cmd_kernel = Command::new("cargo");
-    cmd_kernel.args([
-        "doc",
-        "--target",
-        "aarch64-unknown-none",
-        "--no-deps",
-    ])
-    .current_dir("kernel");
-    
-    let status_kernel = cmd_kernel.status()
+    cmd_kernel
+        .args(["doc", "--target", "aarch64-unknown-none", "--no-deps"])
+        .current_dir("kernel");
+
+    let status_kernel = cmd_kernel
+        .status()
         .map_err(|e| format!("Failed to run cargo doc for kernel: {}", e))?;
     if !status_kernel.success() {
         return Err("Failed to generate kernel documentation".to_string());
     }
 
     // 3. Generate L2/L3 Userspace doc
-    println!("📖 [\x1b[1;32m2/4\x1b[0m] Generating L2/L3 Userspace Runtime & Programs documentation...");
+    println!(
+        "📖 [\x1b[1;32m2/4\x1b[0m] Generating L2/L3 Userspace Runtime & Programs documentation..."
+    );
     let mut cmd_userspace = Command::new("cargo");
     cmd_userspace.args([
         "+nightly",
@@ -44,23 +45,33 @@ pub fn generate_doc(open: bool, _config: &Config) -> Result<(), String> {
         "libraries/targets/aarch64-unknown-capsule.json",
         "--no-deps",
         "--no-default-features",
-        "--features", "capsule",
-        "-Z", "build-std=core,alloc,panic_abort",
-        "-Z", "json-target-spec",
-        "--exclude", "xtask",
-        "--exclude", "ohlink-format",
-        "--exclude", "ohlink-linker",
-        "--exclude", "ohlink-read",
+        "--features",
+        "capsule",
+        "-Z",
+        "build-std=core,alloc,panic_abort",
+        "-Z",
+        "json-target-spec",
+        "--exclude",
+        "xtask",
+        "--exclude",
+        "ohlink-format",
+        "--exclude",
+        "ohlink-linker",
+        "--exclude",
+        "ohlink-read",
     ]);
-    
-    let status_userspace = cmd_userspace.status()
+
+    let status_userspace = cmd_userspace
+        .status()
         .map_err(|e| format!("Failed to run cargo doc for userspace: {}", e))?;
     if !status_userspace.success() {
         return Err("Failed to generate userspace documentation".to_string());
     }
 
     // 4. Generate Host Tools doc
-    println!("📖 [\x1b[1;32m3/4\x1b[0m] Generating Host Orchestration & Dev Tools documentation...");
+    println!(
+        "📖 [\x1b[1;32m3/4\x1b[0m] Generating Host Orchestration & Dev Tools documentation..."
+    );
     let mut cmd_tools = Command::new("cargo");
     cmd_tools.args([
         "doc",
@@ -68,15 +79,18 @@ pub fn generate_doc(open: bool, _config: &Config) -> Result<(), String> {
         "tools/xtask/Cargo.toml",
         "--no-deps",
     ]);
-    
-    let status_tools = cmd_tools.status()
+
+    let status_tools = cmd_tools
+        .status()
         .map_err(|e| format!("Failed to run cargo doc for host tools: {}", e))?;
     if !status_tools.success() {
         return Err("Failed to generate host tools documentation".to_string());
     }
 
     // 5. Generate Ohlink Toolchain doc
-    println!("📖 [\x1b[1;32m4/4\x1b[0m] Generating OHLINK Toolchain compilation engine documentation...");
+    println!(
+        "📖 [\x1b[1;32m4/4\x1b[0m] Generating OHLINK Toolchain compilation engine documentation..."
+    );
     let mut cmd_toolchain = Command::new("cargo");
     cmd_toolchain.args([
         "doc",
@@ -84,8 +98,9 @@ pub fn generate_doc(open: bool, _config: &Config) -> Result<(), String> {
         "tools/ohlink-toolchain/Cargo.toml",
         "--no-deps",
     ]);
-    
-    let status_toolchain = cmd_toolchain.status()
+
+    let status_toolchain = cmd_toolchain
+        .status()
         .map_err(|e| format!("Failed to run cargo doc for ohlink-toolchain: {}", e))?;
     if !status_toolchain.success() {
         return Err("Failed to generate ohlink-toolchain documentation".to_string());
@@ -93,7 +108,7 @@ pub fn generate_doc(open: bool, _config: &Config) -> Result<(), String> {
 
     // 6. Gather and collect docs with multi-path fallback
     println!("\x1b[1;36m📥 Collecting compiled HTML packages...\x1b[0m");
-    
+
     // Kernel collection
     find_and_copy_doc(
         &[
@@ -115,10 +130,7 @@ pub fn generate_doc(open: bool, _config: &Config) -> Result<(), String> {
 
     // Host Tools collection
     find_and_copy_doc(
-        &[
-            "build/target/doc",
-            "target/doc",
-        ],
+        &["build/target/doc", "target/doc"],
         &format!("{}/host_tools", docs_dist_dir),
     )?;
 
@@ -312,7 +324,10 @@ pub fn generate_doc(open: bool, _config: &Config) -> Result<(), String> {
     fs::write(&index_path, index_html_content)
         .map_err(|e| format!("Failed to write index.html landing page: {}", e))?;
 
-    println!("🎉 \x1b[1;32mUnified rust-doc website compiled successfully at: {}/\x1b[0m", docs_dist_dir);
+    println!(
+        "🎉 \x1b[1;32mUnified rust-doc website compiled successfully at: {}/\x1b[0m",
+        docs_dist_dir
+    );
 
     if open {
         serve_and_open_docs(docs_dist_dir)?;
@@ -328,8 +343,13 @@ fn serve_and_open_docs(doc_dir_str: &str) -> Result<(), String> {
     let port = listener.local_addr().unwrap().port();
     let url = format!("http://127.0.0.1:{}", port);
 
-    println!("\x1b[1;34m🚀 Starting zero-dependency HTTP server on {}...\x1b[0m", url);
-    println!("\x1b[1;33m💡 Server is hosting local files. Press Ctrl+C in your terminal to exit.\x1b[0m");
+    println!(
+        "\x1b[1;34m🚀 Starting zero-dependency HTTP server on {}...\x1b[0m",
+        url
+    );
+    println!(
+        "\x1b[1;33m💡 Server is hosting local files. Press Ctrl+C in your terminal to exit.\x1b[0m"
+    );
 
     let doc_dir = doc_dir_str.to_string();
     // 2. Spawn multi-threaded file-serving HTTP handler
@@ -350,7 +370,13 @@ fn serve_and_open_docs(doc_dir_str: &str) -> Result<(), String> {
                         }
 
                         // Remove query parameters or fragments if any
-                        let path_part_clean = path_part.split('?').next().unwrap_or(path_part).split('#').next().unwrap_or(path_part);
+                        let path_part_clean = path_part
+                            .split('?')
+                            .next()
+                            .unwrap_or(path_part)
+                            .split('#')
+                            .next()
+                            .unwrap_or(path_part);
 
                         // Percent decode URLs (e.g. "%20" to " ")
                         let decoded_path = url_decode(path_part_clean);
@@ -380,14 +406,23 @@ fn serve_and_open_docs(doc_dir_str: &str) -> Result<(), String> {
                         let path = Path::new(&file_path_str);
                         if path.exists() && path.is_file() {
                             if let Ok(content) = fs::read(path) {
-                                let mime = if file_path_str.ends_with(".html") { "text/html" }
-                                    else if file_path_str.ends_with(".css") { "text/css" }
-                                    else if file_path_str.ends_with(".js") { "application/javascript" }
-                                    else if file_path_str.ends_with(".png") { "image/png" }
-                                    else if file_path_str.ends_with(".svg") { "image/svg+xml" }
-                                    else if file_path_str.ends_with(".woff") { "font/woff" }
-                                    else if file_path_str.ends_with(".woff2") { "font/woff2" }
-                                    else { "application/octet-stream" };
+                                let mime = if file_path_str.ends_with(".html") {
+                                    "text/html"
+                                } else if file_path_str.ends_with(".css") {
+                                    "text/css"
+                                } else if file_path_str.ends_with(".js") {
+                                    "application/javascript"
+                                } else if file_path_str.ends_with(".png") {
+                                    "image/png"
+                                } else if file_path_str.ends_with(".svg") {
+                                    "image/svg+xml"
+                                } else if file_path_str.ends_with(".woff") {
+                                    "font/woff"
+                                } else if file_path_str.ends_with(".woff2") {
+                                    "font/woff2"
+                                } else {
+                                    "application/octet-stream"
+                                };
 
                                 let response = format!(
                                     "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -429,7 +464,7 @@ fn url_decode(s: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(val) = u8::from_str_radix(&s[i+1..i+3], 16) {
+            if let Ok(val) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
                 res.push(val);
                 i += 3;
                 continue;
@@ -446,11 +481,15 @@ fn find_and_copy_doc(paths: &[&str], dest: &str) -> Result<(), String> {
     for path in paths {
         let p = Path::new(path);
         if p.exists() && p.is_dir() {
-            println!("📥 Collecting documentation from \x1b[1;34m{}\x1b[0m -> \x1b[1;32m{}\x1b[0m", path, dest);
+            println!(
+                "📥 Collecting documentation from \x1b[1;34m{}\x1b[0m -> \x1b[1;32m{}\x1b[0m",
+                path, dest
+            );
             if Path::new(dest).exists() {
                 fs::remove_dir_all(dest).map_err(|e| e.to_string())?;
             }
-            copy_dir_all(p, dest).map_err(|e| format!("Failed to copy doc from {} to {}: {}", path, dest, e))?;
+            copy_dir_all(p, dest)
+                .map_err(|e| format!("Failed to copy doc from {} to {}: {}", path, dest, e))?;
             found = true;
             break;
         }

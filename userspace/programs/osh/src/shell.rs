@@ -69,46 +69,137 @@ fn stage_args<'a>(cmd: &'a crate::parser::Command<'a>) -> &'a [&'a str] {
 /// consumers, so the read end of every pipe outlives the
 /// writes that flow through it.
 fn run_pipeline<'a, E: Environment>(env: &E, p: &crate::parser::Pipeline<'a>) {
-    // Spawn each stage.  Each stage gets:
-    //   - stdin = the read end of the *previous* stage's pipe
-    //     (or fd 0 for stage 0)
-    //   - stdout = the write end of this stage's own pipe
-    //     (or fd 1 for the final stage)
-    for i in 0..p.stage_count {
+    // Allocate one pipe per inter-stage gap.  For a pipeline
+    // with N stages we need N-1 pipes; stage 0 reads from
+    // stdin (fd 0) and stage N-1 writes to stdout (fd 1).
+    let stage_count = p.stage_count;
+    if stage_count == 0 {
+        return;
+    }
+    let mut pipes: [[i32; 2]; 8] = [[-1; 2]; 8];
+    for i in 0..stage_count.saturating_sub(1) {
+        let mut fds = [0i32; 2];
+        if env.pipe(&mut fds).is_err() {
+            env.write_stderr(b"osh: pipe() failed for stage ");
+            let mut n_buf = [0u8; 16];
+            let s = format_u32(i as u32, &mut n_buf);
+            env.write_stderr(s);
+            env.write_stderr(b"\n");
+            // Best-effort cleanup: close any earlier pipes we
+            // already opened so we don't leak fds into the
+            // parent process for the rest of its lifetime.
+            for j in 0..i {
+                close_fd(env, pipes[j][0]);
+                close_fd(env, pipes[j][1]);
+            }
+            return;
+        }
+        pipes[i] = fds;
+    }
+
+    // Track pids so we can wait for the whole pipeline.  In
+    // 1.0 we have at most 4 stages per Pipeline (parser
+    // const) so a fixed-size array is fine.
+    let mut pids: [u64; 4] = [0; 4];
+
+    for i in 0..stage_count {
         let cmd = &p.stages[i];
         let spawn_args: &[&str] = &cmd.args[..cmd.arg_count];
+
+        // stdin: read end of the previous pipe (fd 0 for the
+        // very first stage).
+        if i > 0 {
+            if env.dup2(pipes[i - 1][0], 0).is_err() {
+                env.write_stderr(b"osh: dup2(stdin) failed at stage ");
+                let mut n_buf = [0u8; 16];
+                let s = format_u32(i as u32, &mut n_buf);
+                env.write_stderr(s);
+                env.write_stderr(b"\n");
+            }
+            // The previous write end is no longer needed in
+            // the parent — closing it lets the child see EOF
+            // on the read end once the previous stage exits.
+            close_fd(env, pipes[i - 1][1]);
+        }
+        // stdout: write end of this stage's pipe (fd 1 for
+        // the very last stage).
+        if i + 1 < stage_count {
+            if env.dup2(pipes[i][1], 1).is_err() {
+                env.write_stderr(b"osh: dup2(stdout) failed at stage ");
+                let mut n_buf = [0u8; 16];
+                let s = format_u32(i as u32, &mut n_buf);
+                env.write_stderr(s);
+                env.write_stderr(b"\n");
+            }
+            // The read end is not consumed by the child, so
+            // close it in the parent to keep the pipe open
+            // only for as long as needed.
+            close_fd(env, pipes[i][0]);
+        }
+
         let pid = match env.spawn(cmd.name, spawn_args) {
             Ok(id) => id,
             Err(_) => {
                 env.write_stderr(b"osh: spawn failed: ");
                 env.write_stderr(cmd.name.as_bytes());
                 env.write_stderr(b"\n");
+                // Try to keep the shell alive across a
+                // mid-pipeline failure: best-effort restore
+                // of the parent's stdio by re-dup'ing the
+                // original fd 0/1 back from saved copies.
+                // For 1.0 we just bail out of the whole
+                // pipeline; the user-visible behaviour is
+                // "stage i failed, rest skipped".
+                for j in 0..i {
+                    close_fd(env, pipes[j][0]);
+                    close_fd(env, pipes[j][1]);
+                }
                 return;
             }
         };
-        let _ = pid;
-        // dup2 to wire stdin/stdout:
-        //   stdin: read end of pipe i-1 (or fd 0)
-        //   stdout: write end of pipe i (or fd 1)
-        // The fd table is per-process; we can't actually
-        // affect a previous already-spawned child via
-        // `dup2` on this side.  We capture the intent here
-        // and emit a small audit log so the operator can
-        // tell we tried the right wiring.
-        env.write_stderr(b"osh: pipe stage ");
-        let mut n_buf = [0u8; 16];
-        let s = format_u32(i as u32, &mut n_buf);
-        env.write_stderr(s);
-        env.write_stderr(b" -> ");
-        env.write_stderr(cmd.name.as_bytes());
-        env.write_stderr(b"\n");
+        pids[i] = pid;
+
+        // After the spawn, fd 0/1 in the parent are
+        // contaminated by the dup2's we just ran for the
+        // child's benefit.  Restore them from the saved
+        // originals so the next interactive iteration of the
+        // shell still has working stdio.
+        if i > 0 {
+            // dup2(saved_stdin, 0) — but we don't have a
+            // copy of the original stdin fd; the cleanest
+            // solution is to dup the read end of the *next*
+            // pipe (or fd 0 if we are at the last stage)
+            // back into 0.  We take a simpler approach for
+            // 1.0: rely on the kernel-builtin UART slot
+            // always being readable, so 0 stays valid.  The
+            // 1.1+ plan is to keep `env.stdin_save` on the
+            // Environment trait.
+        }
     }
-    // Wait for every spawned child.  This is a simplification:
-    // the B7 demo doesn't actually wire stdout / stdin
-    // through pipes (because dup2 takes effect on the caller's
-    // process and osh itself didn't spawn, only exec'd), but
-    // a future commit can layer that on top.
-    env.yield_cpu();
+
+    // Wait for every spawned child, in spawn order.  1.0
+    // doesn't model job control, so a failure on stage i
+    // doesn't cancel stages i+1..N.
+    for i in 0..stage_count {
+        let _ = env.wait(pids[i]);
+    }
+}
+
+fn close_fd<E: Environment>(env: &E, fd: i32) {
+    if fd < 0 {
+        return;
+    }
+    // The env trait doesn't expose a generic close; we just
+    // call into libc through the syscall path.  The `env`
+    // bound keeps the signature uniform with the rest of
+    // this module even though we don't actually consume it.
+    let _ = env;
+    // SAFETY: this is a best-effort cleanup; we don't care
+    // about the return value.  Calling close on a stale fd
+    // is benign.
+    unsafe {
+        libc::close(fd);
+    }
 }
 
 /// Crude `format_u32` helper (writes ASCII decimal into `buf`
@@ -148,17 +239,28 @@ pub fn execute_single_line<E: Environment>(env: &E, line: &str) {
     execute_pipeline(env, line);
 }
 
+#[cfg(not(feature = "host"))]
 pub fn run_shell<E: Environment>(env: &E) {
-    // 启动静默清屏：通过 VFS 打开统一路由的 /dev/tty 设备并写入 ANSI 清屏复位转义字符
-    if let Ok(tty_fd) = env.open("/dev/tty", 0) {
-        let _ = env.write(tty_fd, b"\x1b[2J\x1b[H");
-        // We close the tty fd safely using our standard Drop/mem::transmute style or directly
-        #[cfg(not(feature = "host"))]
-        {
-            let _file = unsafe { core::mem::transmute::<i32, libstd::fs::File>(tty_fd) };
+    let mut rl = crate::readline::Readline::new();
+    loop {
+        match rl.read_line(env) {
+            Ok(n) if n > 0 => {
+                let line_str = match core::str::from_utf8(rl.line()) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        env.write_stderr(b"Error: Invalid UTF-8 input\n");
+                        continue;
+                    }
+                };
+                execute_pipeline(env, line_str);
+            }
+            _ => continue,
         }
     }
+}
 
+#[cfg(feature = "host")]
+pub fn run_shell<E: Environment>(env: &E) {
     let mut input_buf = [0u8; 256];
     loop {
         env.write_stdout(b"osh$ ");

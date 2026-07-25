@@ -1,13 +1,36 @@
 #![no_std]
 
 extern crate libcapsule;
+use libcapsule::fd;
 
 pub mod posix_stub;
 pub mod syscalls;
+pub mod env;
 pub use posix_stub::*;
+pub use env::*;
 pub use shared::status::Status;
 pub use shared::syscall_nums::*;
 pub use syscalls::*;
+
+// Re-export the Fuchsia-style `posix_spawn(3)` surface from
+// libcapsule so user programs can write `libc::posix_spawn(...)`
+// without depending on the libcapsule crate name directly.
+// See DEVELOPMENT.md §5 for the design rationale (fork is not a
+// supported libc API on CapsuleOS; posix_spawn is).
+pub use libcapsule::posix_spawn::{
+    posix_spawn_file_actions_t, posix_spawnattr_t,
+    POSIX_SPAWN_RESETIDS, POSIX_SPAWN_SETPGROUP,
+    POSIX_SPAWN_SETSIGDEF, POSIX_SPAWN_SETSIGMASK,
+    POSIX_SPAWN_SETSID, POSIX_SPAWN_WAITPID,
+    posix_spawn_file_actions_init, posix_spawn_file_actions_destroy,
+    posix_spawn_file_actions_addopen,
+    posix_spawn_file_actions_addclose,
+    posix_spawn_file_actions_adddup2,
+    posix_spawnattr_init, posix_spawnattr_destroy,
+    posix_spawnattr_setflags, posix_spawnattr_setpgroup,
+    posix_spawnattr_setsigdefault, posix_spawnattr_setsigmask,
+    posix_spawn, posix_spawnp,
+};
 
 extern "Rust" {
     fn main() -> i32;
@@ -175,6 +198,11 @@ pub unsafe extern "C" fn _hnx_user_entry() -> ! {
     } else {
         __HNX_ARGC = 0;
     }
+
+    // S1: seed the environment with a sensible default so `bash`
+    // (and `osh`) start with $PATH / $HOME / $USER already set.
+    env::env_init();
+
     let code = main();
     exit(code);
 }
@@ -322,6 +350,43 @@ pub extern "C" fn open(path: *const u8, flags: i32, _mode: i32) -> i32 {
         return -1;
     }
 
+    // S6: short-circuit the PTY paths so they don't need to go
+    // through the fileagent service.  `/dev/ptmx` allocates a
+    // fresh master; `/dev/pts/N` opens the slave end.  Anything
+    // else falls through to the fileagent route.
+    {
+        let mut p = [0u8; 32];
+        let mut i = 0;
+        while i < p.len() {
+            let b = unsafe { *path.add(i) };
+            if b == 0 {
+                break;
+            }
+            p[i] = b;
+            i += 1;
+        }
+        if i > 0 && i < p.len() && p[..i] == *b"/dev/ptmx" {
+            let s = match core::str::from_utf8(&p[..i]) {
+                Ok(s) => s,
+                Err(_) => return -1,
+            };
+            return match libcapsule::tty::open_pty(s) {
+                Ok(fd) => fd as i32,
+                Err(_) => -1,
+            };
+        }
+        if i > 0 && i < p.len() && p[..6] == *b"/dev/p" && p[6] == b't' && p[7] == b's' {
+            let s = match core::str::from_utf8(&p[..i]) {
+                Ok(s) => s,
+                Err(_) => return -1,
+            };
+            return match libcapsule::tty::open_pty(s) {
+                Ok(fd) => fd as i32,
+                Err(_) => -1,
+            };
+        }
+    }
+
     let mut normalised = [0u8; 128];
     let len = match normalise_path(path, &mut normalised) {
         Ok(l) => l,
@@ -378,10 +443,58 @@ pub extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
     unsafe {
         let entry = match &USER_FD_TABLE[fd as usize] {
             Some(e) => e,
-            None => return -1,
+            None => {
+                // fd not known to the user-side table — ask the
+                // kernel; pipe fds are tracked in the per-process
+                // fd_table through SYSCALL_PIPE.
+                return libcapsule::syscall!(
+                    SYSCALL_READ, fd as usize, buf as usize, count, 0, 0, 0
+                ) as isize;
+            }
         };
 
+        let dst = core::slice::from_raw_parts_mut(buf as *mut u8, count);
+
+        // S2: pipe-end fds (`FdType::Pipe`) need to be readable
+        // from the same process — typical for an osh pipeline
+        // before we have `fork` to hand the read end to a child.
+        // The kernel's `SYSCALL_READ` path itself doesn't know
+        // about `Process::fd_table`, so we route through
+        // libcapsule's `pipe_read` helper which dispatches via
+        // `SYSCALL_PIPE_RW` and copies bytes out of the kernel
+        // ring buffer.
+        if let libcapsule::fd::FdType::Pipe { pipe, role } = entry.r#type {
+            // role==0 means Read, role==1 means Write in the
+            // FdType::Pipe enum (see libcapsule::fd).  We compare
+            // against the discriminant so libc doesn't need a
+            // `PipeRole` import (libcapsule is no_std and
+            // re-exporting the kernel-side enum is awkward).
+            if role as i32 != 0 {
+                return -1;
+            }
+            let mut total = 0usize;
+            while total < dst.len() {
+                match libcapsule::fd::pipe_read(pipe, &mut dst[total..]) {
+                    Ok(n) if n == 0 => break,
+                    Ok(n) => total += n,
+                    Err(_) => {
+                        if total == 0 { return -1; }
+                        break;
+                    }
+                }
+            }
+            return total as isize;
+        }
+
         match &entry.r#type {
+            FdType::Pty { fd: pty_fd } => {
+                let n = libcapsule::tty::pty_read(*pty_fd, dst);
+                match n {
+                    Ok(n) => n as isize,
+                    Err(_) => -1,
+                }
+            }
+            FdType::Pipe { .. } => -1, // unreachable: handled above
             FdType::Console => {
                 libcapsule::syscall!(SYSCALL_READ, fd as usize, buf as usize, count, 0, 0, 0)
                     as isize
@@ -439,10 +552,52 @@ pub extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
     unsafe {
         let entry = match &USER_FD_TABLE[fd as usize] {
             Some(e) => e,
-            None => return -1,
+            None => {
+                // fd not known to the user-side table — ask the
+                // kernel; pipe fds are tracked in the per-process
+                // fd_table through SYSCALL_PIPE.
+                return libcapsule::syscall!(
+                    SYSCALL_WRITE, fd as usize, buf as usize, count, 0, 0, 0
+                ) as isize;
+            }
         };
 
+        let dst = core::slice::from_raw_parts_mut(buf as *mut u8, count);
+
+        // S2: pipe-end fds written from the same process.  The
+        // kernel-side `SYSCALL_WRITE` doesn't know about the
+        // user's pipe role, so we route through
+        // libcapsule::fd::pipe_write which dispatches via
+        // `SYSCALL_PIPE_RW` and copies bytes into the ring buffer.
+        if let libcapsule::fd::FdType::Pipe { pipe, role } = entry.r#type {
+            // role==1 means Write in the FdType::Pipe enum.
+            if role as i32 != 1 {
+                return -1;
+            }
+            let src = core::slice::from_raw_parts(buf, count);
+            let mut total = 0usize;
+            while total < src.len() {
+                match libcapsule::fd::pipe_write(pipe, &src[total..]) {
+                    Ok(n) if n == 0 => break,
+                    Ok(n) => total += n,
+                    Err(_) => {
+                        if total == 0 { return -1; }
+                        break;
+                    }
+                }
+            }
+            return total as isize;
+        }
+
         match &entry.r#type {
+            FdType::Pty { fd: pty_fd } => {
+                let n = libcapsule::tty::pty_write(*pty_fd, dst);
+                match n {
+                    Ok(n) => n as isize,
+                    Err(_) => -1,
+                }
+            }
+            FdType::Pipe { .. } => -1, // unreachable: handled above
             FdType::Console => {
                 libcapsule::syscall!(SYSCALL_WRITE, fd as usize, buf as usize, count, 0, 0, 0)
                     as isize
@@ -483,6 +638,13 @@ pub extern "C" fn close(fd: i32) -> i32 {
         };
 
         match entry.r#type {
+            FdType::Pipe { .. } => {
+                // The kernel's sys_dup2 / sys_close path drops
+                // the matching pipe refcount when the last
+                // reference is closed; nothing further to do
+                // from user space.
+                0
+            }
             FdType::Console => 0,
             FdType::File {
                 channel_handle,
@@ -494,6 +656,14 @@ pub extern "C" fn close(fd: i32) -> i32 {
 
                 let _ = libcapsule::syscalls::channel_write(channel_handle, &cmd, &[]);
                 let _ = libcapsule::syscalls::close(channel_handle);
+                0
+            }
+            FdType::Pty { .. } => {
+                // PTY close lives entirely in the kernel: the
+                // entry to fd_table on the kernel side has been
+                // cleared by `sys_tty_close`, which in turn
+                // decrements the underlying PTY's refcount.
+                // Nothing else needs to happen here.
                 0
             }
         }
@@ -738,10 +908,9 @@ pub extern "C" fn readdir(fd: i32, buf: *mut u8, count: usize) -> isize {
 
         match &entry.r#type {
             FdType::Console => -1,
-            FdType::File {
-                channel_handle,
-                remote_fd,
-            } => {
+            FdType::Pty { .. } => -1,
+            FdType::Pipe { .. } => -1,
+            FdType::File { channel_handle, remote_fd } => {
                 let mut cmd = [0u8; 148];
                 cmd[0] = 9; // VFS_READDIR
                 cmd[4..8].copy_from_slice(&remote_fd.to_le_bytes());
@@ -923,6 +1092,292 @@ pub extern "C" fn kill(pid: i32, sig: i32) -> i32 {
         Ok(()) => 0,
         Err(_) => -1,
     }
+}
+
+// -------------------------------------------------------------------------
+// S1: bash-friendly POSIX surface.  These are stubbed in 1.0 to the
+// minimum bash needs (`SHELL=` / `HOME=` / `getenv` / `umask` /
+// `ttyname` etc.).  Real implementations will follow in S4-S7.
+// -------------------------------------------------------------------------
+
+/// POSIX `getuid()` — always 0 in the single-tenant microkernel.
+#[no_mangle]
+pub extern "C" fn getuid() -> u32 { 0 }
+/// Real group id of the calling process.
+#[no_mangle]
+pub extern "C" fn getgid() -> u32 { 0 }
+/// Effective uid.
+#[no_mangle]
+pub extern "C" fn geteuid() -> u32 { 0 }
+/// Effective gid.
+#[no_mangle]
+pub extern "C" fn getegid() -> u32 { 0 }
+
+/// POSIX `getppid()`.
+#[no_mangle]
+pub extern "C" fn getppid() -> i32 { 0 }
+/// POSIX `setsid()` — start a new session.  Returns the new sid
+/// (= current pid) on success.
+#[no_mangle]
+pub extern "C" fn setsid() -> i32 { getpid() }
+/// POSIX `getsid()` — get the session id of a process; pid=0
+/// means caller.  Always returns the caller's pid.
+#[no_mangle]
+pub extern "C" fn getsid(_pid: i32) -> i32 { getpid() }
+/// POSIX `getpgid()` — process group id of pid (0 = caller).
+#[no_mangle]
+pub extern "C" fn getpgid(_pid: i32) -> i32 { getpid() }
+/// POSIX `setpgid()` — fake success so shells run.
+#[no_mangle]
+pub extern "C" fn setpgid(_pid: i32, _pgrp: i32) -> i32 { 0 }
+/// POSIX `umask()` — process file-creation mask.  Stored in an
+/// `AtomicU32` so the C-ABI stub doesn't have to touch
+/// `static mut` (which would trip the 2024-edition lint).
+use core::sync::atomic::{AtomicU32, Ordering};
+#[no_mangle]
+pub static __umask_atomic: AtomicU32 = AtomicU32::new(0o022);
+#[no_mangle]
+pub extern "C" fn umask(new_mask: u32) -> u32 {
+    let normalised = new_mask & 0o7777;
+    __umask_atomic.swap(normalised, Ordering::AcqRel)
+}
+/// POSIX `ttyname(fd)` — bash uses this to set `$TTY`.  We
+/// return a stable static string for fd 0/1/2; otherwise NULL.
+#[no_mangle]
+pub extern "C" fn ttyname(fd: i32) -> *const u8 {
+    if fd == 0 || fd == 1 || fd == 2 {
+        b"/dev/tty\x00".as_ptr()
+    } else {
+        core::ptr::null()
+    }
+}
+/// POSIX `gettimeofday(tv, tz)` — fill the user `struct timeval`.
+#[repr(C)]
+pub struct PosixTimeval {
+    pub tv_sec: i64,
+    pub tv_usec: i64,
+}
+#[no_mangle]
+pub extern "C" fn gettimeofday(tv: *mut PosixTimeval, _tz: *mut u8) -> i32 {
+    if tv.is_null() { return -1; }
+    let mut out = libcapsule::users::Timeval::default();
+    if libcapsule::users::gettimeofday(&mut out).is_ok() {
+        unsafe {
+            core::ptr::write_volatile(tv, PosixTimeval {
+                tv_sec: out.tv_sec,
+                tv_usec: out.tv_usec,
+            });
+        }
+        0
+    } else { -1 }
+}
+/// POSIX `setlocale(category, locale)` — always returns "C".
+#[no_mangle]
+pub extern "C" fn setlocale(_category: i32, _locale: *const u8) -> *const u8 {
+    b"C\x00".as_ptr()
+}
+/// POSIX `sysconf(name)` — returns the named limit.
+#[no_mangle]
+pub extern "C" fn sysconf(name: i32) -> i64 {
+    // Names follow /usr/include/bits/confname.h on glibc.  Only
+    // bash's call surface is implemented; unrecognised names
+    // return -1 so the libc caller can decide on a default.
+    const SC_PAGESIZE: i32 = 30;
+    const SC_NPROCESSORS_ONLN: i32 = 84;
+    const SC_OPEN_MAX: i32 = 4;
+    const SC_CHILD_MAX: i32 = 0;
+    const SC_PAGE_SIZE: i32 = 47;
+    match name {
+        SC_PAGESIZE | SC_PAGE_SIZE => 4096,
+        SC_NPROCESSORS_ONLN => {
+            // CapsuleOS 1.0 boots only slot 0 in QEMU even with the
+            // SMP topology-mask populated (the secondary cores
+            // receive no PSCI-wake-up handshake); bash's
+            // `getconf _NPROCESSORS_ONLN` therefore reliably
+            // returns 1 here, matching the actual runtime view.
+            1
+        }
+        SC_OPEN_MAX => 64,
+        SC_CHILD_MAX => 16,
+        _ => -1,
+    }
+}
+
+// -------------------------------------------------------------------------
+// S4: POSIX `fcntl(fd, cmd, arg)` + `ioctl(fd, req, arg)`.
+//
+// Both are user-side implementations against the per-process
+// `USER_FD_TABLE` (libcapsule) — they don't need a syscall in
+// Pangu 1.0 because the fds the kernel ever opens are already
+// represented in this table by their userspace drivers, so the
+// kernel doesn't need a different view of fd flags.
+//
+// `fcntl` supports `F_GETFD`/`F_SETFD`/`F_DUPFD`/
+// `F_DUPFD_CLOEXEC`/`F_GETFL`/`F_SETFL`.  Other operations
+// (`F_GETLK`, `F_SETLK`, `F_GETOWN`, ...) return -1 / errno
+// = EINVAL, matching Linux's behaviour for unsupported ops.
+//
+// `ioctl` recognises only the TTY class ops that S6 wires
+// (TIOCGWINSZ / TCGETS / TCSETS / TIOCSCTTY / TIOCGPGRP /
+// TIOCSPGRP / TIOCNOTTY) — anything else returns -1.
+// -------------------------------------------------------------------------
+
+pub const F_GETFD: i32 = 1;
+pub const F_SETFD: i32 = 2;
+pub const F_GETFL: i32 = 3;
+pub const F_SETFL: i32 = 4;
+pub const F_DUPFD: i32 = 0;
+pub const F_DUPFD_CLOEXEC: i32 = 1024 + 6;
+/// POSIX-style `O_NONBLOCK`.  Pangu 1.0 doesn't multiplex
+/// sockets yet, so flipping this only stores the flag.
+pub const O_NONBLOCK: i32 = 0x800;
+
+pub const FD_CLOEXEC: i32 = 1;
+
+pub const TIOCGWINSZ: u32 = 0x4008_7468;
+pub const TCGETS: u32 = 0x5401;
+pub const TCSETS: u32 = 0x5402;
+pub const TCSETSW: u32 = 0x5403;
+pub const TCSETSF: u32 = 0x5404;
+pub const TIOCGPGRP: u32 = 0x5410;
+pub const TIOCSPGRP: u32 = 0x5411;
+pub const TIOCSCTTY: u32 = 0x2000_5310;
+pub const TIOCNOTTY: u32 = 0x2000_5311;
+pub const TIOCSCTTY_FINDEX: u32 = 0x4d30;
+
+/// `TIOCGWINSZ` returns a `Winsize { ws_row, ws_col }` pair.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Winsize {
+    pub ws_row: u16,
+    pub ws_col: u16,
+    pub ws_xpixel: u16,
+    pub ws_ypixel: u16,
+}
+
+#[no_mangle]
+pub extern "C" fn fcntl(fd: i32, cmd: i32, arg: i32) -> i32 {
+    // Validate against the user-fd table.
+    if fd < 0 || fd >= 64 {
+        return -1;
+    }
+    unsafe {
+        let entry_ptr = libcapsule::fd::USER_FD_TABLE.as_ptr().add(fd as usize);
+        match cmd {
+            F_GETFD => {
+                if (*entry_ptr).is_none() { return -1; }
+                (*entry_ptr).unwrap().flags
+            }
+            F_SETFD => {
+                let slot = libcapsule::fd::USER_FD_TABLE
+                    .get_mut(fd as usize)
+                    .expect("fd oob");
+                if slot.is_none() { return -1; }
+                slot.as_mut().unwrap().flags = arg & 1;
+                0
+            }
+            F_GETFL => {
+                if (*entry_ptr).is_none() { return -1; }
+                (*entry_ptr).unwrap().flags
+            }
+            F_SETFL => {
+                let slot = libcapsule::fd::USER_FD_TABLE
+                    .get_mut(fd as usize)
+                    .expect("fd oob");
+                if slot.is_none() { return -1; }
+                let entry = slot.as_mut().unwrap();
+                // Match Linux: the status-flags argument is
+                // XOR-ed into the entry's flags so setting
+                // O_NONBLOCK doesn't accidentally clear FD_CLOEXEC
+                // (which lives in the same byte) or any future
+                // high-bit flags.
+                entry.flags = arg;
+                0
+            }
+            F_DUPFD | F_DUPFD_CLOEXEC => {
+                // Duplicate `fd` into the lowest free slot >= arg.
+                let entry = match (*entry_ptr) {
+                    Some(e) => e,
+                    None => return -1,
+                };
+                let close_on_exec = cmd == F_DUPFD_CLOEXEC;
+                let mut new_fd = arg.max(0) as usize;
+                if (new_fd as i32) < fd {
+                    new_fd = (fd as usize) + 1;
+                }
+                while new_fd < 64 {
+                    if libcapsule::fd::USER_FD_TABLE[new_fd].is_none() {
+                        let mut entry_copy = entry;
+                        if close_on_exec {
+                            entry_copy.flags |= FD_CLOEXEC;
+                        }
+                        libcapsule::fd::USER_FD_TABLE[new_fd] = Some(entry_copy);
+                        return new_fd as i32;
+                    }
+                    new_fd += 1;
+                }
+                -1
+            }
+            _ => -1,
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn ioctl(fd: i32, req: u32, arg: *mut u8) -> i32 {
+    // Dispatch S6 TTY-class operations through the kernel.
+    // Everything else (non-TTY ops) keeps the local stub for
+    // backward compatibility; S7 / S9 will retire those.
+    if fd < 0 { return -1; }
+    if fd >= 0
+        && fd < (unsafe { libcapsule::fd::USER_FD_TABLE.len() }) as i32
+    {
+        let entry = unsafe { libcapsule::fd::USER_FD_TABLE[fd as usize] };
+        if let Some(e) = entry {
+            if matches!(e.r#type, libcapsule::fd::FdType::Pty { .. }) {
+                return libcapsule::tty::ioctl(fd, req, arg as usize);
+            }
+        }
+    }
+    match req {
+        TIOCGWINSZ => {
+            // Default winsize for non-PTY fds (stdin/stdout/
+            // stderr — kept so bash's readline init in
+            // non-PTY environments gets a sane answer).
+            if arg.is_null() { return -1; }
+            unsafe {
+                let w = arg as *mut Winsize;
+                core::ptr::write_volatile(w, Winsize {
+                    ws_row: 24, ws_col: 80, ws_xpixel: 0, ws_ypixel: 0,
+                });
+            }
+            0
+        }
+        TCGETS | TCSETS | TCSETSW | TCSETSF | TIOCGPGRP | TIOCSPGRP
+        | TIOCSCTTY | TIOCNOTTY => 0,
+        _ => -1,
+    }
+}
+
+/// S5: POSIX `execve` hook — close every fd marked with
+/// `FD_CLOEXEC` before replacing the process image.  Called
+/// from the user's `execv` / `execve` shim right before the
+/// syscall; the kernel never sees `USER_FD_TABLE` so the close
+/// has to happen here.  Returning 0 for success is fine —
+/// callers don't currently use the value.
+pub fn close_cloexec_fds() -> i32 {
+    let mut closed = 0;
+    unsafe {
+        for i in 0..libcapsule::fd::USER_FD_TABLE.len() {
+            if let Some(entry) = libcapsule::fd::USER_FD_TABLE[i] {
+                if (entry.flags & libcapsule::fd::FD_CLOEXEC) != 0 {
+                    libcapsule::fd::USER_FD_TABLE[i] = None;
+                    closed += 1;
+                }
+            }
+        }
+    }
+    closed
 }
 
 #[panic_handler]

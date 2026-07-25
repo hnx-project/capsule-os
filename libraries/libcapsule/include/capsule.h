@@ -5,6 +5,51 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+/**
+ * POSIX `FD_CLOEXEC` bit — set by `fcntl(F_SETFD)` so the kernel
+ * closes this fd when the process `execve()`s.
+ */
+#define FD_CLOEXEC 1
+
+/**
+ * `TIOCGWINSZ` ioctl — winsize.  Made public so testall and
+ * other users can pass it directly to `ioctl(fd, TIOCGWINSZ, ...)`.
+ */
+#define TIOCGWINSZ 1074295912
+
+#define POSIX_SPAWN_RESETIDS 1
+
+#define POSIX_SPAWN_SETPGROUP 2
+
+#define POSIX_SPAWN_SETSIGDEF 4
+
+#define POSIX_SPAWN_SETSIGMASK 8
+
+#define POSIX_SPAWN_SETSID 16
+
+#define POSIX_SPAWN_WAITPID 4096
+
+typedef enum FileActionKind {
+    /**
+     * `addopen(path, flags, mode)` — open `path` and put the
+     * resulting fd into the child's fd_table at the recorded
+     * `newfd` slot.  Limited support in 1.0: we only carry the
+     * `newfd` slot through to the spawn descriptor; actual
+     * open is performed by the kernel-side loader.
+     */
+    Open,
+    /**
+     * `addclose(fd)` — close `fd` in the child.  Marked so the
+     * loader knows not to inherit this fd if it would otherwise.
+     */
+    Close,
+    /**
+     * `adddup2(oldfd, newfd)` — in the child, dup2 `oldfd`
+     * into `newfd` immediately after the std fd handoff.
+     */
+    Dup2,
+} FileActionKind;
+
 typedef struct FdEntry FdEntry;
 
 typedef struct FdManager FdManager;
@@ -16,7 +61,118 @@ typedef struct FdType FdType;
  */
 typedef struct ServiceManager ServiceManager;
 
+typedef struct FileActionEntry {
+    enum FileActionKind kind;
+    /**
+     * `newfd` slot for `Open` and `Dup2`; the fd to close for
+     * `Close`.
+     */
+    int32_t arg0;
+    /**
+     * `oldfd` for `Dup2`; unused otherwise.
+     */
+    int32_t arg1;
+} FileActionEntry;
+
+typedef struct posix_spawn_file_actions_t {
+    struct FileActionEntry actions[MAX_FILE_ACTIONS];
+    uintptr_t count;
+} posix_spawn_file_actions_t;
+
+typedef struct posix_spawnattr_t {
+    int32_t flags;
+    int32_t pgroup;
+    uint64_t sigdefault;
+    uint64_t sigmask;
+} posix_spawnattr_t;
+
 extern Option<FdEntry> USER_FD_TABLE[64];
+
+/**
+ * Initialise a `posix_spawn_file_actions_t` object.  The
+ * caller owns the storage.
+ */
+int32_t posix_spawn_file_actions_init(struct posix_spawn_file_actions_t *actions);
+
+/**
+ * Release any internal storage held by `actions`.  The
+ * 1.0 implementation holds everything inline, so this is a
+ * no-op; we still expose it for source-compatibility with C
+ * callers.
+ */
+int32_t posix_spawn_file_actions_destroy(struct posix_spawn_file_actions_t *_actions);
+
+/**
+ * Initialise a `posix_spawnattr_t` with default values
+ * (no flags, pgroup 0 = inherit, sigdefault/sigmask empty).
+ */
+int32_t posix_spawnattr_init(struct posix_spawnattr_t *attr);
+
+int32_t posix_spawnattr_destroy(struct posix_spawnattr_t *_attr);
+
+int32_t posix_spawnattr_setflags(struct posix_spawnattr_t *attr, int32_t flags);
+
+int32_t posix_spawnattr_setpgroup(struct posix_spawnattr_t *attr, int32_t pgroup);
+
+int32_t posix_spawnattr_setsigdefault(struct posix_spawnattr_t *attr, uint64_t sigdefault);
+
+int32_t posix_spawnattr_setsigmask(struct posix_spawnattr_t *attr, uint64_t sigmask);
+
+/**
+ * Append an `open(path, oflag, mode)` action.  After the
+ * child boots, `path` is opened with `oflag`/`mode` and the
+ * resulting fd is placed at `newfd` in the child's fd_table.
+ */
+int32_t posix_spawn_file_actions_addopen(struct posix_spawn_file_actions_t *actions,
+                                         int32_t newfd,
+                                         const uint8_t *path,
+                                         int32_t oflag,
+                                         int32_t mode);
+
+/**
+ * Append a `close(fd)` action.  The child will close `fd` at
+ * boot time.
+ */
+int32_t posix_spawn_file_actions_addclose(struct posix_spawn_file_actions_t *actions, int32_t fd);
+
+/**
+ * Append a `dup2(oldfd, newfd)` action.
+ */
+int32_t posix_spawn_file_actions_adddup2(struct posix_spawn_file_actions_t *actions,
+                                         int32_t oldfd,
+                                         int32_t newfd);
+
+/**
+ * POSIX `posix_spawn(path, file_actions, attrp, argv, envp)`.
+ *
+ * Spawns `path` as a brand-new process in the calling user's
+ * BootFS.  Returns 0 on success, an `errno`-style code on
+ * failure, and writes the new pid to `*pid` if non-null.
+ *
+ * All POSIX-defined flags are honoured.  POSIX_SPAWN_WAITPID is
+ * a CapsuleOS extension — see the API.md for the rationale.
+ */
+int32_t posix_spawn(int32_t *pid_out,
+                    const uint8_t *path,
+                    const struct posix_spawn_file_actions_t *file_actions,
+                    const struct posix_spawnattr_t *attrp,
+                    const uint8_t *const *argv,
+                    const uint8_t *const *envp);
+
+/**
+ * POSIX `posix_spawnp(file, ...)` — same as `posix_spawn` but
+ * uses `PATH` lookup.  CapsuleOS does not yet have a mutable
+ * `PATH` (env_init seeds a fixed string), so for 1.0 this
+ * just delegates to `posix_spawn` after extracting the file
+ * name.  Bash's internal `execve` lookup hits BootFS first via
+ * the existing `posix_stub::execv`.
+ */
+int32_t posix_spawnp(int32_t *pid_out,
+                     const uint8_t *file,
+                     const struct posix_spawn_file_actions_t *file_actions,
+                     const struct posix_spawnattr_t *attrp,
+                     const uint8_t *const *argv,
+                     const uint8_t *const *envp);
 
 void _hnx_user_entry(void);
 

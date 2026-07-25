@@ -52,3 +52,4 @@ lto = false
 panic = "abort"
 opt-level = 0
 lto = false
+debug = 1

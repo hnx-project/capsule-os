@@ -69,6 +69,13 @@ pub trait ArchPageTable: Send + Sync + core::fmt::Debug {
 
     /// 从当前活动 L0 物理页表中复制底层 I/O 设备或早期恒等段
     fn clone_identity_block(&mut self, src_l0_pa: usize);
+
+    /// S3 fork: copy every user-space L0..L3 mapping from `src_l0_pa`
+    /// into `self`, allocating fresh sub-table pages for the
+    /// caller.  Physical page frames are shared (shallow clone);
+    /// see `arch/aarch64/page_table::clone_user_from` for the
+    /// trade-offs and future COW plan.
+    fn clone_user_from(&mut self, src_l0_pa: usize);
 }
 
 /// 架构底盘硬件控制契约。
@@ -178,6 +185,7 @@ impl ArchPageTable for DummyPageTable {
     fn translate_va(&self, _va: usize) -> Option<usize> { None }
     fn clone_high_half(&mut self, _src_l0_pa: usize) {}
     fn clone_identity_block(&mut self, _src_l0_pa: usize) {}
+    fn clone_user_from(&mut self, _src_l0_pa: usize) {}
 }
 
 #[derive(Default, Clone, Copy)]

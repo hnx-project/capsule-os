@@ -19,7 +19,11 @@ pub struct Platform {
 }
 
 impl Platform {
-    pub fn from_config(arch: &str, profile_name: &str, config: &crate::config::Config) -> Option<Self> {
+    pub fn from_config(
+        arch: &str,
+        profile_name: &str,
+        config: &crate::config::Config,
+    ) -> Option<Self> {
         let arch_cfg = config.platform.get(arch)?;
         let p_cfg = arch_cfg.profiles.get(profile_name)?;
         Some(Platform {
@@ -34,9 +38,21 @@ impl Platform {
             ohc_addr: p_cfg.ohc_addr.clone(),
             boot_addr: p_cfg.boot_addr.clone(),
             rootfs_addr: p_cfg.rootfs_addr.clone(),
-            qemu_bin: p_cfg.qemu.as_ref().map(|q| q.bin.clone()).unwrap_or_default(),
-            qemu_args: p_cfg.qemu.as_ref().map(|q| q.args.clone()).unwrap_or_default(),
-            qemu_dtb_dump_args: p_cfg.qemu.as_ref().map(|q| q.dtb_dump_args.clone()).unwrap_or_default(),
+            qemu_bin: p_cfg
+                .qemu
+                .as_ref()
+                .map(|q| q.bin.clone())
+                .unwrap_or_default(),
+            qemu_args: p_cfg
+                .qemu
+                .as_ref()
+                .map(|q| q.args.clone())
+                .unwrap_or_default(),
+            qemu_dtb_dump_args: p_cfg
+                .qemu
+                .as_ref()
+                .map(|q| q.dtb_dump_args.clone())
+                .unwrap_or_default(),
             qemu_smp: p_cfg.qemu.as_ref().map(|q| q.smp).unwrap_or(1),
         })
     }

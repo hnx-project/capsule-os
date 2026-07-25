@@ -26,6 +26,7 @@ pub enum ObjectType {
     UserThread = 8,
     Job = 9,
     VmObject = 10,
+    Tty = 11,
     Unknown = 0xFF,
 }
 
@@ -43,6 +44,7 @@ impl ObjectType {
             8 => ObjectType::UserThread,
             9 => ObjectType::Job,
             10 => ObjectType::VmObject,
+            11 => ObjectType::Tty,
             _ => ObjectType::Unknown,
         }
     }

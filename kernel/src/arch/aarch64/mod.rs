@@ -121,6 +121,43 @@ impl ArchContext for Aarch64Context {
     }
 }
 
+/// S3 `fork()` helpers — AArch64-specific by-design because the
+/// `r[0]` patch requires the architecture-specific register
+/// layout.
+impl Aarch64Context {
+    /// Byte-copy the context so the child thread starts with the
+    /// caller's register state.  All fields (including `x0`, `x30`,
+    /// `elr`, `spsr`) are copied; callers overwrite `x0` separately
+    /// via `set_x0_for_fork` so the child observes the canonical
+    /// POSIX return value of 0.
+    pub fn clone_for_fork(&self) -> Self {
+        unsafe { core::ptr::read_volatile(self as *const Self) }
+    }
+
+    /// Patch `x0` so the child returns 0 from `fork()` on its
+    /// first instruction return.  Follows Linux's convention: the
+    /// parent's `x0` is left to be overwritten by the syscall
+    /// dispatcher with the child's pid.
+    pub fn set_x0_for_fork(&mut self) {
+        self.x[0] = 0;
+    }
+
+    /// Advance `elr` past the SVC instruction that triggered
+    /// `sys_fork`.  The kernel's SVC entry path saves ELR_EL1
+    /// as the SVC instruction address itself, so a child that
+    /// inherits that value via `clone_for_fork` would `eret`
+    /// back into the SVC and immediately re-enter the kernel
+    /// (recursively).  The child must resume at the
+    /// user-mode instruction *after* the SVC.
+    ///
+    /// Linux avoids this by having the C-side `fork()` re-enter
+    /// the user path through `ret_from_fork`; we don't have
+    /// that trampoline, so we shift `elr` by 4 bytes here.
+    pub fn advance_elr_for_fork(&mut self) {
+        self.elr = self.elr.wrapping_add(4);
+    }
+}
+
 pub struct Aarch64Hardware;
 
 impl ArchHardware for Aarch64Hardware {

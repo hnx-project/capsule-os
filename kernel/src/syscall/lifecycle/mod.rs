@@ -100,6 +100,18 @@ pub fn dispatch_lifecycle(
             }
         }
 
+        SYSCALL_SPAWN_STD => {
+            let binary_vmo = arg0 as u32;
+            let argv_vmo = arg1 as u32;
+            let std_fds_vmo = arg2 as u32;
+            match handlers::process::sys_spawn_std(
+                table, binary_vmo, argv_vmo, std_fds_vmo,
+            ) {
+                Ok(pid) => pid as usize,
+                Err(e) => e.to_raw(),
+            }
+        }
+
         SYSCALL_YIELD => {
             unsafe {
                 crate::task::scheduler::SCHEDULER.schedule();
@@ -164,8 +176,17 @@ pub fn dispatch_lifecycle(
 
         SYSCALL_PIPE => match handlers::process::sys_pipe(table, arg0) {
             Ok(()) => 0,
-            Err(e) => e.to_raw() as usize,
+            Err(e) => e.to_raw(),
         },
+
+        SYSCALL_PIPE_RW => {
+            // S2: pipe read/write by id; layout documented in
+            // `handlers::process::sys_pipe_rw`.
+            match handlers::process::sys_pipe_rw(table, arg0, arg1, arg2) {
+                Ok(n) => n,
+                Err(e) => e.to_raw(),
+            }
+        }
 
         SYSCALL_DUP2 => match handlers::process::sys_dup2(table, arg0 as u32, arg1 as u32) {
             Ok(fd) => fd as usize,

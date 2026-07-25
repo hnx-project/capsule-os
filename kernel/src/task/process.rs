@@ -5,6 +5,7 @@ use crate::vfs::pipe::{PipeId, PipeRole};
 use crate::arch::ArchHardware;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use shared::status::{Result, Status};
+use shared::types::HandleValue;
 
 /// One slot in `Process::fd_table`.  For 1.0 we only carry
 /// pipe-end entries; once fileagent starts serving fds directly
@@ -13,6 +14,19 @@ use shared::status::{Result, Status};
 #[derive(Debug, Clone, Copy)]
 pub enum FdEntry {
     Pipe { pipe: PipeId, role: PipeRole },
+    Tty {
+        pty: crate::object::tty::PtyId,
+        /// `Master` reads from / writes to the master side;
+        /// `Slave` is the OS-side terminal (used by the bash
+        /// child after `setsid`).
+        role: TtyRole,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TtyRole {
+    Master,
+    Slave,
 }
 
 /// Lowest user-space fd; matches Linux's `STDERR_FILENO+1`.
@@ -157,6 +171,53 @@ impl Process {
 
     pub fn add_thread(&mut self) {
         self.thread_count = self.thread_count.wrapping_add(1);
+    }
+
+    /// S7 / procmgr std-fd handoff: install the spawner's
+    /// `(stdin, stdout, stderr)` channel handles as the new
+    /// process's `fd_table[0..=2]`.  Each handle is optional; a
+    /// `None` entry leaves the corresponding slot as
+    /// `FdEntry::Pipe { … }` (kernel-builtin UART) so the child
+    /// still has a working stdio.  The kernel translates each
+    /// handle through the *caller's* handle table; the child
+    /// receives a copy of the resulting `KernelObject` so it
+    /// owns a fresh reference.
+    pub fn set_std_fds(
+        &mut self,
+        handles: [Option<u32>; 3],
+        caller_table: &HandleTable,
+    ) -> Result<()> {
+        for (slot, h) in handles.iter().enumerate() {
+            let entry = match h {
+                None => FdEntry::Pipe {
+                    pipe: crate::vfs::pipe::PipeId(0),
+                    role: match slot {
+                        0 | 1 => crate::vfs::pipe::PipeRole::Read,
+                        _ => crate::vfs::pipe::PipeRole::Write,
+                    },
+                },
+                Some(h) => {
+                    let obj = match caller_table.read_clone(HandleValue::new(*h)) {
+                        Ok(o) => o,
+                        Err(_) => return Err(Status::NotFound),
+                    };
+                    FdEntry::Tty {
+                        // S7: the spawner hands us a channel
+                        // handle that we wrap as a pseudo-fd.
+                        // Once `/dev/tty` is wired through procmgr
+                        // (S7.3 below) this will resolve to a
+                        // real `FdEntry::Tty` referencing the
+                        // process's controlling PTY.  Until then
+                        // we surface the channel handle as a
+                        // generic object entry.
+                        pty: crate::object::tty::PtyId(0),
+                        role: TtyRole::Master,
+                    }
+                }
+            };
+            self.fd_table[slot] = Some(entry);
+        }
+        Ok(())
     }
 
     pub fn remove_thread(&mut self) {
@@ -808,37 +869,84 @@ pub fn register_page_table_for_l0(l0_pa: usize, pa: usize) {
     }
 }
 
-pub fn allocate_process(name: &'static str) -> Result<&'static mut Process> {
-    unsafe {
-        let flags = crate::task::scheduler::SCHEDULER.lock();
-        for slot in PROCESSES.iter_mut() {
-            if slot.is_none() {
-                *slot = Some(Process::new_dummy());
-                let proc_ref = slot.as_mut().unwrap();
-                let res = proc_ref.init_in_place(name);
-                crate::task::scheduler::SCHEDULER.unlock(flags);
-                res?;
-                return Ok(proc_ref);
-            }
+/// Allocate a fresh `Process` slot and run its `init_in_place`.
+///
+/// `lock_held` distinguishes the two callers:
+///   - `false` — acquire / release the scheduler lock around the
+///     table walk (the common path, used by `spawn`, `sys_spawn`,
+///     etc).
+///   - `true`  — caller already holds the scheduler lock (e.g.
+///     `sys_fork`).  Skip the lock dance so we don't deadlock
+///     on the recursive acquire.
+pub fn allocate_process_with_lock(name: &'static str, lock_held: bool) -> Result<&'static mut Process> {
+    let (slot, flags) = unsafe {
+        if lock_held {
+            let slot = find_empty_process_slot_locked();
+            (slot, 0usize)
+        } else {
+            let flags = crate::task::scheduler::SCHEDULER.lock();
+            let slot = find_empty_process_slot_locked();
+            (slot, flags)
         }
-        crate::task::scheduler::SCHEDULER.unlock(flags);
+    };
+    let slot = match slot {
+        Some(s) => s,
+        None => {
+            if !lock_held {
+                unsafe { crate::task::scheduler::SCHEDULER.unlock(flags); }
+            }
+            return Err(Status::NoMemory);
+        }
+    };
+    unsafe {
+        *slot = Some(Process::new_dummy());
+        let proc_ref = slot.as_mut().unwrap();
+        let res = proc_ref.init_in_place(name);
+        if !lock_held {
+            crate::task::scheduler::SCHEDULER.unlock(flags);
+        }
+        res?;
+        Ok(proc_ref)
     }
-    Err(Status::NoMemory)
+}
+
+/// Backwards-compatible wrapper that acquires the scheduler
+/// lock.  Kept so existing call sites don't need to be touched.
+pub fn allocate_process(name: &'static str) -> Result<&'static mut Process> {
+    allocate_process_with_lock(name, false)
+}
+
+/// Walk `PROCESSES` looking for an empty slot.  Caller must
+/// already hold the scheduler lock (or be running lock-free
+/// during single-core boot).
+unsafe fn find_empty_process_slot_locked() -> Option<&'static mut Option<Process>> {
+    for slot in PROCESSES.iter_mut() {
+        if slot.is_none() {
+            return Some(slot);
+        }
+    }
+    None
 }
 
 pub fn find_process_mut(id: u64) -> Option<&'static mut Process> {
     unsafe {
         let flags = crate::task::scheduler::SCHEDULER.lock();
-        for slot in PROCESSES.iter_mut() {
-            if let Some(p) = slot {
-                if p.id == id {
-                    let ptr = p as *mut Process;
-                    crate::task::scheduler::SCHEDULER.unlock(flags);
-                    return Some(&mut *ptr);
-                }
+        let res = find_process_mut_locked(id);
+        crate::task::scheduler::SCHEDULER.unlock(flags);
+        res
+    }
+}
+
+/// Lock-free variant of `find_process_mut`.  Caller must
+/// already hold the scheduler lock.
+pub unsafe fn find_process_mut_locked(id: u64) -> Option<&'static mut Process> {
+    for slot in PROCESSES.iter_mut() {
+        if let Some(p) = slot {
+            if p.id == id {
+                let ptr = p as *mut Process;
+                return Some(&mut *ptr);
             }
         }
-        crate::task::scheduler::SCHEDULER.unlock(flags);
     }
     None
 }
@@ -898,7 +1006,8 @@ impl Drop for Process {
         // 1. Destructure and clear the ASID/TLB registrations to stop CPU from referencing this process
         // 2. Free and clear the VMAR registrations to release virtual mappings
         // 3. Free the tracked L1, L2, L3 Page Table pages so they can be safely reclaimed back to the allocator
-        // 4. Finally, release the OHLINK segment and Stack VMO physical data pages
+        // 4. Reap every thread that still belongs to this PID: drop its scheduler slot and free its kernel stack
+        // 5. Finally, release the OHLINK segment and Stack VMO physical data pages
 
         crate::log_info!(
             "PROCESS_DROP",
@@ -908,6 +1017,21 @@ impl Drop for Process {
         );
 
         unsafe {
+            // S11 fork kstack fix: scan the scheduler's thread
+            // table for any thread whose `process_id` matches
+            // ours, free its kernel-stack pages, and clear the
+            // scheduler slot.  Without this, every fork child
+            // (and every `Init`-spawned thread the process owns)
+            // leaks `KERNEL_STACK_PAGES` pages until the
+            // scheduler slot is reused.
+            use crate::task::scheduler::SCHEDULER;
+            let flags = SCHEDULER.lock();
+            let reclaimed = SCHEDULER.reclaim_threads_for_pid(self.id);
+            SCHEDULER.unlock(flags);
+            for t in reclaimed {
+                t.free_kstack();
+            }
+
             <crate::arch::CurrentArch as crate::arch::ArchHardware>::flush_tlb();
             self.page_table.free_tree();
         }

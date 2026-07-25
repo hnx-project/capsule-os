@@ -1,3 +1,5 @@
+extern crate alloc;
+
 use crate::arch::{ArchHardware, CurrentArch};
 use crate::arch::trap::{disable_irqs, enable_irqs};
 use crate::smp::{self, MAX_CORES};
@@ -112,7 +114,13 @@ impl Scheduler {
 
     pub fn add(&mut self, mut thread: Thread) {
         let flags = self.lock();
+        self.add_locked(thread);
+        self.unlock(flags);
+    }
 
+    /// Lock-free variant of `add`; the caller must already hold
+    /// the scheduler lock.
+    pub fn add_locked(&mut self, mut thread: Thread) {
         let slot = self.find_empty_slot();
         if let Some(idx) = slot {
             let priority_idx = Self::priority_to_index(thread.priority);
@@ -129,8 +137,6 @@ impl Scheduler {
         } else {
             panic!("[SCHED] Max thread count exceeded!");
         }
-
-        self.unlock(flags);
     }
 
     /// Pop the next thread the given core should run.  The candidate
@@ -292,11 +298,22 @@ impl Scheduler {
             None => {
                 // Nothing to run on this core.  Park in WFE —
                 // another core may wake us by `wake_thread` setting
-                // ONLINE_MASK[my], or by an IRQ from outside.
+                // ONLINE_MASK[my], by an IRQ from outside, or by
+                // an explicit `smp::idle_flags_signal(slot)`.
                 self.current_indices[my] = None;
+
+                // S10: clear our own wake flag before sleeping so
+                // a subsequent `idle_flags_signal` won't get lost.
+                crate::smp::idle_flags_clear(my);
+
                 self.unlock(flags);
                 unsafe { CurrentArch::wait_for_event(); }
+
                 // After wake, reschedule immediately.
+                // If we were woken by an IRQ that picked up a new
+                // thread, the next loop iteration will see it
+                // through `pop_next_for_core`.
+                let _ = crate::smp::wait_for_idle_signal(my, 16);
                 return self.schedule();
             }
         };
@@ -373,6 +390,24 @@ impl Scheduler {
         ptr
     }
 
+    /// Return a raw pointer to the current thread without
+    /// taking the scheduler lock.  Caller MUST already hold
+    /// the scheduler lock (e.g. from inside `sys_fork`).
+    pub fn current_thread_ptr_locked(&self) -> Option<*mut Thread> {
+        let my = smp::current_core_id();
+        if my >= MAX_CORES {
+            return None;
+        }
+        let idx = self.current_indices[my]?;
+        // SAFETY: caller holds the lock, so the threads[] slot
+        // is stable for the duration of this borrow.
+        let slot = unsafe { &*(&self.threads[idx] as *const Option<Thread>) };
+        slot.as_ref().map(|t| {
+            let p: *const Thread = t;
+            p as *mut Thread
+        })
+    }
+
     pub fn get_thread_ptr(&mut self, thread_id: usize) -> Option<*mut Thread> {
         let flags = self.lock();
         let mut ptr = None;
@@ -433,6 +468,45 @@ impl Scheduler {
                 }
             }
         }
+    }
+
+    /// S11 fork kstack fix: reap every scheduler slot whose
+    /// `process_id` matches `pid`, returning the reclaimed
+    /// `Thread`s to the caller so it can free their kernel-stack
+    /// pages.  The current thread (the one calling `reclaim`)
+    /// is skipped — we're inside its kstack frame and can't
+    /// free it from here.
+    ///
+    /// Must be called with the scheduler lock held; the caller
+    /// is responsible for freeing the returned threads'
+    /// kernel-stack pages after the lock is released (or while
+    /// the lock is still held — either works because kstack
+    /// `free_page` doesn't touch the scheduler state).
+    pub fn reclaim_threads_for_pid(&mut self, pid: u64) -> alloc::vec::Vec<Thread> {
+        use alloc::vec::Vec;
+        let mut reclaimed: Vec<Thread> = Vec::new();
+        let my = smp::current_core_id();
+        let my_idx = if my < MAX_CORES {
+            self.current_indices[my]
+        } else {
+            None
+        };
+        for i in 0..MAX_THREADS {
+            if Some(i) == my_idx {
+                // Skip the thread we're currently running on.
+                continue;
+            }
+            let is_match = match self.threads[i].as_ref() {
+                Some(t) => t.process_id == pid,
+                None => false,
+            };
+            if is_match {
+                if let Some(t) = self.threads[i].take() {
+                    reclaimed.push(t);
+                }
+            }
+        }
+        reclaimed
     }
 }
 

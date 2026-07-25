@@ -22,7 +22,7 @@ pub mod per_core;
 pub mod boot;
 
 use crate::fdt::CpuMask;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// Maximum number of CPU slots tracked by the kernel.  The DTB scan
 /// itself may return up to `crate::fdt::MAX_CPUS_IN_DTB` (= 16)
@@ -78,6 +78,76 @@ pub struct CpuDescStatic {
 /// "the kernel hasn't recorded a slot yet" (very early boot) — in
 /// that case `current_core_id()` falls back to `MPIDR_EL1`.
 pub static CURRENT_CORE_SLOT: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+/// Per-slot wake-up flag used by `idle_flags_signal()` /
+/// `wait_for_idle_signal()` so that a thread mutating the runqueue
+/// from core 0 can wake a sibling core that was parked in
+/// `arch::CurrentArch::wait_for_event()`.  Each slot is a separate
+/// `AtomicBool` so fences stay core-local and there's no shared
+/// cacheline bouncing.
+pub static IDLE_FLAGS: [AtomicBool; MAX_CORES] = [
+    AtomicBool::new(false), AtomicBool::new(false),
+    AtomicBool::new(false), AtomicBool::new(false),
+    AtomicBool::new(false), AtomicBool::new(false),
+    AtomicBool::new(false), AtomicBool::new(false),
+];
+
+/// Mark `slot` as having work pending; pairs with
+/// `wait_for_idle_signal`.  On aarch64 we issue `sev` after the
+/// store so any core parked in `wfe` wakes immediately.
+#[inline]
+pub fn idle_flags_signal(slot: usize) {
+    if slot < MAX_CORES {
+        IDLE_FLAGS[slot].store(true, Ordering::Release);
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            core::arch::asm!("sev", options(nomem, nostack, preserves_flags));
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            let _ = ();
+        }
+    }
+}
+
+/// Clear the local slot's wake-up flag in preparation for
+/// `wait_for_idle_signal`; on aarch64 we also issue `sevl` so the
+/// following `wfe` actually parks (instead of short-circuiting past
+/// a pending event).
+#[inline]
+pub fn idle_flags_clear(slot: usize) {
+    if slot < MAX_CORES {
+        IDLE_FLAGS[slot].store(false, Ordering::Release);
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            core::arch::asm!("sevl", options(nomem, nostack, preserves_flags));
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            let _ = ();
+        }
+    }
+}
+
+/// Spin-wait until either `IDLE_FLAGS[slot]` becomes `true` or
+/// `max_iters` polls elapse.  Used by the scheduler's "no thread
+/// to run, no wait_for_event direct path" branch as a synthetic
+/// wakeup mechanism: even on QEMU where PSCI CPU_ON doesn't
+/// deliver control to the secondary, the primary can put a
+/// "wake me later" marker on a slot and the boot trampoline
+/// polls it on its way into `schedule()`.
+pub fn wait_for_idle_signal(slot: usize, max_iters: usize) -> bool {
+    if slot < MAX_CORES {
+        for _ in 0..max_iters {
+            if IDLE_FLAGS[slot].load(Ordering::Acquire) {
+                IDLE_FLAGS[slot].store(false, Ordering::Release);
+                return true;
+            }
+            core::hint::spin_loop();
+        }
+    }
+    false
+}
 
 /// Returns the per-CPU slot id of the caller (0..MAX_CORES).
 ///

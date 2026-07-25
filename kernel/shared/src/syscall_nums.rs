@@ -177,6 +177,18 @@ pub const SYSCALL_EXECVE: u32 = 112;
 /// control returns to the caller immediately.  Returns the new pid
 /// (> 0) on success or a negative `Status::to_raw()` on failure.
 pub const SYSCALL_SPAWN: u32 = 113;
+
+/// S7 / procmgr std-fd handoff: same shape as `SYSCALL_SPAWN` but
+/// with a third vmo argument carrying the spawner's
+/// `(stdin, stdout, stderr)` channel handles.  The kernel
+/// copies the spawner's fd_table slots `0..=2` (after translating
+/// the supplied channel handles through the caller's handle
+/// table) into the new process's fd_table.  If the handle is
+/// `0` the kernel falls back to the kernel-builtin UART path
+/// so the child still has a working stdio.  The binary vmo
+/// (`arg0`) and argv vmo (`arg1`) are unchanged from
+/// `SYSCALL_SPAWN`; the new std fds vmo is `arg2`.
+pub const SYSCALL_SPAWN_STD: u32 = 159;
 /// Voluntarily relinquish the CPU until the next timer tick or higher
 /// priority event.  Used by EL0 services (loader / init) that need to
 /// give the scheduler a chance to run a freshly-spawned process (fileagent
@@ -196,6 +208,9 @@ pub const PROC_MGMT_EXIT: u32 = 1;
 pub const PROC_MGMT_WAIT: u32 = 2;
 pub const PROC_MGMT_LIST: u32 = 3;
 pub const PROC_MGMT_RELEASE_PT: u32 = 4;
+/// S1: read-only reporting — return `(tid << 32) | pid` of the
+/// calling thread.  Used by `libc::getpid()` and `libstd::process`.
+pub const PROC_MGMT_GET_IDENTITY: u32 = 5;
 
 pub const SYSCALL_SERVICE_SPAWN: u32 = 115;
 
@@ -232,7 +247,123 @@ pub const SYSCALL_NET_SEND: u32 = 133;
 /// Receive a raw network packet from the ethernet card.
 pub const SYSCALL_NET_RECV: u32 = 134;
 
+// -------------------------------------------------------------------------
+// S1/S4: POSIX process / identity / clock surface
+//
+// All numbers are still single-source-of-truth here; userspace
+// reads them through `shared::syscall_nums::*`.  CapsuleOS 1.0 is
+// a single-tenant microkernel so we hard-code `uid=euid=0` and
+// `gid=egid=0`; the API surface is in place for a future
+// user-namespace port, where real per-process credentials will be
+// stored on the `Process` struct.
+// -------------------------------------------------------------------------
+
+/// POSIX `getuid()` — returns the calling process's real user id.
+/// In CapsuleOS 1.0 this is always 0 (single-tenant root).
+pub const SYSCALL_GETUID: u32 = 140;
+/// POSIX `geteuid()` — returns the effective user id.  Always 0.
+pub const SYSCALL_GETEUID: u32 = 141;
+/// POSIX `getgid()` — returns the real group id.  Always 0.
+pub const SYSCALL_GETGID: u32 = 142;
+/// POSIX `getegid()` — returns the effective group id.  Always 0.
+pub const SYSCALL_GETEGID: u32 = 143;
+/// POSIX `getppid()` — returns the parent process id.  For the
+/// boot anchor this is 0; for spawned processes it's the spawner's pid.
+pub const SYSCALL_GETPPID: u32 = 144;
+/// POSIX `getpgrp()` — returns the process group id.  We always
+/// return the calling process's own pid (each process is its own
+/// pgrp until S4 wires `setpgid`).
+pub const SYSCALL_GETPGRP: u32 = 145;
+/// POSIX `setpgid(pid, pgrp)` — `pid=0` means caller, `pgrp<=0`
+/// means caller-pid.  Stub for now: refuses to move a process to
+/// a different pgrp than itself (returns Ok but no state change),
+/// so bash can call `setpgid(0, 0)` without ENOSYS.
+pub const SYSCALL_SETPGID: u32 = 146;
+/// POSIX `getsid(pid)` — `pid==0` returns the calling process's sid.
+/// We model sid = pid (one session per process) until job control
+/// lands in S5+.
+pub const SYSCALL_GETSID: u32 = 147;
+/// POSIX `setsid()` — create a new session with the caller as
+/// leader.  In our flat model this just reports the caller's pid.
+pub const SYSCALL_SETSID: u32 = 148;
+
+/// POSIX `gettimeofday(tv, tz)` — write a `{ tv_sec, tv_usec }`
+/// pair (each `i64`) into the caller-supplied user VA.  We use
+/// the physical counter (CNTPCT_EL0 on aarch64) divided by the
+/// platform frequency exposed at boot.
+pub const SYSCALL_GETTIMEOFDAY: u32 = 150;
+
+/// POSIX `fcntl(fd, cmd, arg)` — `F_GETFD`, `F_SETFD`, `F_GETFL`,
+/// `F_SETFL`, `F_DUPFD`, `F_DUPFD_CLOEXEC`.  S5 completes the
+/// exec-close-on-exec scanning path; in S4 we implement the
+/// `F_GETFD / F_SETFD / F_DUPFD_CLOEXEC` subset and stub the rest.
+pub const SYSCALL_FCNTL: u32 = 151;
+
+/// POSIX `ioctl(fd, request, arg)` — only the TTY class is wired
+/// in S6/S7 (`TIOCGWINSZ / TCGETS / TCSETS / TIOCSCTTY / TIOCGPGRP
+/// / TIOCSPGRP / TIOCNOTTY`).  Others return `Status::NotAllowed`
+/// for 1.0.
+pub const SYSCALL_IOCTL: u32 = 152;
+
+// -------------------------------------------------------------------------
+// S3: process lifecycle — fork/wait4/exit
+//
+// All three numbers are single-source-of-truth here; userspace
+// reads them via `shared::syscall_nums::*`.  The semantic
+// description lives on each handler in
+// `kernel/src/syscall/handlers/process.rs::sys_fork`.
+// -------------------------------------------------------------------------
+
+/// POSIX `fork()` — duplicate the calling process.  Returns the
+/// child's pid in the parent, 0 in the child.  The child inherits
+/// the parent's fd_table / handle_table / VMAR shallow-clone
+/// (S3-only; future stages will lift this to lazy COW).
+pub const SYSCALL_FORK: u32 = 153;
+
+/// Already-reserved (legacy) slot — kept here so `SYSCALL_NR`
+/// stays monotonic through the S3 work.
+pub const _SYSCALL_RESERVED_154: u32 = 154;
+
+/// S2: read/write against a kernel-side pipe by id.  The
+/// caller's `fd_table` already holds the `Pipe { pipe, role }`
+/// entry; this syscall walks the in-kernel ring buffer and
+/// copies bytes into / out of the user buffer.  `arg0` is the
+/// pipe id (low 16 bits) plus a direction flag in bit 16
+/// (`0x10000` = read, `0x20000` = write).  This avoids
+/// burning a new syscall number for what is conceptually
+/// a single primitive.
+pub const SYSCALL_PIPE_RW: u32 = 155;
+
+// -------------------------------------------------------------------------
+// S6: pseudo-terminal (`/dev/ptmx` / `/dev/pts/N`) calls.
+//
+// `SYSCALL_TTY_OPEN` is a single, path-driven dispatcher:
+//   - arg0 = user VA of the C-string path
+//   - arg1 = path length (no NUL terminator needed)
+//   - arg2 = `flags` (O_RDONLY / O_RDWR / O_NONBLOCK / etc).
+//
+// `SYSCALL_TTY_OPEN` resolves `/dev/ptmx`, `/dev/pts/N`, and
+// (S7) `/dev/tty` to an in-kernel `PtyId` and returns a per-
+// process fd that is stored in the user's `USER_FD_TABLE` (the
+// userspace translates the returned fd through to
+// `libcapsule::fd::FdType::Pty`).  Writes/Reads on those fds
+// go through `SYSCALL_PTY_WRITE` / `SYSCALL_PTY_READ`.
+//
+// The kernel-side handler is in
+// `kernel/src/syscall/handlers/tty.rs`.
+// -------------------------------------------------------------------------
+
+/// Open a PTY by path.  Returns a per-process fd number
+/// (positive on success; `Status::to_raw()` on error).
+pub const SYSCALL_TTY_OPEN: u32 = 156;
+
+/// Master-side `write(stdin)` -> slave's input buffer.
+pub const SYSCALL_PTY_WRITE: u32 = 157;
+
+/// Master-side `read(stdout)` <- slave's output box.
+pub const SYSCALL_PTY_READ: u32 = 158;
+
 /// One past the last valid syscall number.  Any `syscall_num >= SYSCALL_NR`
 /// is reserved by the ABI for future extensions and must not be accepted by
 /// the dispatcher — see `kernel/src/syscall/mod.rs`.
-pub const SYSCALL_NR: u32 = 135;
+pub const SYSCALL_NR: u32 = 163;

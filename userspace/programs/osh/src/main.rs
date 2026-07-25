@@ -7,6 +7,7 @@ extern crate libstd;
 pub mod builtins;
 pub mod env;
 pub mod parser;
+pub mod readline;
 pub mod shell;
 
 // 1. 本地测试与调试环境入口（使用标准库）

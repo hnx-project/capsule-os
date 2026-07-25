@@ -5,7 +5,7 @@ use crate::arch::mmu::PAGE_SIZE;
 use crate::arch::phys::{self, PhysAddr};
 use crate::arch::ArchContext;
 
-pub const KERNEL_STACK_PAGES: usize = 4;
+pub const KERNEL_STACK_PAGES: usize = 16;
 pub const KERNEL_STACK_SIZE: usize = KERNEL_STACK_PAGES * PAGE_SIZE;
 
 pub const DEFAULT_TIME_SLICE: usize = 5;
@@ -93,6 +93,58 @@ pub extern "C" fn thread_bootstrap() -> ! {
 }
 
 impl Thread {
+    /// Allocate a fresh, independent kernel stack of
+    /// `KERNEL_STACK_PAGES` 4 KiB pages.  Returns
+    /// `(base_pa, va_top)` so callers can place a context at the
+    /// top of the new stack or copy an existing kernel stack
+    /// into it.
+    ///
+    /// Used by `sys_fork` so the child has its own kernel-stack
+    /// pages; the parent and child must never share a stack
+    /// because either may take an EL1 exception (timer IRQ,
+    /// syscall, page fault) at any moment and would corrupt the
+    /// other's frame area otherwise.
+    pub fn alloc_independent_kstack() -> Result<(PhysAddr, usize)> {
+        let base_pa = phys::alloc_kstack_page()?;
+        let mut last_ok = true;
+        for _ in 1..KERNEL_STACK_PAGES {
+            if phys::alloc_kstack_page().is_err() {
+                last_ok = false;
+                break;
+            }
+        }
+        if !last_ok {
+            // Partial allocation: roll back whatever we managed to
+            // grab.  Avoids leaking kernel-stack pages on the OOM
+            // path.
+            let mut p = base_pa.as_usize();
+            for _ in 0..KERNEL_STACK_PAGES {
+                phys::free_page(PhysAddr::new(p));
+                p += PAGE_SIZE;
+            }
+            return Err(shared::status::Status::NoMemory);
+        }
+        let base_va = pa_to_kernel_va(base_pa.as_usize());
+        let va_top = base_va + KERNEL_STACK_SIZE;
+        Ok((base_pa, va_top))
+    }
+
+    /// Free every kernel-stack page backing this Thread.  Called
+    /// from `Process::drop` when a thread is finally reclaimed.
+    pub fn free_kstack(&self) {
+        if self.kernel_stack_base_pa.as_usize() == 0
+            || self.kernel_stack_size == 0
+        {
+            return;
+        }
+        let mut p = self.kernel_stack_base_pa.as_usize();
+        let end = p + self.kernel_stack_size;
+        while p < end {
+            phys::free_page(PhysAddr::new(p));
+            p += PAGE_SIZE;
+        }
+    }
+
     pub fn new_kernel(name: &'static str, entry: extern "C" fn()) -> Result<Self> {
         let stack_pa0 = phys::alloc_kstack_page()?;
         for _ in 1..KERNEL_STACK_PAGES {
@@ -321,4 +373,13 @@ user_eret_stub:
 
 extern "C" {
     fn user_eret_stub() -> !;
+}
+
+/// Return the address of `user_eret_stub`.  `sys_fork` uses
+/// this to reset the child's `r[11]` (x30) so the first
+/// `switch_to` after a fork lands at the right trampoline
+/// rather than wherever the parent's last `bl` left the link
+/// register (the `syscall!` macro clobbers x30).
+pub fn user_eret_stub_addr() -> usize {
+    user_eret_stub as usize
 }

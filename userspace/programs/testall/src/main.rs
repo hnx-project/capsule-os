@@ -8,6 +8,13 @@ mod dev;
 mod vfs;
 mod proc;
 mod net;
+mod s1;
+mod s2;
+mod s4;
+mod s6;
+mod s7;
+mod s11;
+mod s12;
 
 use libcapsule::kprintln;
 
@@ -95,6 +102,27 @@ pub fn main() -> i32 {
     // POSIX rename tests
     t.run("vfs_rename_ramfs", vfs::test_vfs_rename_ramfs());
     t.run("vfs_rename_fatfs", vfs::test_vfs_rename_fatfs());
+
+    // S1: identity / env / clock surface
+    s1::test_s1_run(&mut t);
+
+    // S4: fcntl + ioctl (user-side stubs)
+    s4::test_s4_run(&mut t);
+
+    // S6: PTY (`/dev/ptmx` / `/dev/pts/N`) smoke tests.
+    s6::test_s6_run(&mut t);
+
+    // S7: procmgr std-fd handoff.
+    s7::test_s7_run(&mut t);
+
+    // S2: pipe(2) + dup2(2) round-trip.
+    s2::test_s2_run(&mut t);
+
+    // S11: fork() with independent kernel stack.
+    s11::test_s11_run(&mut t);
+
+    // S12: posix_spawn(3) Fuchsia-style process spawn + fork() ENOSYS.
+    s12::test_s12_run(&mut t);
 
     if t.total > 0 {
         kprintln!("{}/{} passed", t.passed, t.total);

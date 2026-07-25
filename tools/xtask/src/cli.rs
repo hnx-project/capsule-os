@@ -63,9 +63,7 @@ pub enum CodeSubcommands {
         #[arg(long, help = "The expected Rust compiler version")]
         expected_rust: Option<String>,
     },
-    #[command(
-        about = "Verify and synchronize Cargo.toml and project workspace versions"
-    )]
+    #[command(about = "Verify and synchronize Cargo.toml and project workspace versions")]
     CheckVersion {
         #[arg(
             long,
@@ -73,14 +71,35 @@ pub enum CodeSubcommands {
         )]
         sync: bool,
     },
-    #[command(
-        about = "Generate unified and consolidated rust-doc website for all layers"
-    )]
+    #[command(about = "Generate unified and consolidated rust-doc website for all layers")]
     Doc {
         #[arg(
             long,
             help = "Automatically start a local server and open the documentation portal in your browser"
         )]
         open: bool,
+    },
+    #[command(
+        about = "Boot CapsuleOS in QEMU, scrape `testall` output and report PASS/FAIL counts"
+    )]
+    Test {
+        #[arg(
+            long,
+            default_value = "aarch64",
+            help = "The target architecture (aarch64)"
+        )]
+        arch: String,
+        #[arg(
+            long,
+            default_value = "virt",
+            help = "The target platform profile (virt, rpi)"
+        )]
+        platform: String,
+        #[arg(
+            long,
+            default_value_t = 90,
+            help = "How long to wait for the `N/N passed` summary line"
+        )]
+        timeout: u64,
     },
 }

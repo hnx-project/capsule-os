@@ -21,6 +21,9 @@ pub mod program;
 pub mod syscalls;
 pub mod fd;
 pub mod path;
+pub mod users;
+pub mod tty;
+pub mod posix_spawn;
 
 #[cfg(feature = "runtime")]
 pub mod runtime;

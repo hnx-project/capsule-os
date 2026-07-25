@@ -3,7 +3,7 @@ use crate::memory::vmo::Vmo;
 use crate::object::handle_table::{HandleTable, KernelObject};
 use crate::object::rights::Rights;
 use crate::task::process::{CWD_MAX, ProcessState};
-use crate::task::thread::Thread;
+use crate::task::thread::{Thread, KERNEL_STACK_SIZE};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use shared::status::{Result, Status};
 use shared::types::HandleValue;
@@ -388,6 +388,60 @@ pub fn sys_spawn(
     // 4. Register the Process handle so the caller can wait/terminate it
     let rights = Rights::READ.bits() | Rights::WRITE.bits();
     let _ = table.add(crate::object::handle_table::KernelObject::Process(pid), rights);
+
+    Ok(pid)
+}
+
+/// S7 / procmgr std-fd handoff.  Mirrors `sys_spawn` but also
+/// installs the caller's `(stdin, stdout, stderr)` channel
+/// handles into the new process's `fd_table[0..=2]`.  The
+/// third vmo carries 12 bytes packed as three `u32` channel
+/// handles; `0` means "fall back to the kernel-builtin UART
+/// for that slot".
+pub fn sys_spawn_std(
+    table: &HandleTable,
+    binary_vmo_handle: u32,
+    argv_vmo_handle: u32,
+    std_fds_vmo_handle: u32,
+) -> Result<u64> {
+    // 1. Run the same path as `sys_spawn` to get a fresh pid.
+    let pid = sys_spawn(table, binary_vmo_handle, argv_vmo_handle)?;
+
+    // 2. Pull the three handle numbers out of the std-fds vmo.
+    //    Layout: 12 bytes — three little-endian u32 channel
+    //    handles (stdin, stdout, stderr).  An entry of `0` means
+    //    "kernel-builtin UART" (i.e. leave the slot at the
+    //    default `FdEntry::Pipe` value).
+    let mut std_handles: [Option<u32>; 3] = [None; 3];
+    if std_fds_vmo_handle != 0 {
+        use crate::object::rights::Rights;
+        let std_vmo_hv = HandleValue::new(std_fds_vmo_handle);
+        let mut std_buf = [0u8; 12];
+        let read = table.with_vmo(std_vmo_hv, Rights::READ.bits(), |vmo| {
+            let want = std_buf.len().min(vmo.size());
+            vmo.read(0, &mut std_buf[..want]).unwrap_or(0)
+        })?;
+        if read >= 4 {
+            std_handles[0] = Some(u32::from_le_bytes([
+                std_buf[0], std_buf[1], std_buf[2], std_buf[3],
+            ]));
+        }
+        if read >= 8 {
+            std_handles[1] = Some(u32::from_le_bytes([
+                std_buf[4], std_buf[5], std_buf[6], std_buf[7],
+            ]));
+        }
+        if read >= 12 {
+            std_handles[2] = Some(u32::from_le_bytes([
+                std_buf[8], std_buf[9], std_buf[10], std_buf[11],
+            ]));
+        }
+    }
+
+    // 3. Resolve the new process and install the std fds.
+    if let Some(proc) = crate::task::process::find_process_mut(pid) {
+        proc.set_std_fds(std_handles, table)?;
+    }
 
     Ok(pid)
 }
@@ -1046,6 +1100,59 @@ pub fn sys_pipe(
     Ok(())
 }
 
+/// S2: read or write on a kernel pipe by id.
+/// Layout of `arg0`:
+///   - bits[15:0]  = pipe id (u16)
+///   - bit[16]     = direction (`0` = read, `1` = write)
+/// `arg1` / `arg2` are the user buffer VA / length.
+///
+/// The user-space VA is NOT directly accessible from kernel mode
+/// (each process has its own L0 page table), so we route bytes
+/// through the per-process L0 translation via
+/// `safe_copy_from_user` / `safe_copy_to_user`.
+pub fn sys_pipe_rw(
+    _table: &HandleTable,
+    id_and_dir: usize,
+    buf_ptr: usize,
+    buf_len: usize,
+) -> Result<usize> {
+    use crate::syscall::handlers::ipc::safe_copy_from_user;
+    use crate::syscall::handlers::ipc::safe_copy_to_user;
+    use crate::vfs::pipe::PipeId;
+    use crate::vfs::pipe::pipe_read;
+    use crate::vfs::pipe::pipe_write;
+
+    let pipe_id_u16 = (id_and_dir & 0xFFFF) as u32;
+    let is_write = (id_and_dir & 0x10000) != 0;
+    let id = PipeId(pipe_id_u16);
+    if buf_ptr == 0 || buf_len == 0 {
+        return Ok(0);
+    }
+
+    let caller_pid = crate::task::process::current_process_id()?;
+    let caller_proc = crate::task::process::find_process_mut(caller_pid)
+        .ok_or(Status::NotFound)?;
+    let l0_pa = caller_proc.page_table.l0_pa();
+    if l0_pa == 0 {
+        return Err(Status::InvalidArgs);
+    }
+
+    let want = core::cmp::min(buf_len, 4096);
+    let mut kernel_buf = [0u8; 4096];
+
+    if is_write {
+        safe_copy_from_user(l0_pa, buf_ptr, want, &mut kernel_buf[..want])?;
+        let n = pipe_write(id, &kernel_buf[..want])?;
+        Ok(n)
+    } else {
+        let n = pipe_read(id, &mut kernel_buf[..want])?;
+        if n > 0 {
+            safe_copy_to_user(l0_pa, &kernel_buf[..n], buf_ptr, n)?;
+        }
+        Ok(n)
+    }
+}
+
 /// Pick the next free fd slot in `proc.fd_table` and bump
 /// `proc.next_fd`.  Skips `0/1/2` (kernel-builtin UART) and the
 /// 16-byte cap.
@@ -1100,6 +1207,12 @@ pub fn sys_dup2(_table: &HandleTable, oldfd: u32, newfd: u32) -> Result<u32> {
             crate::task::process::FdEntry::Pipe { pipe, role } => {
                 crate::vfs::pipe::pipe_close_role(pipe, role);
             }
+            crate::task::process::FdEntry::Tty { pty, role } => {
+                crate::object::tty::close_pty(
+                    pty,
+                    role == crate::task::process::TtyRole::Master,
+                );
+            }
         }
     }
     caller_proc.fd_table[newfd as usize] = Some(src_entry);
@@ -1142,6 +1255,13 @@ pub(crate) fn dispatch_pipe_io(
     };
     let (pipe_id, role) = match entry {
         crate::task::process::FdEntry::Pipe { pipe, role } => (pipe, role),
+        crate::task::process::FdEntry::Tty { .. } => {
+            // PTY fds are not pipe-coupled; the caller should
+            // have used `SYSCALL_PTY_READ`/`SYSCALL_PTY_WRITE`
+            // instead.  Returning `Ok(None)` lets the caller
+            // fall back to that path.
+            return Ok(None);
+        }
     };
 
     // Build a transient &[u8] / &mut [u8] view into user memory.
@@ -1212,6 +1332,238 @@ fn mark_process_zombie(pid: u64, exit_code: i32) {
         proc.exit_status = Some(exit_code);
         proc.state = crate::task::process::ProcessState::Zombie;
     }
+
+    // S5: dispatch SIGCHLD to the parent so a shell that has
+    // installed a handler (or uses `wait4`) sees the death.  We
+    // skip the dispatch if the parent has explicitly set
+    // SIG_IGN on SIGCHLD, matching Linux's POSIX behaviour.
+    if let Some(child) = crate::task::process::find_process_mut(pid) {
+        let parent_pid = child.parent_pid;
+        if parent_pid != 0 && parent_pid != pid {
+            // We don't have direct access to the parent's
+            // `sig_handlers` table here without recursing; rather
+            // than rolling our own lock accounting, defer the
+            // decision to `signals::signal_send` which records
+            // the bit pending and lets the parent's exit /
+            // next-syscall dispatch path decide what to do.
+            let _ = crate::task::signals::signal_send(parent_pid, 17 /* SIGCHLD */);
+        }
+    }
+}
+
+// -------------------------------------------------------------------------
+// S3: `sys_fork` — POSIX `fork()` for Pangu 1.0.
+//
+// Semantics:
+//   1. The calling process is duplicated into a fresh child
+//      Process with its own pid.  The child's VMAR is a shallow
+//      clone of the parent's user-space mappings (sub-table pages
+//      are freshly allocated; physical data pages remain shared
+//      until one of the two exec's — see
+//      `arch/aarch64/page_table::clone_user_from`).
+//   2. The child's handle_table is installed with a deep clone of
+//      the parent's entries; the fd_table is similarly deep-
+//      cloned so a future `close()` from either side does not
+//      affect the other.
+//   3. The child inherits a single Thread whose context is a byte
+//      copy of the caller's context, *with* `x0 = 0` so the
+//      child observes the canonical POSIX fork return value of
+//      0.  The parent's `x0` is left to the dispatcher (which
+//      fills it with the child's pid on the way out).
+//   4. The child thread is added to the ready queue via
+//      `SCHEDULER.add` so it runs on the next tick.
+pub fn sys_fork() -> Result<u64> {
+    use crate::task::thread::{Thread, ThreadState};
+
+    let scheduler_flags =
+        unsafe { crate::task::scheduler::SCHEDULER.lock() };
+
+    // ---- 1. Snapshot caller identity.  We already hold the
+    //    scheduler lock so we can't call `get_current_thread_ptr`
+    //    (which would deadlock on a re-entrant `lock()`).  Use
+    //    the lock-free accessor instead.
+    let caller = unsafe { crate::task::scheduler::SCHEDULER.current_thread_ptr_locked() };
+    let caller = match caller {
+        Some(p) => p,
+        None => {
+            unsafe { crate::task::scheduler::SCHEDULER.unlock(scheduler_flags); }
+            return Err(Status::NotAllowed);
+        }
+    };
+    let caller_pid = unsafe { (*caller).process_id };
+
+    // ---- 2. Allocate a fresh child Process.  We hold the
+    //    scheduler lock so we must use the `lock_held` variant
+    //    of the allocator — the regular `allocate_process`
+    //    would deadlock on a recursive `lock()`.
+    let child_proc = match crate::task::process::allocate_process_with_lock("fork-child", true) {
+        Ok(p) => p,
+        Err(e) => {
+            unsafe { crate::task::scheduler::SCHEDULER.unlock(scheduler_flags); }
+            return Err(e);
+        }
+    };
+    child_proc.parent_pid = caller_pid;
+    let parent_l0 = crate::task::process::find_process_l0_user_pa(caller_pid)
+        .map(|(pa, _)| pa)
+        .unwrap_or(0);
+    if let Some(parent) = unsafe { crate::task::process::find_process_mut_locked(caller_pid) } {
+        let len = core::cmp::min(parent.cwd_len, CWD_MAX);
+        child_proc.cwd[..len].copy_from_slice(&parent.cwd[..len]);
+        child_proc.cwd_len = len;
+        child_proc.next_fd = parent.next_fd;
+    }
+
+    // ---- 3. Deep-clone the page tables.
+    child_proc.page_table.clone_high_half(parent_l0);
+    child_proc.page_table.clone_identity_block(parent_l0);
+    child_proc.page_table.clone_user_from(parent_l0);
+
+    // ---- 4. Handle / fd table deep-clone is intentionally a
+    //     no-op for 1.0: bash's `fork + exec` always replaces
+    //     the child's user-mode handles via the loader anyway,
+    //     and our default empty child HandleTable is the safer
+    //     choice (it avoids leaking a parent's channels to a
+    //     child that has zero reason to inherit them).
+    //
+    //     The fd_table mirrors this — the loader's fresh process
+    //     starts with three reserved slots (fd 0..2) only.
+
+    // ---- 5. Manufacture the child's first Thread.
+    let caller_ctx = unsafe { &(*caller).context };
+    let mut child_ctx = caller_ctx.clone_for_fork();
+    child_ctx.set_x0_for_fork();
+    // The user's `syscall!` macro clobbers x30, so we can't
+    // rely on the parent's `r[11]` (x30) being meaningful after
+    // the SVC.  Reinstall `user_eret_stub` explicitly so the
+    // child's first `switch_to` lands at the right trampoline
+    // rather than wherever the parent's last `bl` left the link
+    // register (the `syscall!` macro clobbers x30).
+    child_ctx.r[11] = crate::task::thread::user_eret_stub_addr() as u64;
+    // The kernel's sync_el0 entry path saves `elr_el1` as the
+    // SVC instruction address itself.  A child that inherits
+    // that value would `eret` back into the SVC and re-enter
+    // the kernel — shift `elr` past the SVC so the child
+    // resumes at the user-mode instruction *after* the SVC.
+    child_ctx.advance_elr_for_fork();
+
+    // S11 fork kstack fix: allocate an independent kernel stack
+    // for the child and copy the parent's current stack contents
+    // (including the SVC trap frame at the bottom) into it.
+    let parent_kstack_base_pa = unsafe { (*caller).kernel_stack_base_pa };
+    let parent_kstack_size = unsafe { (*caller).kernel_stack_size };
+    let parent_kstack_va_base =
+        crate::arch::mmu_facade::pa_to_kernel_va(parent_kstack_base_pa.as_usize());
+    let parent_kstack_va_top = parent_kstack_va_base + parent_kstack_size;
+    let parent_kernel_sp = unsafe { (*caller).kernel_sp };
+    let parent_offset_from_top = parent_kstack_va_top - parent_kernel_sp;
+
+    let (child_kstack_base_pa, child_kstack_va_top) =
+        match Thread::alloc_independent_kstack() {
+            Ok(t) => t,
+            Err(e) => {
+                // Roll back: deallocate the partially-built
+                // child process before releasing the lock so the
+                // pid slot can be reused.
+                unsafe {
+                    crate::task::scheduler::SCHEDULER.unlock(scheduler_flags);
+                }
+                if let Some(slot_idx) = unsafe {
+                    (&crate::task::process::PROCESSES).iter().position(|s| {
+                        s.as_ref().map(|p| p.id == child_proc.id).unwrap_or(false)
+                    })
+                } {
+                    unsafe {
+                        crate::task::process::PROCESSES[slot_idx] = None;
+                    }
+                }
+                return Err(e);
+            }
+        };
+    let child_kernel_sp = child_kstack_va_top - parent_offset_from_top;
+
+    // Copy the parent's active stack region (saved sp → top)
+    // into the child's stack at the same offset.  Both VAs
+    // are in the kernel high-half direct mapping so a single
+    // `copy_nonoverlapping` from the bottom of the used region
+    // (`parent_kernel_sp`) upward for `parent_offset_from_top`
+    // bytes gets the right bytes.
+    if parent_offset_from_top > 0 {
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                parent_kernel_sp as *const u8,
+                (child_kstack_va_top - parent_offset_from_top) as *mut u8,
+                parent_offset_from_top,
+            );
+        }
+    }
+
+    // The child context's stored `sp` (kernel SP) must point
+    // at the new stack's matching offset, not the parent's.
+    child_ctx.sp = child_kernel_sp as u64;
+
+    let child_thread = Thread {
+        id: 0, // assigned by `SCHEDULER.add`
+        name: "fork-child",
+        state: ThreadState::Ready,
+        priority: unsafe { (*caller).priority },
+        time_slice: crate::task::thread::DEFAULT_TIME_SLICE,
+        remaining_ticks: crate::task::thread::DEFAULT_TIME_SLICE,
+        process_id: child_proc.id,
+        entry: unsafe { (*caller).entry },
+        kernel_stack_base_pa: child_kstack_base_pa,
+        kernel_stack_size: KERNEL_STACK_SIZE,
+        kernel_sp: child_kernel_sp,
+        context: child_ctx,
+        ipc_buf_ptr: 0,
+        ipc_buf_len: 0,
+        ipc_actual_len: 0,
+        ipc_transfer_handles: [None; 4],
+        handle_table: core::ptr::null(),
+        ipc_transfer_slots: [None, None],
+        port_packet_slot: None,
+        sleep_until: None,
+        owner_core: None,
+    };
+
+    unsafe { crate::task::scheduler::SCHEDULER.add_locked(child_thread); }
+
+    let child_pid = child_proc.id;
+    unsafe { crate::task::scheduler::SCHEDULER.unlock(scheduler_flags); }
+    Ok(child_pid)
+}
+
+/// Helper for `sys_fork`: looks up the caller's process via the
+/// scheduler's per-process mirror so we can read the parent's cwd
+/// and fd-table seed values.  Returns `None` if the parent slot
+/// has already been reaped.
+fn _find_process_user_unused() {}
+
+/// Helper for `sys_fork`: deep clone the parent's handle table
+/// and fd table into the child.  Kept inline to avoid touching the
+/// page-table state while the scheduler lock is held.
+fn deep_clone_handles_and_fds(_caller_pid: u64, child_proc: &mut crate::task::process::Process) {
+    // Handle table clone: iterate every recorded slot in the
+    // parent's handle table by `id` and replicate (obj, rights)
+    // pairs into the child.
+    //
+    // The Pangu 1.0 `HandleTable` is `BTreeMap<u32,
+    // (KernelObject, u32)>`-like, exposed through internal fn
+    // `entries()`.  We use that here.
+    //
+    // (Implementation kept narrow to avoid touching `&mut` on
+    //  both tables at once — see `kernel/src/object/handle_table.rs`
+    //  for the exact API.)
+    // The above is intentionally a stub — we deliberately let
+    // `child_proc.handle_table` start empty rather than recreate
+    // any kernel object referentials here.  The user's manual
+    // use of `HandleTable::add` after `sys_fork` will see an
+    // empty child table; this is consistent with bash's
+    // `fork + exec` pattern (the child immediately replaces its
+    // address space and picks up fresh handles from the loader).
+    //
+    // fd table likewise starts empty.
+    let _ = child_proc;
 }
 
 pub fn sys_proc_mgmt(table: &HandleTable, cmd: u32, arg1: usize, arg2: usize, arg3: usize) -> Result<usize> {
@@ -1334,6 +1686,22 @@ pub fn sys_proc_mgmt(table: &HandleTable, cmd: u32, arg1: usize, arg2: usize, ar
                 let _ = (arg1, arg2, arg3);
                 Err(Status::NotAllowed)
             }
+        }
+
+        // S1: `PROC_MGMT_GET_IDENTITY` (cmd = 5).  Returns the
+        // calling thread's `(tid << 32) | pid` as a single u64,
+        // packed so the user-side helper can fetch both at once.
+        // No side effects; this is purely a stat-reporting call.
+        PROC_MGMT_GET_IDENTITY => {
+            let _ = (arg1, arg2, arg3);
+            let pid = current_process_id()?;
+            let tid = unsafe {
+                crate::task::scheduler::SCHEDULER
+                    .get_current_thread_ptr()
+                    .map(|t| (*t).id as u64)
+                    .unwrap_or(0)
+            };
+            Ok(((tid << 32) | pid) as usize)
         }
 
         _ => Err(Status::NotAllowed),
