@@ -253,6 +253,36 @@ impl Process {
         Ok(proc_id)
     }
 
+    /// Launch a fresh EL0 program with `argc`/`argv` and `envc`/`envp`
+    /// both materialised onto the user stack.  Empty `envp` is allowed —
+    /// the trampoline reads `envc == 0` and skips the env walk.
+    pub fn launch_user_program_with_argv_and_envp(
+        name: &'static str,
+        binary_bytes: &[u8],
+        arg_strs: &[[u8; 256]],
+        arg_lens: &[usize],
+        argc: usize,
+        env_strs: &[[u8; 256]],
+        env_lens: &[usize],
+        envc: usize,
+        parent_pid: u64,
+    ) -> Result<u64> {
+        let mut proc_id = 0;
+        Self::launch_user_program_with_argv_and_envp_id(
+            name,
+            binary_bytes,
+            arg_strs,
+            arg_lens,
+            argc,
+            env_strs,
+            env_lens,
+            envc,
+            parent_pid,
+            &mut proc_id,
+        )?;
+        Ok(proc_id)
+    }
+
     /// Launch a fresh EL0 program with `argc`/`argv` materialised onto its
     /// user stack.  `arg_strs` is an array of byte buffers and `arg_lens`
     /// records the valid byte count of each entry; both slices must have
@@ -266,6 +296,36 @@ impl Process {
         arg_strs: &[[u8; 256]],
         arg_lens: &[usize],
         argc: usize,
+        parent_pid: u64,
+        out_pid: &mut u64,
+    ) -> Result<()> {
+        Self::launch_user_program_with_argv_and_envp_id(
+            name,
+            binary_bytes,
+            arg_strs,
+            arg_lens,
+            argc,
+            &[],
+            &[],
+            0,
+            parent_pid,
+            out_pid,
+        )
+    }
+
+    /// S13.1: same as `launch_user_program_with_argv_id` but also
+    /// materialises `envc`/`envp` onto the user stack.  Empty
+    /// `envp` is allowed (envc = 0).  The kernel trampoline reads
+    /// x2=envc, x3=envp_ptr.
+    pub fn launch_user_program_with_argv_and_envp_id(
+        name: &'static str,
+        binary_bytes: &[u8],
+        arg_strs: &[[u8; 256]],
+        arg_lens: &[usize],
+        argc: usize,
+        env_strs: &[[u8; 256]],
+        env_lens: &[usize],
+        envc: usize,
         parent_pid: u64,
         out_pid: &mut u64,
     ) -> Result<()> {
@@ -574,6 +634,13 @@ impl Process {
         // payloads (each padded to 16-byte alignment).  `argv_user_va`
         // ends up pointing at argv[0].  x0=argc, x1=argv_user_va are
         // then handed to the user entry trampoline via ThreadContext.
+        //
+        // `post_argv_sp` is lifted out of the `if argc > 0` block so the
+        // S13.1 envp materialisation can chain on top of argv when
+        // `argc == 0` (we still need a sensible sp for envp to land
+        // on; in that case `post_argv_sp` is the value argv would have
+        // produced, i.e. `stack_top` aligned down).
+        let post_argv_sp: usize;
         if argc > 0 {
             let argv_array_bytes = argc * 8;
             let mut string_total: usize = 0;
@@ -629,10 +696,90 @@ impl Process {
             // The new initial sp points just past the argv array; SP at
             // entry is therefore the post-argv stack pointer, while argv
             // lives directly under it.  argv[0] is at argv_ptr_va.
-            let post_argv_sp = (cursor + 15) & !15;
+            post_argv_sp = (cursor + 15) & !15;
 
             thread.context.user_sp = post_argv_sp as u64;
             thread.context.x[1] = argv_ptr_va as u64;
+        } else {
+            // No argv was materialised; envp will land just below
+            // `stack_top`.  We round down to 16 for the same
+            // alignment the envp materialiser uses.
+            post_argv_sp = stack_top & !(15usize);
+            thread.context.user_sp = post_argv_sp as u64;
+            thread.context.x[1] = 0;
+        }
+
+        // S13.1: materialise envp on the user stack, just below
+        // argv.  Layout matches POSIX `int main(int argc, char
+        // *argv[], char *envp[])`: a NULL-terminated pointer array
+        // (we don't write the NULL because envc tells the
+        // trampoline the count, but we round up the stack frame
+        // for alignment), then string payloads.  Each string is
+        // NUL-terminated and 16-byte aligned so the trampoline
+        // can scan via the standard "next-pointer minus current"
+        // trick.
+        if envc > 0 {
+            let envp_array_bytes = envc * 8;
+            let mut env_string_total: usize = 0;
+            for i in 0..envc {
+                env_string_total += (env_lens[i] + 15) & !15;
+            }
+            let envp_area = envp_array_bytes + env_string_total + 16;
+
+            // Continue from `post_argv_sp` (the current sp),
+            // which was lifted to outer scope so the envp path
+            // can chain on top of argv.
+            let mut env_new_sp =
+                (post_argv_sp - envp_area) & !(15usize);
+            let mut env_cursor = env_new_sp;
+
+            // First: copy each envp string payload upward,
+            // capturing the user-VA so the pointer array below
+            // points at it.  Each string is NUL-terminated for
+            // the same reason argv strings are.
+            let mut env_vas: [usize; 16] = [0usize; 16];
+            for i in 0..envc {
+                let s_len = env_lens[i];
+                let padded = (s_len + 15) & !15;
+                let dst = env_cursor;
+                crate::syscall::handlers::ipc::safe_copy_to_user(
+                    pt.l0_pa(),
+                    &env_strs[i][..s_len],
+                    dst,
+                    s_len,
+                )?;
+                let nul: [u8; 1] = [0u8];
+                crate::syscall::handlers::ipc::safe_copy_to_user(
+                    pt.l0_pa(),
+                    &nul,
+                    dst + s_len,
+                    1,
+                )?;
+                env_vas[i] = dst;
+                env_cursor += padded;
+            }
+
+            // Then: write the envp pointer array.
+            let envp_ptr_va = env_cursor;
+            for i in 0..envc {
+                let bytes = (env_vas[i] as u64).to_le_bytes();
+                crate::syscall::handlers::ipc::safe_copy_to_user(
+                    pt.l0_pa(),
+                    &bytes,
+                    envp_ptr_va + i * 8,
+                    8,
+                )?;
+            }
+
+            // The new initial sp now points at the envp area;
+            // argv lives just above it.
+            let post_envp_sp = (env_cursor + envp_array_bytes + 15) & !15;
+            thread.context.user_sp = post_envp_sp as u64;
+            thread.context.x[2] = envc as u64;
+            thread.context.x[3] = envp_ptr_va as u64;
+        } else {
+            thread.context.x[2] = 0;
+            thread.context.x[3] = 0;
         }
 
         unsafe {

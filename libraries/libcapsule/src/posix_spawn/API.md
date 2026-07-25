@@ -59,11 +59,16 @@ them into the same `[u32 argc][u32 strlen][bytes]…` VMO
 layout the kernel's `sys_spawn` already parses.  Both arrays
 are forwarded to `SYSCALL_SPAWN_STD` as separate VMOs.
 
-In 1.0 the kernel-side `launch_user_program_with_argv`
-materialises argv onto the child user stack; envp is consumed
-at the syscall boundary but the bytes are not yet put on
-the stack — `getenv(3)` will return NULL for any string the
-caller forwarded.  S13 will close that gap.
+In 1.0 the kernel-side `launch_user_program_with_argv_and_envp`
+materialises both argv AND envp onto the child user stack:
+argv strings are 16-byte aligned, NUL-terminated, with the
+pointer array at the lowest address; envp is materialised
+just below argv with the same encoding.  The user entry
+trampoline reads x2=envc, x3=envp_ptr, populates
+`ENV_TABLE` from the forwarded strings, and then seeds the
+default `PATH`/`HOME`/`USER`/etc. via `env_init()` (so
+caller-supplied values are preserved; defaults only fill in
+missing keys).
 
 ### File actions
 
@@ -83,8 +88,6 @@ ships.
 * `POSIX_SPAWN_SETPGROUP` / `POSIX_SPAWN_SETSID` — accepted but
   not applied.  The child inherits the spawner's session in
   1.0.
-* Materialising envp onto the child user stack — VMO is
-  consumed but not yet used at exec time.  Tracked under S13.
 
 ## Exposed Interfaces
 
@@ -157,9 +160,6 @@ ships.
   this requires a third VMO carrying the path blob so the
   kernel can complete the `open` against `fileagent`'s IPC
   VFS protocol.  `addclose` already works.
-* Land structured `envp` materialisation onto the child user
-  stack.  Today the kernel parses and validates the envp
-  VMO; S13 closes the loop.
 * Honour `POSIX_SPAWN_SETPGROUP` / `POSIX_SPAWN_SETSID` by
   threading the requested session/pgroup into the kernel's
   `process_create` argument.
@@ -170,3 +170,8 @@ ships.
   the kernel to walk an open-fd table inside the child's
   freshly-built container, which currently only carries the
   three std fds.
+* End-to-end `posix_spawn` round-trip with a co-operating
+  child: the test suite currently has to settle for "syscall
+  path is wired" assertions because the only BootFS binaries
+  (`ls`, `cat`) are fileagent-bound and don't echo envp.  A
+  dedicated `envprint` test binary would close that loop.

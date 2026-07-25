@@ -302,11 +302,20 @@ pub fn sys_execve(
     Ok(())
 }
 
-/// SYSCALL_SPAWN: spawn an EL0 process from a given binary VMO and command-line arguments VMO.
+/// SYSCALL_SPAWN: spawn an EL0 process from a given binary VMO
+/// and command-line arguments VMO.  The std-fds-less variant —
+/// `libcapsule::syscalls::spawn` uses this; the std-fd-aware
+/// `posix_spawn(3)` uses `SYSCALL_SPAWN_STD` instead.
+///
+/// `envp_vmo_handle` (arg2) and `file_actions_vmo_handle` (arg3)
+/// follow the same layout as in `sys_spawn_std`.  Pass `0` for
+/// either to skip the corresponding phase.
 pub fn sys_spawn(
     table: &HandleTable,
     binary_vmo_handle: u32,
     argv_vmo_handle: u32,
+    envp_vmo_handle: u32,
+    file_actions_vmo_handle: u32,
 ) -> Result<u64> {
     if binary_vmo_handle == 0 {
         return Err(Status::InvalidArgs);
@@ -371,17 +380,63 @@ pub fn sys_spawn(
         }
     }
 
+    // 2b. Parse envp from VMO (S13.1).  Same encoding as argv.
+    let mut env_bufs = [[0u8; 256]; EXECVE_MAX_ARGS];
+    let mut env_lens = [0usize; EXECVE_MAX_ARGS];
+    let mut envp_count = 0;
+    let mut envp_vmo_buf = [0u8; 4096];
+
+    if envp_vmo_handle != 0 {
+        let envp_vmo_hv = HandleValue::new(envp_vmo_handle);
+        let read_bytes = table.with_vmo(envp_vmo_hv, Rights::READ.bits(), |vmo| {
+            let len = core::cmp::min(vmo.size(), envp_vmo_buf.len());
+            vmo.read(0, &mut envp_vmo_buf[..len]).unwrap_or(0)
+        })?;
+
+        if read_bytes >= 4 {
+            let envc = u32::from_le_bytes([
+                envp_vmo_buf[0], envp_vmo_buf[1], envp_vmo_buf[2], envp_vmo_buf[3],
+            ]) as usize;
+            let mut offset = 4;
+            let count = core::cmp::min(envc, EXECVE_MAX_ARGS);
+            for i in 0..count {
+                if offset + 4 > read_bytes {
+                    break;
+                }
+                let len = u32::from_le_bytes([
+                    envp_vmo_buf[offset],
+                    envp_vmo_buf[offset + 1],
+                    envp_vmo_buf[offset + 2],
+                    envp_vmo_buf[offset + 3],
+                ]) as usize;
+                offset += 4;
+                if offset + len > read_bytes || len > 256 {
+                    return Err(Status::InvalidArgs);
+                }
+                if len > 0 {
+                    env_bufs[i][..len].copy_from_slice(&envp_vmo_buf[offset..offset + len]);
+                    env_lens[i] = len;
+                }
+                offset += len;
+                envp_count += 1;
+            }
+        }
+    }
+
     // 3. Launch the user program using the standard mechanism
     let caller_pid = current_process_id()?;
     let bytes_slice = unsafe { &LOAD_BINARY_SCRATCH[..copied_into_scratch] };
     let name_static = "user-spawn";
 
-    let pid = crate::task::process::Process::launch_user_program_with_argv(
+    let pid = crate::task::process::Process::launch_user_program_with_argv_and_envp(
         name_static,
         bytes_slice,
         &arg_bufs[..argv_count],
         &arg_lens[..argv_count],
         argv_count,
+        &env_bufs[..envp_count],
+        &env_lens[..envp_count],
+        envp_count,
         caller_pid,
     )?;
 
@@ -428,7 +483,18 @@ pub fn sys_spawn_std(
     file_actions_vmo_handle: u32,
 ) -> Result<u64> {
     // 1. Run the same path as `sys_spawn` to get a fresh pid.
-    let pid = sys_spawn(table, binary_vmo_handle, argv_vmo_handle)?;
+    //    Pass `0` for envp + file_actions because `sys_spawn_std`
+    //    applies those AFTER `sys_spawn` returns — re-applying
+    //    them here would either double-apply or be ignored,
+    //    depending on the kernel's path.  `sys_spawn_std` is
+    //    the canonical entry point for `posix_spawn(3)`.
+    let pid = sys_spawn(
+        table,
+        binary_vmo_handle,
+        argv_vmo_handle,
+        0, // envp: applied by sys_spawn_std after
+        0, // file_actions: applied by sys_spawn_std after
+    )?;
 
     // 2. Pull the three handle numbers out of the std-fds vmo.
     //    Layout: 12 bytes — three little-endian u32 channel

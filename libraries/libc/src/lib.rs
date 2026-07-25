@@ -199,6 +199,42 @@ pub unsafe extern "C" fn _hnx_user_entry() -> ! {
         __HNX_ARGC = 0;
     }
 
+    // S13.1: read the envp the kernel materialised.  The kernel
+    // places envc in x2 and a pointer to envp[0] in x3; we use
+    // the same x0/x1/x2/x3 latching scheme as the argv path
+    // above so a missing envp (e.g. legacy `SYSCALL_EXEC`) just
+    // sees envc=0.
+    #[cfg(target_arch = "aarch64")]
+    let (envc_raw, envp_raw): (i64, *const *const u8) = {
+        let e: i64;
+        let p: *const *const u8;
+        core::arch::asm!(
+            "mov {0}, x2",
+            "mov {1}, x3",
+            out(reg) e,
+            out(reg) p,
+            options(nomem, preserves_flags),
+        );
+        (e, p)
+    };
+    #[cfg(target_arch = "riscv64")]
+    let (envc_raw, envp_raw): (i64, *const *const u8) = {
+        let e: i64;
+        let p: *const *const u8;
+        core::arch::asm!(
+            "mv {0}, a2",
+            "mv {1}, a3",
+            out(reg) e,
+            out(reg) p,
+            options(nomem, preserves_flags),
+        );
+        (e, p)
+    };
+    let envc = envc_raw.max(0) as usize;
+    if envc > 0 && !envp_raw.is_null() {
+        env::import_envp(envc, envp_raw);
+    }
+
     // S1: seed the environment with a sensible default so `bash`
     // (and `osh`) start with $PATH / $HOME / $USER already set.
     env::env_init();

@@ -71,6 +71,52 @@ fn env_rebuild_pointers() {
     }
 }
 
+/// S13.1: import a kernel-passed `envp` array into the static
+/// `ENV_TABLE`.  Each `envp[i]` is a NUL-terminated `KEY=VALUE`
+/// string.  Existing slots are preserved — duplicates are
+/// overwritten, new keys take the first free slot.  Called by
+/// `_hnx_user_entry` from the trampoline before the default
+/// `env_init` seeds its hard-coded PATH/HOME/etc.  This way the
+/// user sees the spawner's env first, with our defaults
+/// filling in anything the spawner didn't set.
+pub unsafe fn import_envp(envc: usize, envp: *const *const u8) {
+    if envc == 0 || envp.is_null() {
+        return;
+    }
+    for i in 0..envc {
+        let entry = *envp.add(i);
+        if entry.is_null() {
+            continue;
+        }
+        // Each entry is "KEY=VALUE\0"; split at the first '=' so
+        // `setenv_bytes` can store it.  The key/value split
+        // intentionally lives here rather than in the kernel
+        // because the kernel only materialised the raw string.
+        let mut kvbuf = [0u8; ENV_KV_BYTES];
+        let mut kvlen = 0usize;
+        while kvlen < kvbuf.len() {
+            let b = *entry.add(kvlen);
+            if b == 0 {
+                break;
+            }
+            kvbuf[kvlen] = b;
+            kvlen += 1;
+        }
+        if kvlen == 0 || kvlen >= kvbuf.len() {
+            continue;
+        }
+        // Find '=' separator.
+        let mut eq = 0usize;
+        while eq < kvlen && kvbuf[eq] != b'=' {
+            eq += 1;
+        }
+        if eq == 0 || eq >= kvlen {
+            continue; // malformed entry: no '='
+        }
+        let _ = setenv_bytes(&kvbuf[..eq], &kvbuf[eq + 1..kvlen]);
+    }
+}
+
 fn slot_key_eq<'a>(slot: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
     if slot.is_empty() {
         return None;

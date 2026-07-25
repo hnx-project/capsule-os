@@ -41,7 +41,7 @@ CapsuleOS spawning is **not** based on the classic UNIX `fork()` — a fresh cap
 
 ### Args / std-fds VMO layout (kernel-visible)
 * **argv VMO**: `[u32 argc][u32 strlen][bytes]` for each argv entry.  Capped at 16 entries / 256 bytes each to match the kernel's `EXECVE_MAX_ARGS`.  argv[0] is always the program name.
-* **envp VMO**: same encoding as argv but holds the environment strings.  In 1.0 the kernel parses but does not yet materialise envp onto the child user stack — S13 closes that gap.
+* **envp VMO**: same encoding as argv but holds the environment strings.  The kernel materialises envp onto the child user stack just below argv, with x2=envc and x3=envp_ptr passed through the trampoline so `getenv(3)` sees the forwarded values once the child boots.
 * **std-fds VMO**: `[u32 stdin][u32 stdout][u32 stderr]` — three little-endian channel handles packed in 12 bytes.
 * **file-actions VMO**: `[u32 count][u32 op][u32 arg0][u32 arg1]…` per entry; op is `1` = close, `2` = dup2.  See `libcapsule::posix_spawn/API.md` for the full state of the 1.0 subset.
 
@@ -49,4 +49,4 @@ CapsuleOS spawning is **not** based on the classic UNIX `fork()` — a fresh cap
 
 * argv / envp forwarders accept at most 16 entries × 256 bytes each, matching the kernel.  Pass `&[]` when no extra argv / envp slots are needed.
 * The wrapper does **not** clone the parent's handle table into the child. The child starts with the default empty handle table; any handles it needs must be re-acquired after spawn via the loader's startup handshake.
-* envp VMO is consumed at the syscall boundary but not yet mapped onto the child's user stack — `getenv(3)` returns NULL for envp entries the caller forwarded in 1.0.
+* envp is materialised onto the child user stack by the kernel and exposed through `__HNX_ENVC` / `__HNX_ENVP_PTRS` / `__HNX_ENVP_LENS` (read by the libc trampoline; see `hnx_envp()`).  Default `PATH`/`HOME`/`USER`/etc. are filled in by `env_init()` if the spawner didn't pass them.
