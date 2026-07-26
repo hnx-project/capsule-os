@@ -6,6 +6,10 @@ use libcapsule::fd;
 pub mod posix_stub;
 pub mod syscalls;
 pub mod env;
+pub mod strings;
+pub mod ctype;
+pub mod strings_extra;
+pub mod posix_gnu;
 pub use posix_stub::*;
 pub use env::*;
 pub use shared::status::Status;
@@ -38,17 +42,20 @@ extern "Rust" {
 
 /// Number of argv slots populated by the kernel entry trampoline.  Zero on
 /// the legacy `SYSCALL_EXEC` path (no argv materialised).
+///
+/// Lives in BSS — CapsuleOS's ohlink-linker now (since L3) emits an
+/// explicit OHLK `Bss` segment for any PT_LOAD with `p_filesz == 0`
+/// and `p_memsz > 0`, so the runtime allocates and zeroes the page.
 #[no_mangle]
 pub static mut __HNX_ARGC: i32 = 0;
-/// Per-argument pointer (parallel to `__HNX_ARGV_LENS`).  Pre-filled with
-/// non-zero sentinel values so the linker keeps these symbols in the
-/// data segment of the OHLK image — CapsuleOS's ohlink-linker currently
-/// drops PT_LOAD segments whose `p_filesz == 0`, so a zero-init `static
-/// mut` would land in unmapped memory and corrupt the process at entry.
+/// Per-argument pointer (parallel to `__HNX_ARGV_LENS`).  Lives in BSS;
+/// the kernel entry trampoline (`_hnx_user_entry` in `lib.rs`) fills
+/// in individual slots at process start before user code runs.
 #[no_mangle]
-pub static mut __HNX_ARGV_PTRS: [*const u8; 16] = [0xDEAD_BEEF as *const u8; 16];
+pub static mut __HNX_ARGV_PTRS: [*const u8; 16] =
+    [core::ptr::null() as *const u8; 16];
 #[no_mangle]
-pub static mut __HNX_ARGV_LENS: [usize; 16] = [0xFFFF_FFFF_FFFF_FFFFusize; 16];
+pub static mut __HNX_ARGV_LENS: [usize; 16] = [0usize; 16];
 
 pub fn hnx_argc() -> i32 {
     unsafe { __HNX_ARGC }
@@ -1343,16 +1350,25 @@ pub extern "C" fn getpgid(_pid: i32) -> i32 { getpid() }
 /// POSIX `setpgid()` — fake success so shells run.
 #[no_mangle]
 pub extern "C" fn setpgid(_pid: i32, _pgrp: i32) -> i32 { 0 }
-/// POSIX `umask()` — process file-creation mask.  Stored in an
-/// `AtomicU32` so the C-ABI stub doesn't have to touch
-/// `static mut` (which would trip the 2024-edition lint).
-use core::sync::atomic::{AtomicU32, Ordering};
+/// POSIX `umask()` — process file-creation mask.
+///
+/// CapsuleOS is single-tenant; the umask has no real observable
+/// effect (the fileagent enforces no permissions checks in
+/// 1.0).  We accept the call, store the value in a plain
+/// `static mut` so future permission work can read it, and
+/// return the previous value.
 #[no_mangle]
-pub static __umask_atomic: AtomicU32 = AtomicU32::new(0o022);
+pub static mut __HNX_UMASK: u32 = 0o022;
 #[no_mangle]
 pub extern "C" fn umask(new_mask: u32) -> u32 {
+    // SAFETY: single-threaded EL0; cross-thread concurrent umask
+    // calls are undefined behaviour on glibc too.
     let normalised = new_mask & 0o7777;
-    __umask_atomic.swap(normalised, Ordering::AcqRel)
+    unsafe {
+        let prev = __HNX_UMASK;
+        __HNX_UMASK = normalised;
+        prev
+    }
 }
 /// POSIX `ttyname(fd)` — bash uses this to set `$TTY`.  We
 /// return a stable static string for fd 0/1/2; otherwise NULL.
