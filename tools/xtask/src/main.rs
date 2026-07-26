@@ -13,7 +13,7 @@ mod version;
 
 use clap::Parser;
 use cli::{Cli, CodeSubcommands, Commands};
-use config::Config;
+use config::Resolved;
 use platform::Platform;
 
 fn main() {
@@ -26,14 +26,6 @@ fn main() {
     }
 
     let cli = Cli::parse();
-
-    let config = match Config::load() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Configuration load failed: {}", e);
-            std::process::exit(1);
-        }
-    };
 
     match &cli.command {
         Commands::Clean => {
@@ -56,65 +48,93 @@ fn main() {
                     }
                 }
             }
-            CodeSubcommands::Build { arch, platform } => {
-                let plat = match Platform::from_config(arch, platform, &config) {
+            CodeSubcommands::Build { arch, platform, config } => {
+                let resolved = match Resolved::load(platform, config.as_deref()) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("Configuration load failed: {}", e);
+                        std::process::exit(1);
+                    }
+                };
+                let plat = match Platform::from_configs(arch, platform, &resolved.build, &resolved.runtime) {
                     Some(p) => p,
                     None => {
                         eprintln!("Unsupported architecture/platform: {}/{}", arch, platform);
                         std::process::exit(1);
                     }
                 };
-                if let Err(e) = build::build(&config, &plat, true) {
+                if let Err(e) = build::build(&resolved, &plat, true) {
                     eprintln!("Build failed: {}", e);
                     std::process::exit(1);
                 }
             }
-            CodeSubcommands::Run {
-                arch,
-                platform,
-                gdb,
-            } => {
-                let plat = match Platform::from_config(arch, platform, &config) {
+            CodeSubcommands::Run { arch, platform, config, gdb } => {
+                let resolved = match Resolved::load(platform, config.as_deref()) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("Configuration load failed: {}", e);
+                        std::process::exit(1);
+                    }
+                };
+                let plat = match Platform::from_configs(arch, platform, &resolved.build, &resolved.runtime) {
                     Some(p) => p,
                     None => {
                         eprintln!("Unsupported architecture/platform: {}/{}", arch, platform);
                         std::process::exit(1);
                     }
                 };
-                if let Err(e) = build::build(&config, &plat, false) {
+                if let Err(e) = build::build(&resolved, &plat, false) {
                     eprintln!("Build failed: {}", e);
                     std::process::exit(1);
                 }
-                if let Err(e) = run::run(&config, &plat, *gdb) {
+                if let Err(e) = run::run(&resolved, &plat, *gdb) {
                     eprintln!("Run failed: {}", e);
                     std::process::exit(1);
                 }
             }
             CodeSubcommands::CheckVersion { sync } => {
-                if let Err(e) = version::check_version(*sync, &config) {
+                // CheckVersion only reads root metadata.
+                let resolved = match Resolved::load("virt", None) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("Configuration load failed: {}", e);
+                        std::process::exit(1);
+                    }
+                };
+                if let Err(e) = version::check_version(*sync, &resolved.root) {
                     eprintln!("{}", e);
                     std::process::exit(1);
                 }
             }
             CodeSubcommands::Doc { open } => {
-                if let Err(e) = doc::generate_doc(*open, &config) {
+                let resolved = match Resolved::load("virt", None) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("Configuration load failed: {}", e);
+                        std::process::exit(1);
+                    }
+                };
+                if let Err(e) = doc::generate_doc(*open, &resolved.root) {
                     eprintln!("Document generation failed: {}", e);
                     std::process::exit(1);
                 }
             }
-            CodeSubcommands::Test {
-                arch,
-                platform,
-                timeout,
-            } => {
-                let plat = match Platform::from_config(arch, platform, &config) {
+            CodeSubcommands::Test { arch, platform, config, timeout } => {
+                let resolved = match Resolved::load(platform, config.as_deref()) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("Configuration load failed: {}", e);
+                        std::process::exit(1);
+                    }
+                };
+                let plat = match Platform::from_configs(arch, platform, &resolved.build, &resolved.runtime) {
                     Some(p) => p,
                     None => {
                         eprintln!("Unsupported architecture/platform: {}/{}", arch, platform);
                         std::process::exit(1);
                     }
                 };
-                if let Err(e) = test::test(&config, &plat, *timeout) {
+                if let Err(e) = test::test(&resolved, &plat, *timeout) {
                     eprintln!("Test failed: {}", e);
                     std::process::exit(1);
                 }

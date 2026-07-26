@@ -1,18 +1,34 @@
 # CapsuleOS xtask Unified Configuration File
+#
+# This file holds ONLY cross-cutting metadata:
+#   - project name / version / codename / target dir
+#   - upstream remotes (gitcode)
+#   - foreign subtree remotes (kernel / bootloader / posix)
+#   - toolchain bootstrap (host-side cargo build of ohlink-toolchain)
+#   - toolchain linker (ohlink-linker package for OHLK packing)
+#   - distribution image name template
+#
+# Architecture / platform / build addresses live in `xtask.build.toml`.
+# QEMU-only run arguments live in `xtask.qemu.toml`.
+# Raspberry Pi run helpers live in `xtask.rpi.toml`.
+#
+# Any of those runtime-config files can be overridden with
+# `xtask code <cmd> --config <path>.toml`.
 
 [project]
 name = "capsuleOS"
 codename = "Pangu"
 version = "1.0.0-beta4"      # Overrides Cargo.toml version if present
-target_dir = "build/target" # Target folder for compilation output
+target_dir = "build/target"  # Target folder for compilation output
 
 [gitcode]
 upstream_owner = "hnx-project"
 upstream_repo = "capsule-os"
 
 [submodules]
-"kernel" = { upstream = "git@gitcode.com:hnx-project/hnx-core.git", fork_repo = "hnx-core" }
+"kernel"     = { upstream = "git@gitcode.com:hnx-project/hnx-core.git",          fork_repo = "hnx-core" }
 "bootloader" = { upstream = "git@gitcode.com:hnx-project/capsule-bootloader.git", fork_repo = "bootloader" }
+"bash"       = { upstream = "git@gitcode.com:hnx-project/capsule-bash.git",       fork_repo = "bash" }
 
 [toolchain]
 bootstrap = [
@@ -20,101 +36,6 @@ bootstrap = [
 ]
 linker = { path = "tools/ohlink-toolchain/Cargo.toml", package = "ohlink-linker" }
 
-[platform.aarch64.profiles.virt]
-rust_target = "aarch64-unknown-none"
-userspace_target = "libraries/targets/aarch64-unknown-capsule.json"
-kernel_entry = "1074266112"
-ld_emulation = "aarch64elf"
-linker_script = "kernel/linker/kernel_aarch64.ld"
-dtb_addr = "0x42000000"
-ohc_addr = "0x40700000"
-boot_addr = "0x44000000"
-rootfs_addr = "0x46000000"
-
-[platform.aarch64.profiles.virt.qemu]
-bin = "qemu-system-aarch64"
-smp = 4
-args = [
-    "-M", "virt,secure=off",
-    "-cpu", "cortex-a72",
-    "-smp", "{smp}",
-    "-m", "512M",
-    "-nographic",
-    "-device", "loader,file={bootloader_bin},addr={boot_addr},cpu-num=0,force-raw=on",
-    "-device", "loader,file={kernel_bin},addr={ohc_addr},force-raw=on",
-    "-device", "loader,file={qemu_dtb},addr={dtb_addr},force-raw=on",
-    "-device", "loader,file={rootfs_img},addr={rootfs_addr},force-raw=on",
-    "-drive", "if=none,format=raw,id=hd0,file=disk.img",
-    "-device", "virtio-blk-device,drive=hd0",
-    "-semihosting"
-]
-dtb_dump_args = [
-    "-M", "virt,secure=off",
-    "-cpu", "cortex-a72",
-    "-smp", "{smp}",
-    "-m", "512M",
-    "-machine", "dumpdtb=/tmp/qemu_raw.dtb",
-    "-display", "none"
-]
-
-[platform.aarch64.profiles.rpi]
-rust_target = "aarch64-unknown-none"
-userspace_target = "libraries/targets/aarch64-unknown-capsule.json"
-kernel_entry = "1074266112"
-ld_emulation = "aarch64elf"
-linker_script = "kernel/linker/kernel_aarch64.ld"
-dtb_addr = "0x42000000"
-ohc_addr = "0x44010000"
-boot_addr = "0x44000000"
-rootfs_addr = "0x46000000"
-
-[[subprojects]]
-name = "userspace-apps"
-type = "userspace"
-crates = [
-    { crate_name = "hnx-devmgr", out_name = "devmgr", entry = "65536" },
-    { crate_name = "hnx-blkdev", out_name = "blkdev", entry = "65536" },
-    { crate_name = "hnx-fileagent", out_name = "fileagent", entry = "65536" },
-    { crate_name = "hnx-loader", out_name = "loader", entry = "65536" },
-    { crate_name = "hnx-procmgr", out_name = "procmgr", entry = "65536" },
-    { crate_name = "hnx-tty", out_name = "tty", entry = "65536" },
-    { crate_name = "hnx-initd", out_name = "initd", entry = "65536" },
-    { crate_name = "hnx-netd", out_name = "netd", entry = "65536" },
-    { crate_name = "hnx-osh", out_name = "osh", entry = "65536" },
-    { crate_name = "hnx-ls", out_name = "ls", entry = "65536" },
-    { crate_name = "hnx-cat", out_name = "cat", entry = "65536" },
-    { crate_name = "hnx-mkdir", out_name = "mkdir", entry = "65536" },
-    { crate_name = "hnx-touch", out_name = "touch", entry = "65536" },
-    { crate_name = "hnx-rm", out_name = "rm", entry = "65536" },
-    { crate_name = "hnx-rmdir", out_name = "rmdir", entry = "65536" },
-    { crate_name = "hnx-ps", out_name = "ps", entry = "65536" },
-    { crate_name = "hnx-kill", out_name = "kill", entry = "65536" },
-    { crate_name = "hnx-testall", out_name = "testall", entry = "65536" }
-]
-staging_bin_dir = "build/dist/staging_rootfs/system/bin"
-rootfs_output = "kernel/files/rootfs.img"
-etc_source = "kernel/files/etc"
-etc_target = "build/dist/staging_rootfs/etc"
-
-[[subprojects]]
-name = "kernel"
-type = "kernel"
-path = "kernel"
-package = "kernel"
-link_output = "build/dist/kernel/kernel.elf"
-raw_output = "build/dist/kernel/kernel.raw"
-ohc_output = "build/dist/kernel/hnxcore"
-
-[[subprojects]]
-name = "bootloader"
-type = "bootloader"
-package = "capsule-bootloader"
-bin_output = "build/target/{rust_target}/release/capsule-bootloader.bin"
-
 [distribution]
 output_dir = "build/dist/distribution"
 image_name_template = "{project_name}-{codename}-{version}-{arch}-{date}.img"
-stages = [
-    { input = "build/target/{rust_target}/release/capsule-bootloader.bin", pad_to = 131072 },
-    { input = "build/dist/kernel/hnxcore" }
-]

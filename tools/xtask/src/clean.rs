@@ -16,6 +16,7 @@ pub fn clean() -> Result<(), String> {
     // 2. Remove custom directories
     let dirs = [
         "build/dist",
+        "build/cache",       // foreign-build cached outputs (bash, future autotools)
         "kernel/files",
         "tools/ohlink-toolchain/target",
     ];

@@ -124,7 +124,7 @@ fn copy_dir_to_fat32_recursive<'a, 'b>(
     Ok(())
 }
 
-use crate::config::{Config, Subproject, UserCrate};
+use crate::config::{Resolved, Subproject, UserCrate};
 use crate::output::run_silent;
 use crate::platform::Platform;
 use crate::toolchain::{find_objcopy, find_rust_lld};
@@ -148,22 +148,32 @@ fn generate_c_bindings() -> Result<(), String> {
     Ok(())
 }
 
-pub fn build(config: &Config, plat: &Platform, generate_dist: bool) -> Result<(), String> {
+pub fn build(resolved: &Resolved, plat: &Platform, generate_dist: bool) -> Result<(), String> {
     println!(
         "{}    Building{} {} Ecosystem ({})",
-        BOLD_CYAN, RESET, config.project.name, plat.arch
+        BOLD_CYAN, RESET, resolved.root.project.name, plat.arch
     );
 
     // Generate C bindings first
     generate_c_bindings()?;
 
-    let v = get_parsed_version(config);
+    let v = get_parsed_version(&resolved.root);
 
     // Bootstrap toolchain items
-    bootstrap_ohlink_tools(config)?;
+    bootstrap_ohlink_tools(&resolved.root)?;
 
-    // Iterate over configured subprojects and execute their actions
-    for sub in &config.subprojects {
+    // Iterate over configured subprojects and execute their actions.
+    // `enable = false` skips the subproject without erroring so users
+    // can opt out of slow components (e.g. autotools foreign builds)
+    // without editing the config file.
+    for sub in &resolved.build.subprojects {
+        if !sub.enable {
+            println!(
+                "{}  Skipping{} {} (enable=false)",
+                BOLD_CYAN, RESET, sub.name
+            );
+            continue;
+        }
         match sub.subproject_type.as_str() {
             "userspace" => {
                 if let Some(crates) = &sub.crates {
@@ -180,11 +190,23 @@ pub fn build(config: &Config, plat: &Platform, generate_dist: bool) -> Result<()
                 build_kernel(sub, plat, &v)?;
                 link_kernel(sub, plat)?;
                 extract_kernel_raw(sub)?;
-                pack_kernel_ohc(config, sub, plat)?;
+                pack_kernel_ohc(&resolved.root, sub, plat)?;
             }
             "bootloader" => {
                 build_bootloader(sub, plat, &v)?;
                 extract_bootloader_bin(sub, plat)?;
+            }
+            "foreign" => {
+                // Foreign-build arm: autotools / cmake / gnu-make
+                // subprojects run an external configure + build step,
+                // then OHLK-pack the resulting ELF.  The implementation
+                // lands in a follow-up release; today we just skip so
+                // a `enable = true` slot doesn't silently break the
+                // build.
+                println!(
+                    "{}  Foreign{} {} skipped (xtask foreign-build arm not yet implemented)",
+                    BOLD_CYAN, RESET, sub.name
+                );
             }
             _ => {
                 return Err(format!("Unknown subproject type: {}", sub.subproject_type));
@@ -192,32 +214,29 @@ pub fn build(config: &Config, plat: &Platform, generate_dist: bool) -> Result<()
         }
     }
 
-    print_build_summary(config, plat);
+    print_build_summary(&resolved.build, plat);
 
     // Generate the QEMU DTB now (rather than only at `run` time) so
     // that any tool that depends on `build/dist/qemu.dtb` can rely
     // on it being up-to-date after a build.
-    match crate::platform::Platform::from_config(&plat.arch, "virt", config) {
-        Some(virt) if virt.qemu_smp > 0 => {
-            if let Err(e) = crate::run::generate_qemu_dtb_artifact_paths(config, plat) {
-                eprintln!("warning: QEMU DTB regeneration failed: {}", e);
-            }
+    if plat.profile == "virt" && plat.qemu_smp > 0 {
+        if let Err(e) = crate::run::generate_qemu_dtb_artifact_paths(resolved, plat) {
+            eprintln!("warning: QEMU DTB regeneration failed: {}", e);
         }
-        _ => {}
     }
 
     if generate_dist {
-        generate_dist_image(config, plat, &v)?;
+        generate_dist_image(&resolved.root, plat, &v)?;
     }
 
     println!(
         "\n{}     Success{} {} built successfully!\n",
-        BOLD_GREEN, RESET, config.project.name
+        BOLD_GREEN, RESET, resolved.root.project.name
     );
     Ok(())
 }
 
-fn bootstrap_ohlink_tools(config: &Config) -> Result<(), String> {
+fn bootstrap_ohlink_tools(config: &crate::config::RootConfig) -> Result<(), String> {
     for tool in &config.toolchain.bootstrap {
         print!(
             "{}  Bootstrapping{} {} (Host)...",
@@ -462,7 +481,7 @@ fn extract_kernel_raw(sub: &Subproject) -> Result<(), String> {
     }
 }
 
-fn pack_kernel_ohc(config: &Config, sub: &Subproject, plat: &Platform) -> Result<(), String> {
+fn pack_kernel_ohc(config: &crate::config::RootConfig, sub: &Subproject, plat: &Platform) -> Result<(), String> {
     let raw_output = sub
         .raw_output
         .as_ref()
@@ -573,7 +592,7 @@ fn extract_bootloader_bin(sub: &Subproject, plat: &Platform) -> Result<(), Strin
     }
 }
 
-fn print_build_summary(config: &Config, plat: &Platform) {
+fn print_build_summary(build: &crate::config::BuildConfig, plat: &Platform) {
     let print_size = |label: &str, path: &str| {
         if let Ok(meta) = std::fs::metadata(path) {
             let size_kb = meta.len() as f64 / 1024.0;
@@ -582,7 +601,7 @@ fn print_build_summary(config: &Config, plat: &Platform) {
     };
 
     // Print size for any kernel/bootloader/userspace outputs we find
-    for sub in &config.subprojects {
+    for sub in &build.subprojects {
         match sub.subproject_type.as_str() {
             "kernel" => {
                 if let Some(Some(ohc_out)) = &sub.ohc_output {
@@ -605,7 +624,7 @@ fn print_build_summary(config: &Config, plat: &Platform) {
     }
 }
 
-fn generate_dist_image(config: &Config, plat: &Platform, v: &ParsedVersion) -> Result<(), String> {
+fn generate_dist_image(config: &crate::config::RootConfig, plat: &Platform, v: &ParsedVersion) -> Result<(), String> {
     if plat.profile == "rpi" {
         // Step 1: Create build output directory and dynamic firmware cache
         std::fs::create_dir_all(&config.distribution.output_dir)
@@ -935,7 +954,7 @@ impl ParsedVersion {
     }
 }
 
-pub fn get_parsed_version(config: &Config) -> ParsedVersion {
+pub fn get_parsed_version(config: &crate::config::RootConfig) -> ParsedVersion {
     let os_name = config.project.name.clone();
     let codename = config.project.codename.clone();
 

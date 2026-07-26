@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::RootConfig;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Command;
 use std::thread;
 
-pub fn generate_doc(open: bool, _config: &Config) -> Result<(), String> {
+pub fn generate_doc(open: bool, _config: &RootConfig) -> Result<(), String> {
     println!("\x1b[1;36m🏗️  Generating CapsuleOS Unified API Documentation...\x1b[0m");
 
     // 1. Clean and initialize build/dist/docs directory

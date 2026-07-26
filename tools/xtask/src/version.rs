@@ -1,8 +1,8 @@
-use crate::config::Config;
+use crate::config::RootConfig;
 use std::fs;
 use std::path::Path;
 
-pub fn check_version(sync: bool, config: &Config) -> Result<(), String> {
+pub fn check_version(sync: bool, config: &RootConfig) -> Result<(), String> {
     let xtask_version = &config.project.version;
     println!(
         "🔍 [Version Check] xtask.toml configured version: \x1b[1;36m{}\x1b[0m",

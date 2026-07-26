@@ -14,7 +14,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::config::Config;
+use crate::config::Resolved;
 use crate::platform::Platform;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 90;
@@ -27,10 +27,10 @@ pub struct TestReport {
     pub log_tail: Vec<String>,
 }
 
-pub fn test(config: &Config, plat: &Platform, timeout_secs: u64) -> Result<(), String> {
+pub fn test(resolved: &Resolved, plat: &Platform, timeout_secs: u64) -> Result<(), String> {
     // Make sure everything is built; the user typically does this
     // out of band, but doing it from `test` keeps the door closed.
-    if let Err(e) = crate::build::build(config, plat, false) {
+    if let Err(e) = crate::build::build(resolved, plat, false) {
         return Err(format!("prebuild failed: {}", e));
     }
 
@@ -255,7 +255,7 @@ pub fn default_timeout() -> u64 {
 // any field from it yet — future S0.2 (version matrix checks, etc.)
 // will.
 #[allow(dead_code)]
-fn _force_config_link(_: &Config) {}
+fn _force_config_link(_: &crate::config::RootConfig) {}
 
 #[cfg(test)]
 mod tests {

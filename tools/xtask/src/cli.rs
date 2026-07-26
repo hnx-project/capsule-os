@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(name = "xtask")]
@@ -35,6 +36,11 @@ pub enum CodeSubcommands {
             help = "The target platform profile (virt, rpi)"
         )]
         platform: String,
+        #[arg(
+            long,
+            help = "Override runtime-config path (default: xtask.{platform}.toml)"
+        )]
+        config: Option<PathBuf>,
     },
     #[command(about = "Compile all architectures and launch CapsuleOS inside QEMU emulator")]
     Run {
@@ -50,6 +56,11 @@ pub enum CodeSubcommands {
             help = "The target platform profile (virt, rpi)"
         )]
         platform: String,
+        #[arg(
+            long,
+            help = "Override runtime-config path (default: xtask.{platform}.toml)"
+        )]
+        config: Option<PathBuf>,
         #[arg(
             long,
             help = "Start QEMU in suspended state, listening on TCP port 1234 for GDB connection"
@@ -95,6 +106,11 @@ pub enum CodeSubcommands {
             help = "The target platform profile (virt, rpi)"
         )]
         platform: String,
+        #[arg(
+            long,
+            help = "Override runtime-config path (default: xtask.{platform}.toml)"
+        )]
+        config: Option<PathBuf>,
         #[arg(
             long,
             default_value_t = 90,

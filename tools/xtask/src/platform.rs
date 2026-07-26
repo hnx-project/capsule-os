@@ -1,3 +1,12 @@
+//! `Platform` is the composed view used by `build` / `run` / `test`.
+//!
+//! It pulls build addresses from `xtask.build.toml` and runtime args
+//! from whichever `xtask.<platform>.toml` the user picked.  Fields
+//! the active command doesn't need are `None` (e.g. RPI build has no
+//! `qemu_*` fields).
+
+use crate::config::{BuildConfig, RuntimeConfig};
+
 pub struct Platform {
     pub arch: String,
     pub profile: String,
@@ -10,22 +19,36 @@ pub struct Platform {
     pub ohc_addr: String,
     pub boot_addr: String,
     pub rootfs_addr: String,
+
+    // QEMU run args (present iff the runtime-config had a [qemu] block).
     pub qemu_bin: String,
     pub qemu_args: Vec<String>,
     pub qemu_dtb_dump_args: Vec<String>,
-    /// Effective guest CPU count (also seeded into `dumpdtb`).
-    /// `0` means "not a qemu profile" or "default to 1".
     pub qemu_smp: u32,
 }
 
 impl Platform {
-    pub fn from_config(
+    /// Build a `Platform` view from a build profile + (optionally) a
+    /// matching runtime profile.  When the runtime profile has no
+    /// QEMU block (e.g. `xtask.rpi.toml`) the qemu_* fields stay at
+    /// their defaults and `run::run` should never try to launch QEMU.
+    pub fn from_configs(
         arch: &str,
         profile_name: &str,
-        config: &crate::config::Config,
+        build: &BuildConfig,
+        runtime: &RuntimeConfig,
     ) -> Option<Self> {
-        let arch_cfg = config.platform.get(arch)?;
+        let arch_cfg = build.platform.get(arch)?;
         let p_cfg = arch_cfg.profiles.get(profile_name)?;
+
+        let (qemu_bin, qemu_args, qemu_dtb_dump_args, qemu_smp) = runtime
+            .platform
+            .get(arch)
+            .and_then(|a| a.profiles.get(profile_name))
+            .and_then(|p| p.qemu.as_ref())
+            .map(|q| (q.bin.clone(), q.args.clone(), q.dtb_dump_args.clone(), q.smp))
+            .unwrap_or_else(|| (String::new(), Vec::new(), Vec::new(), 1));
+
         Some(Platform {
             arch: arch.to_string(),
             profile: profile_name.to_string(),
@@ -38,22 +61,10 @@ impl Platform {
             ohc_addr: p_cfg.ohc_addr.clone(),
             boot_addr: p_cfg.boot_addr.clone(),
             rootfs_addr: p_cfg.rootfs_addr.clone(),
-            qemu_bin: p_cfg
-                .qemu
-                .as_ref()
-                .map(|q| q.bin.clone())
-                .unwrap_or_default(),
-            qemu_args: p_cfg
-                .qemu
-                .as_ref()
-                .map(|q| q.args.clone())
-                .unwrap_or_default(),
-            qemu_dtb_dump_args: p_cfg
-                .qemu
-                .as_ref()
-                .map(|q| q.dtb_dump_args.clone())
-                .unwrap_or_default(),
-            qemu_smp: p_cfg.qemu.as_ref().map(|q| q.smp).unwrap_or(1),
+            qemu_bin,
+            qemu_args,
+            qemu_dtb_dump_args,
+            qemu_smp,
         })
     }
 }

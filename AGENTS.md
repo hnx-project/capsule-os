@@ -47,11 +47,38 @@ All projects are integrated using **Git Subtrees** under a single repository str
 │   ├── libstd/            # 🦀 Self-built Rust standard library (Vec, String, Println)
 │   ├── libcapsule/        # 📂 System specialized helper library
 │   └── targets/           # CapsuleOS custom cross-compilation JSON targets
-├── userspace/             # 📂 User-Space Sandbox Ecosystem (services + programs)
-│   └── services/          # Sandboxed system services (devmgr, fileagent) (L3)
-└── tools/                 # 📂 Development Tooling
-    └── ohlink-cc/         # 📂 (Subtree) ohlink-format, rustc_codegen_ohlink, ohlink-linker
+├── userspace/             # 📂 User-Space Sandbox Ecosystem (services + programs + foreign)
+│   ├── services/          # Sandboxed system services (devmgr, fileagent) (L3)
+│   ├── programs/          # Cargo-built EL0 programs (ls, cat, osh, testall)
+│   └── posix/             # 📂 Foreign-build POSIX userland (git subtree)
+│       └── bash/          # 🐚 (Subtree) GNU bash 5.3 stable (autotools; build disabled by default)
+├── tools/                 # 📂 Development Tooling
+│   ├── ohlink-toolchain/  # 📂 (Subtree) ohlink-format, ohlink-linker, ohlink-read
+│   └── xtask/             # 📂 CapsuleOS build orchestrator (Rust)
+├── xtask.toml             # 🛠️ xtask root metadata (project/version/gitcode/toolchain/distribution)
+├── xtask.build.toml       # 🛠️ xtask build config (addresses + [[subprojects]])
+├── xtask.qemu.toml        # 🛠️ xtask QEMU run config (machine/cpu/ram/drives/dtb_dump)
+└── xtask.rpi.toml         # 🛠️ xtask RPI run config (broadcom firmware cache + disk layout)
 ```
+
+The **`libc/` and `libstd/`** crates are top-level OS runtime contract crates — they are **not** EL0 sandbox services. Both are inherited by downstream manifests via `dep.workspace = true` (see `[workspace.dependencies]` in the root `Cargo.toml`).
+
+### 🛠️ xtask Configuration Split
+
+`xtask.toml` is intentionally split into four files so each has a single
+responsibility:
+
+| File | Responsibility | Consumed by |
+|------|----------------|-------------|
+| `xtask.toml` | Root metadata: `name`/`codename`/`version`, `gitcode` remote, `[submodules]`, `[toolchain]`, `[distribution]` template | All commands |
+| `xtask.build.toml` | Per-arch / per-platform build addresses + the `[[subprojects]]` table with `enable` flag | `code build`, `code run`, `code test` |
+| `xtask.qemu.toml` | QEMU-only run args: machine model, CPU, RAM, drives, DTB dump args | `code run --platform virt`, `code test --platform virt` |
+| `xtask.rpi.toml` | RPI run config: Broadcom firmware cache, disk-image stage layout | `code run --platform rpi`, `code build --platform rpi` disk arm |
+
+CLI override: `xtask code <cmd> --config <path>.toml` substitutes the
+runtime-config file picked by `--platform`. Slow subprojects (e.g. bash's
+autotools build) are opted out by setting `enable = false` on their
+`[[subprojects]]` block — no CLI flag needed yet.
 
 The **`libc/` and `libstd/`** crates are top-level OS runtime contract crates — they are **not** EL0 sandbox services. Both are inherited by downstream manifests via `dep.workspace = true` (see `[workspace.dependencies]` in the root `Cargo.toml`).
 

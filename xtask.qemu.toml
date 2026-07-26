@@ -1,0 +1,37 @@
+# xtask QEMU runtime configuration.
+#
+# Consumed ONLY by `xtask code run --platform virt` and
+# `xtask code test --platform virt`.  Build addresses come from
+# `xtask.build.toml`; this file holds what is unique to launching
+# QEMU itself (machine model, CPU, RAM, drive mappings, DTB dump
+# args for the pre-launch device-tree rebuild).
+#
+# Add a new QEMU machine by extending `[platform.<arch>.profiles.<name>.qemu]`
+# or by pointing `xtask code run --config <path>` at an alternative
+# runtime-config file.
+
+[platform.aarch64.profiles.virt.qemu]
+bin = "qemu-system-aarch64"
+smp = 4
+args = [
+    "-M", "virt,secure=off",
+    "-cpu", "cortex-a72",
+    "-smp", "{smp}",
+    "-m", "512M",
+    "-nographic",
+    "-device", "loader,file={bootloader_bin},addr={boot_addr},cpu-num=0,force-raw=on",
+    "-device", "loader,file={kernel_bin},addr={ohc_addr},force-raw=on",
+    "-device", "loader,file={qemu_dtb},addr={dtb_addr},force-raw=on",
+    "-device", "loader,file={rootfs_img},addr={rootfs_addr},force-raw=on",
+    "-drive", "if=none,format=raw,id=hd0,file=disk.img",
+    "-device", "virtio-blk-device,drive=hd0",
+    "-semihosting"
+]
+dtb_dump_args = [
+    "-M", "virt,secure=off",
+    "-cpu", "cortex-a72",
+    "-smp", "{smp}",
+    "-m", "512M",
+    "-machine", "dumpdtb=/tmp/qemu_raw.dtb",
+    "-display", "none"
+]

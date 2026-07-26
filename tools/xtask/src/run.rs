@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use crate::config::Config;
+use crate::config::Resolved;
 use crate::output::run_silent;
 use crate::platform::Platform;
 
@@ -9,15 +9,15 @@ const BOLD_GREEN: &str = "\x1b[1;32m";
 const GRAY: &str = "\x1b[90m";
 const RESET: &str = "\x1b[0m";
 
-pub fn run(config: &Config, plat: &Platform, gdb: bool) -> Result<(), String> {
+pub fn run(resolved: &Resolved, plat: &Platform, gdb: bool) -> Result<(), String> {
     println!(
         "{}    Booting{} Launching {} in QEMU Emulator...",
-        BOLD_BLUE, RESET, config.project.name
+        BOLD_BLUE, RESET, resolved.root.project.name
     );
     let _ = Command::new("killall").arg(&plat.qemu_bin).status();
 
     // 1. Resolve dynamic compiled artifact paths from subprojects configuration
-    let (boot_bin, boot_bin_raw, kern_bin, r_img) = resolve_artifact_paths(config, plat)?;
+    let (boot_bin, boot_bin_raw, kern_bin, r_img) = resolve_artifact_paths(&resolved.build, plat)?;
 
     // 2. Generate Device Tree Blob
     generate_qemu_dtb(plat, &boot_bin, &boot_bin_raw, &kern_bin, &r_img)?;
@@ -28,7 +28,7 @@ pub fn run(config: &Config, plat: &Platform, gdb: bool) -> Result<(), String> {
 }
 
 pub fn resolve_artifact_paths(
-    config: &Config,
+    build: &crate::config::BuildConfig,
     plat: &Platform,
 ) -> Result<(String, String, String, String), String> {
     let mut bootloader_bin = String::new();
@@ -36,7 +36,7 @@ pub fn resolve_artifact_paths(
     let mut kernel_bin = String::new();
     let mut rootfs_img = String::new();
 
-    for sub in &config.subprojects {
+    for sub in &build.subprojects {
         match sub.subproject_type.as_str() {
             "bootloader" => {
                 if let Some(Some(bin_out)) = &sub.bin_output {
@@ -197,12 +197,14 @@ fn render_variables(
 /// `build/dist/qemu.dtb` after a clean build, so that downstream
 /// tooling that depends on the DTB doesn't have to wait for a
 /// separate `xtask code run` step.
-pub fn generate_qemu_dtb_artifact_paths(config: &Config, plat: &Platform) -> Result<(), String> {
-    let (boot_bin, boot_bin_raw, kern_bin, r_img) = resolve_artifact_paths(config, plat)?;
+pub fn generate_qemu_dtb_artifact_paths(resolved: &Resolved, plat: &Platform) -> Result<(), String> {
+    let (boot_bin, boot_bin_raw, kern_bin, r_img) = resolve_artifact_paths(&resolved.build, plat)?;
     // build.rs calls this against the non-"virt" Platform, so we
     // re-resolve a "virt" view to get the actual qemu_* args +
     // SMP value.
-    let virt = crate::platform::Platform::from_config(&plat.arch, "virt", config)
-        .ok_or_else(|| "virt profile missing for dtb generation".to_string())?;
+    let virt = crate::platform::Platform::from_configs(
+        &plat.arch, "virt", &resolved.build, &resolved.runtime,
+    )
+    .ok_or_else(|| "virt profile missing for dtb generation".to_string())?;
     generate_qemu_dtb(&virt, &boot_bin, &boot_bin_raw, &kern_bin, &r_img)
 }
