@@ -1,0 +1,59 @@
+# Build artifacts from `./configure` (autotools)
+/config.h
+/config.h.in~
+/config.log
+/config.status
+/configure.lineno
+/configure.status
+
+# Generated Makefile (output of config.status)
+/Makefile
+
+# Autotools cache
+/autom4te.cache/
+
+# Object files & build outputs
+/*.o
+/*.lo
+/*.la
+/.libs/
+/.deps/
+/.libs/
+/bash
+/bashbug
+/mkbash
+/mksignames
+
+# Libtool
+/*.lai
+/ltmain.sh
+/libtool
+
+# Per-subdirectory build dirs that pop up under lib/ and builtins/
+/lib/.deps/
+/lib/.libs/
+/builtins/.deps/
+/builtins/.libs/
+
+# Readline / malloc / glob / intl subdir builds (autotools recursive)
+/lib/readline/
+/lib/malloc/
+/lib/glob/
+/lib/intl/
+/lib/sh/
+/lib/termcap/
+/lib/tilde/
+
+# Manual / info outputs (regenerated from source by `make`)
+/bash.1
+/bashref.info
+/doc/bash.0
+/doc/bash.html
+/doc/article.ps
+
+# Test artefacts (left over from `make check`)
+/tests/run-*/*.{log,trs}
+
+# Don't ignore README.capsule.md (capsule-specific notes)
+/!README.capsule.md
+/!capsule-configure.sh
