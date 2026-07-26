@@ -15,6 +15,7 @@ mod s6;
 mod s7;
 mod s11;
 mod s12;
+mod s13;
 
 use libcapsule::kprintln;
 
@@ -123,6 +124,9 @@ pub fn main() -> i32 {
 
     // S12: posix_spawn(3) Fuchsia-style process spawn + fork() ENOSYS.
     s12::test_s12_run(&mut t);
+
+    // S13: signal roundtrip + wait4 WNOHANG (Tier C follow-up).
+    s13::test_s13_run(&mut t);
 
     if t.total > 0 {
         kprintln!("{}/{} passed", t.passed, t.total);

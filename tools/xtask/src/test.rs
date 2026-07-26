@@ -83,19 +83,19 @@ pub fn test(resolved: &Resolved, plat: &Platform, timeout_secs: u64) -> Result<(
     let mut summary_seen = false;
 
     let collect_timeout = Duration::from_secs(timeout_secs);
-    // After Tier A (errno sweep, sys_write bulk, pause→thread_sleep,
-    // dead-code purge, errno→AtomicI32) the testall suite emits
-    // 97 `[PASS]` lines.  Bumping `min_expected_passes` to 96 means
-    // "fail the run on a real regression but tolerate one new test
-    // being added without ceremony".  The actual count is captured
-    // by the `N/N passed` summary line further down — that drives the
-    // primary pass/fail decision; this constant only acts as the
-    // regression floor.
+    // After Tier A + Tier B + Tier C (signal roundtrip + WNOHANG
+    // subtests in s13.rs) the testall suite emits 106 `[PASS]`
+    // lines.  `min_expected_passes` is the **regression floor**:
+    // the count must reach this value to consider the run a pass.
+    // The actual count is captured by the `N/N passed` summary
+    // line further down — that drives the primary pass/fail
+    // decision; this constant only acts as the floor.
     //
     // To accept this commit's baseline: re-run
     //   `xtask code test --arch aarch64 --timeout 90`
-    // and confirm the count remains 97/97 before tightening further.
-    let min_expected_passes: u32 = 96;
+    // and confirm the count remains 106/106 before tightening
+    // further.
+    let min_expected_passes: u32 = 105;
 
     while let Ok(line) = rx.recv_timeout(collect_timeout) {
         report_lines.push(line.clone());
