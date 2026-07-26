@@ -33,6 +33,16 @@ To keep the codebase modular, robust, and safe, any code modification must adher
 *   **Inline Byte VFS Protocol**: `libc` translates classic POSIX file I/O operations into uniform VFS byte streams sent over synchronous IPC channels to `fileagent`. It hides low-level capability handle manipulations from standard programs, keeping POSIX code clean.
 *   **Hybrid Microkernel Boundary (Pangu 1.0)**: CapsuleOS Pangu 1.0 implements a **hybrid** microkernel model. The kernel exposes the S1–S8 POSIX-compatible syscall surface (`SYSCALL_GETUID`, `SYSCALL_PIPE_RW`, `SYSCALL_FCNTL`, `SYSCALL_IOCTL`, `SYSCALL_TTY_*`, `SYSCALL_FORK`, ...) directly because every downstream user — bash, osh, GNU coreutils — expects them through the C-ABI. The boundary is enforced at a different level: **the kernel does not implement a POSIX VFS or filesystem**. File/directory traversal goes through `fileagent`'s IPC VFS byte stream (the *Inline Byte VFS Protocol* rule above); the POSIX syscalls the kernel handles itself only operate on the kernel's *capability objects* (FdEntry::Pipe, FdEntry::Tty, FdEntry::File, HandleTable, Channel, VMOs, PTYs) — never on POSIX pathnames, inodes, or mode bits. This preserves the **security perimeter** (handle-based capability delegation, no raw pointer crossing) without forcing a long-term architectural rewrite before bash can run.
 *   **Future Pure-Microkernel Path**: When the user-mode service catalogue (`procmgr`, `ttyd`, `procserv`) matures enough to host identity / pipe / fork / TTY dispatch, the kernel-side POSIX handlers should be migrated one syscall class at a time. Until then, the hybrid rule above is the contract — agents reviewing diffs must judge each new syscall against the capability-object criterion ("does it operate on a kernel object handle, or on a POSIX path string?") rather than the absolute "no POSIX in the kernel" prohibition.
+*   **Errno model (Tier A)**:  The `errno` cell is `core::sync::atomic::AtomicI32`
+    with `Ordering::SeqCst` everywhere (`f7edc59`).  Every C-ABI failure path
+    MUST funnel through `libc::posix_stub::set_errno_and_fail(err)` (returns
+    `-1`, sets errno) or `set_errno_only(err)` (sets errno without returning,
+    for wrapping `_raw`-style indirection).  The 23 errno constants
+    (`EPERM..ERANGE`) are defined in `libraries/libc/src/lib.rs:408-430`.
+    The helper `map_vfs_status_to_errno` (private to libc) is the canonical
+    Status → errno mapping for VFS-bearing calls; it preserves a negative
+    `Status::raw()` value as the C return so legacy tests can introspect
+    `Status::AlreadyExists` etc. without losing the errno too.
 
 ### 6. `rust std` 标准 (Rust std Standard)
 *   **Custom `#![no_std]` Stdlib**: `libraries/libstd` provides standard collections (`Vec`, `String`, `Box`, `BTreeMap`, etc.) and formatting macros (`println!`) to user-space.
