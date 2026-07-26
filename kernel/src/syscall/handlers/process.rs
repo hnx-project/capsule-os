@@ -1473,37 +1473,34 @@ pub fn sys_kill(_table: &HandleTable, pid: i64, sig: usize) -> Result<()> {
 /// dispatched; the caller can then re-poll pending.
 pub fn sys_pause(_table: &HandleTable) -> Result<()> {
     let caller_pid = current_process_id()?;
-    // Spin-yield: until either a signal is delivered (Zombie)
-    // or the caller changes its own disposition to ignore, we
-    // call SCHEDULER.schedule() and let the timer tick wake us
-    // back.  1.0 has no sync wakeup primitive on EL0 yet, so the
-    // poll cadence is the scheduler tick (~10 ms) - good enough
-    // for shell pipelines.
-    let mut counter: u32 = 0;
-    loop {
+    // Park on the scheduler tick instead of spin-yielding.  Each
+    // iteration releases the thread for ~1 tick (~10–16 ms) so
+    // a long pause doesn't burn CPU.  Caps at 4096 iterations
+    // (~70 seconds at 16 ms/tick) to keep the syscall bounded:
+    // a caller that's somehow stuck ignoring every signal still
+    // returns with TimedOut rather than living forever.
+    //
+    // Future work: replace the polled sleep with a per-process
+    // "signal wait queue" that `signals::signal_send` can wake
+    // directly, eliminating the poll entirely.
+    const MAX_ITERATIONS: u32 = 4096;
+    const TICKS_PER_ITERATION: u64 = 1;
+    for _ in 0..MAX_ITERATIONS {
         let proc = crate::task::process::find_process_mut(caller_pid)
             .ok_or(Status::NotFound)?;
         if matches!(proc.state, ProcessState::Zombie) {
             // Signal has dispatched via SIG_DFL.
             return Ok(());
         }
-        if proc.pending_signals == 0 {
-            // Wait for one.
-            counter = counter.wrapping_add(1);
-            unsafe { crate::task::scheduler::SCHEDULER.schedule(); }
-            // Avoid hot-spin
-            if counter > 10000 {
-                return Err(Status::TimedOut);
-            }
-            continue;
-        }
-        // Pending and not yet dispatched.  Force-dispatch now.
-        if crate::task::signals::dispatch_pending(caller_pid)? {
+        if proc.pending_signals != 0
+            && crate::task::signals::dispatch_pending(caller_pid)?
+        {
             return Ok(());
         }
-        // All bits were IGN.
-        unsafe { crate::task::scheduler::SCHEDULER.schedule(); }
+        // All bits were IGN or none pending: park for one tick.
+        sys_thread_sleep(TICKS_PER_ITERATION)?;
     }
+    Err(Status::TimedOut)
 }
 
 // -------------------------------------------------------------------------
@@ -2004,39 +2001,6 @@ pub fn sys_fork() -> Result<u64> {
     let child_pid = child_proc.id;
     unsafe { crate::task::scheduler::SCHEDULER.unlock(scheduler_flags); }
     Ok(child_pid)
-}
-
-/// Helper for `sys_fork`: looks up the caller's process via the
-/// scheduler's per-process mirror so we can read the parent's cwd
-/// and fd-table seed values.  Returns `None` if the parent slot
-/// has already been reaped.
-fn _find_process_user_unused() {}
-
-/// Helper for `sys_fork`: deep clone the parent's handle table
-/// and fd table into the child.  Kept inline to avoid touching the
-/// page-table state while the scheduler lock is held.
-fn deep_clone_handles_and_fds(_caller_pid: u64, child_proc: &mut crate::task::process::Process) {
-    // Handle table clone: iterate every recorded slot in the
-    // parent's handle table by `id` and replicate (obj, rights)
-    // pairs into the child.
-    //
-    // The Pangu 1.0 `HandleTable` is `BTreeMap<u32,
-    // (KernelObject, u32)>`-like, exposed through internal fn
-    // `entries()`.  We use that here.
-    //
-    // (Implementation kept narrow to avoid touching `&mut` on
-    //  both tables at once — see `kernel/src/object/handle_table.rs`
-    //  for the exact API.)
-    // The above is intentionally a stub — we deliberately let
-    // `child_proc.handle_table` start empty rather than recreate
-    // any kernel object referentials here.  The user's manual
-    // use of `HandleTable::add` after `sys_fork` will see an
-    // empty child table; this is consistent with bash's
-    // `fork + exec` pattern (the child immediately replaces its
-    // address space and picks up fresh handles from the loader).
-    //
-    // fd table likewise starts empty.
-    let _ = child_proc;
 }
 
 pub fn sys_proc_mgmt(table: &HandleTable, cmd: u32, arg1: usize, arg2: usize, arg3: usize) -> Result<usize> {
