@@ -141,22 +141,24 @@ fn main() -> std::io::Result<()> {
                     buffer[offset + 55],
                 ]);
 
+                // Map ELF segment flags (PF_X=1, PF_W=2, PF_R=4) to OHLINK
+                // segment flags.  These bits are constant within the loop
+                // body since `p_flags` is read once per segment.
+                let mut ohlk_flags = 0x8; // USER bit: OHLINK produced by this linker is always EL0 user-space
+                if p_flags & 1 != 0 {
+                    ohlk_flags |= 4;
+                } // Execute (X)
+                if p_flags & 2 != 0 {
+                    ohlk_flags |= 2;
+                } // Write (W)
+                if p_flags & 4 != 0 {
+                    ohlk_flags |= 1;
+                } // Read (R)
+
                 if p_filesz > 0 && p_offset + p_filesz <= buffer.len() {
                     let segment_payload = &buffer[p_offset..p_offset + p_filesz];
 
-                    // Map ELF segment flags (PF_X=1, PF_W=2, PF_R=4) to OHLINK segment flags
-                    let mut ohlk_flags = 0x8; // USER bit: OHLINK produced by this linker is always EL0 user-space
-                    if p_flags & 1 != 0 {
-                        ohlk_flags |= 4;
-                    } // Execute (X)
-                    if p_flags & 2 != 0 {
-                        ohlk_flags |= 2;
-                    } // Write (W)
-                    if p_flags & 4 != 0 {
-                        ohlk_flags |= 1;
-                    } // Read (R)
-
-                    // Map segment type
+                    // Map segment type.
                     let ohlk_type = if p_flags & 1 != 0 {
                         SegmentType::Text.to_u32()
                     } else if p_flags & 2 != 0 {
@@ -169,6 +171,34 @@ fn main() -> std::io::Result<()> {
                         ohlk_type,
                         ohlk_flags,
                         segment_payload,
+                        p_memsz,
+                        p_vaddr,
+                        p_align,
+                    );
+                } else if p_memsz > 0 {
+                    // BSS-style segment: PT_LOAD with `p_filesz == 0`
+                    // and `p_memsz > 0` means the program's static
+                    // memory image occupies `p_memsz` bytes of zero-
+                    // initialised RAM that the runtime must commit.
+                    //
+                    // Pre-fix this linker dropped the segment entirely
+                    // and callers resorted to sentinel pre-init values
+                    // (see `libraries/libc/src/lib.rs::__HNX_ARGV_PTRS`).
+                    // That hack worked because the ELF happened to
+                    // keep those globals in the same page as a real
+                    // initialised segment — when the linker optimised
+                    // BSS into a separate run, the value silently
+                    // disappeared into unmapped memory.
+                    //
+                    // Emit an explicit BSS segment so the runtime
+                    // can `commit_all` the page.  We use the OHLINK
+                    // `Bss` type which carries a virtual address +
+                    // size but no file payload — the runtime zeroes
+                    // the memory itself.
+                    builder.add_segment(
+                        SegmentType::Bss.to_u32(),
+                        ohlk_flags,
+                        &[],
                         p_memsz,
                         p_vaddr,
                         p_align,
