@@ -304,10 +304,10 @@ pub fn test_exec_path_search() -> bool {
         }
         ARGV_PTRS[16] = core::ptr::null();
 
-        libc::errno = 0;
+        libc::errno_set(0);
         let _ = libc::execv(b"mk_bin\0".as_ptr(), ARGV_PTRS.as_ptr());
 
-        let ok = libc::errno == 7;
+        let ok = libc::errno_get() == 7;
 
         // Cleanup
         let _ = posix_unlink("/boot/mk_bin");

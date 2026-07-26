@@ -256,6 +256,6 @@ pub fn test_s12_run(t: &mut crate::TestRunner) {
     //    ENOSYS so they migrate to posix_spawn.
     // -------------------------------------------------------------
     let pid_fork = unsafe { libc::fork() };
-    let fork_ok = pid_fork == -1 && unsafe { libc::errno } == 38;
+    let fork_ok = pid_fork == -1 && libc::errno_get() == 38;
     t.run("s12_fork_returns_enosys", fork_ok);
 }

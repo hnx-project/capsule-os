@@ -29,7 +29,7 @@ pub fn test_s11_run(t: &mut crate::TestRunner) {
     let pid_libc = unsafe { libc::fork() };
     t.run(
         "s11_libc_fork_returns_enosys",
-        pid_libc == -1 && unsafe { libc::errno } == 38,
+        pid_libc == -1 && libc::errno_get() == 38,
     );
 
     // (2) The raw escape hatch still works for the bash

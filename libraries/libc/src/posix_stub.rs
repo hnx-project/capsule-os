@@ -1,14 +1,35 @@
 pub const ENOSYS: i32 = 38;
 pub const ECHILD: i32 = 10;
 
+use core::sync::atomic::{AtomicI32, Ordering};
+
+/// Thread/task-local `errno` slot.  Stored as `AtomicI32` rather
+/// than `pub static mut` so the 2024-edition lint warning
+/// (`constant_mut` / `static_mut_refs`) doesn't trip on every
+/// libc call.  CapsuleOS is single-core for 1.0 so a single
+/// global is sufficient; a future SMP bring-up should switch
+/// to a per-CPU or per-thread cell backed by TLS / the kernel
+/// scheduler.
 #[no_mangle]
-pub static mut errno: i32 = 0;
+pub static errno: AtomicI32 = AtomicI32::new(0);
 
 pub fn set_errno_and_fail(err: i32) -> i32 {
-    unsafe {
-        errno = err;
-    }
+    set_errno_only(err);
     -1
+}
+
+/// Set the per-thread `errno` slot without forcing the return value
+/// to `-1`.  Used by callers that want to translate a negative Status
+/// into errno while preserving the original Status for comparison.
+pub fn set_errno_only(err: i32) {
+    errno.store(err, Ordering::SeqCst);
+}
+
+/// Read the current `errno` value.  Mirrors the C-ABI `*errno`
+/// convention (read is the public accessor).
+#[allow(dead_code)]
+pub fn errno_value() -> i32 {
+    errno.load(Ordering::SeqCst)
 }
 
 #[no_mangle]
