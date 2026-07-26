@@ -642,7 +642,7 @@ pub fn sys_spawn_std(
             let mut off = 4usize;
             let mut applied = 0usize;
             for _ in 0..count {
-                if off + 12 > read {
+                if off + 28 > read {
                     break;
                 }
                 let op = u32::from_le_bytes([
@@ -663,11 +663,17 @@ pub fn sys_spawn_std(
                     fa_buf[off + 10],
                     fa_buf[off + 11],
                 ]);
-                off += 12;
+                let arg2 = u32::from_le_bytes([
+                    fa_buf[off + 12],
+                    fa_buf[off + 13],
+                    fa_buf[off + 14],
+                    fa_buf[off + 15],
+                ]);
+                off += 28;
                 if let Some(child) =
                     crate::task::process::find_process_mut(pid)
                 {
-                    apply_file_action(child, op, arg0, arg1);
+                    apply_file_action(child, table, op, arg0, arg1, arg2);
                 }
                 applied += 1;
             }
@@ -730,25 +736,84 @@ pub fn sys_spawn_std(
     Ok(pid)
 }
 
+/// `SYSCALL_GET_EXTRA_FDS(buf_ptr, max_entries)` — called by the
+/// child process during CRT startup (before `main()`) to discover
+/// which fds in its per-process `fd_table` refer to `FdEntry::File`
+/// entries cloned by `posix_spawn(3)`'s `addopen` action.
+///
+/// Writes up to `max_entries` entries at `buf_ptr`, each 12 bytes:
+///   [fd: u32, hv: u32, remote_fd: u32]
+///
+/// Returns the number of entries written.
+pub fn sys_get_extra_fds(buf_ptr: usize, max_entries: usize) -> Result<usize> {
+    if buf_ptr == 0 || max_entries == 0 {
+        return Err(Status::InvalidArgs);
+    }
+    let caller_pid = crate::task::process::current_process_id()?;
+    let proc = crate::task::process::find_process_mut(caller_pid)
+        .ok_or(Status::NotFound)?;
+
+    let l0_pa = proc.page_table.l0_pa();
+    if l0_pa == 0 {
+        return Err(Status::InvalidArgs);
+    }
+
+    // Collect File entries from the fd table.
+    let mut entries: [(u32, u32, u32); 64] = [(0, 0, 0); 64];
+    let mut count = 0usize;
+    for (fd, slot) in proc.fd_table.iter().enumerate() {
+        if count >= entries.len() {
+            break;
+        }
+        if let Some(crate::task::process::FdEntry::File { hv, remote_fd }) = slot {
+            entries[count] = (fd as u32, hv.get(), *remote_fd);
+            count += 1;
+        }
+    }
+
+    let write_count = core::cmp::min(count, max_entries);
+
+    for i in 0..write_count {
+        let off = buf_ptr + i * 12;
+        let (fd, hv, rfd) = entries[i];
+        let mut buf = [0u8; 12];
+        buf[0..4].copy_from_slice(&fd.to_le_bytes());
+        buf[4..8].copy_from_slice(&hv.to_le_bytes());
+        buf[8..12].copy_from_slice(&rfd.to_le_bytes());
+        crate::syscall::handlers::ipc::safe_copy_to_user(
+            l0_pa, &buf, off, 12,
+        )?;
+    }
+
+    Ok(write_count)
+}
+
 /// Apply one `posix_spawn` file action to the freshly-spawned
-/// child.  Only the 1.0-supported subset is honoured:
+/// child.  Supported ops:
 ///
 ///   * op == 1 (close): close `arg0` in the child's fd_table.
 ///   * op == 2 (dup2): if `arg0 ∈ {0, 1, 2}`, dup2 `arg1` into
 ///     `arg0`.  `arg1` must also be in range; both slots must
-///     be valid.  Other newfd values are silently dropped.
+///     be valid.
+///   * op == 3 (open): clone the channel handle `arg1` from the
+///     caller's handle table into the child, set
+///     `child.fd_table[arg0] = FdEntry::File { hv, remote_fd: arg2 }`.
 ///
 /// All errors are treated as best-effort: a misformed action
 /// at one position does not abort the remaining ones.
 fn apply_file_action(
     child: &mut crate::task::process::Process,
+    caller_table: &HandleTable,
     op: u32,
     arg0: u32,
     arg1: u32,
+    arg2: u32,
 ) {
+    use crate::object::rights::Rights;
     use crate::task::process::FdEntry;
     const OP_CLOSE: u32 = 1;
     const OP_DUP2: u32 = 2;
+    const OP_OPEN: u32 = 3;
     match op {
         OP_CLOSE => {
             let fd = arg0 as usize;
@@ -765,6 +830,9 @@ fn apply_file_action(
                             pty,
                             role == crate::task::process::TtyRole::Master,
                         );
+                    }
+                    FdEntry::File { hv, .. } => {
+                        let _ = child.handle_table.close(hv);
                     }
                 }
             }
@@ -793,16 +861,56 @@ fn apply_file_action(
                             role == crate::task::process::TtyRole::Master,
                         );
                     }
+                    FdEntry::File { hv, .. } => {
+                        let _ = child.handle_table.close(hv);
+                    }
                 }
             }
-            child.fd_table[newfd] = Some(src);
-            // Bump pipe refcount on dup (mirrors sys_dup2).
-            if let Some(FdEntry::Pipe { pipe, role }) = &child.fd_table[newfd] {
-                crate::vfs::pipe::pipe_clone_role(*pipe, *role);
+            // For FdEntry::File, duplicate the handle for the
+            // destination slot.
+            if let FdEntry::File { hv, .. } = src {
+                let rights = Rights::READ.bits() | Rights::WRITE.bits();
+                if let Ok(new_hv) = child.handle_table.duplicate_handle(hv, rights) {
+                    child.fd_table[newfd] = Some(FdEntry::File {
+                        hv: new_hv,
+                        remote_fd: arg2, // dup2 reuses arg2
+                    });
+                }
+            } else {
+                child.fd_table[newfd] = Some(src);
+                // Bump pipe refcount on dup (mirrors sys_dup2).
+                if let Some(FdEntry::Pipe { pipe, role }) = &child.fd_table[newfd] {
+                    crate::vfs::pipe::pipe_clone_role(*pipe, *role);
+                }
             }
         }
+        OP_OPEN => {
+            let newfd = arg0 as usize;
+            if newfd >= crate::task::process::FD_TABLE_SIZE
+                || newfd < crate::task::process::USER_FD_BASE as usize
+            {
+                return;
+            }
+            let hv_src = HandleValue::new(arg1);
+            let remote_fd = arg2;
+            // Clone the channel handle from the caller's table
+            // into the child's table.
+            let obj = match caller_table.read_clone(hv_src) {
+                Ok(o) => o,
+                Err(_) => return,
+            };
+            let rights = Rights::READ.bits() | Rights::WRITE.bits();
+            let child_hv = match child.handle_table.add(obj, rights) {
+                Ok(hv) => hv,
+                Err(_) => return,
+            };
+            child.fd_table[newfd] = Some(FdEntry::File {
+                hv: child_hv,
+                remote_fd,
+            });
+        }
         _ => {
-            // 1.0: open / redirect beyond std-fds unsupported.
+            // Unknown op — silently ignored.
         }
     }
 }
@@ -1574,6 +1682,9 @@ pub fn sys_dup2(_table: &HandleTable, oldfd: u32, newfd: u32) -> Result<u32> {
                     role == crate::task::process::TtyRole::Master,
                 );
             }
+            crate::task::process::FdEntry::File { hv, .. } => {
+                let _ = caller_proc.handle_table.close(hv);
+            }
         }
     }
     caller_proc.fd_table[newfd as usize] = Some(src_entry);
@@ -1616,11 +1727,12 @@ pub(crate) fn dispatch_pipe_io(
     };
     let (pipe_id, role) = match entry {
         crate::task::process::FdEntry::Pipe { pipe, role } => (pipe, role),
-        crate::task::process::FdEntry::Tty { .. } => {
-            // PTY fds are not pipe-coupled; the caller should
-            // have used `SYSCALL_PTY_READ`/`SYSCALL_PTY_WRITE`
-            // instead.  Returning `Ok(None)` lets the caller
-            // fall back to that path.
+        crate::task::process::FdEntry::Tty { .. }
+        | crate::task::process::FdEntry::File { .. } => {
+            // PTY and File fds are not pipe-coupled.  Return
+            // `Ok(None)` so the caller can fall back to the
+            // appropriate I/O path (SYSCALL_PTY_* or userspace
+            // fileagent IPC).
             return Ok(None);
         }
     };

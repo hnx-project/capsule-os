@@ -189,6 +189,14 @@ pub const SYSCALL_SPAWN: u32 = 113;
 /// (`arg0`) and argv vmo (`arg1`) are unchanged from
 /// `SYSCALL_SPAWN`; the new std fds vmo is `arg2`.
 pub const SYSCALL_SPAWN_STD: u32 = 159;
+
+/// S14: retrieve the list of `FdEntry::File` entries that were
+/// cloned into the calling process during `posix_spawn` via the
+/// `addopen` file action.  The caller provides a user-space
+/// buffer, and the kernel writes up to `max_entries` entries,
+/// each 12 bytes:
+///   [fd: u32, hv: u32, remote_fd: u32]
+pub const SYSCALL_GET_EXTRA_FDS: u32 = 160;
 /// Voluntarily relinquish the CPU until the next timer tick or higher
 /// priority event.  Used by EL0 services (loader / init) that need to
 /// give the scheduler a chance to run a freshly-spawned process (fileagent

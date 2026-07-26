@@ -34,9 +34,13 @@ to call `fork()` directly.
 * `posix_spawn` / `posix_spawnp` — main entry points.
 * `posix_spawn_file_actions_init/destroy` — lifecycle.
 * `posix_spawn_file_actions_addopen` — recorded; the actual
-  open is *not yet* performed by the kernel-side loader.
-  Recorded entries do take up a slot, so a future kernel-side
-  open pass will see the action list intact.
+  open is *not yet* performed (S14 tracked).  Opening a file
+  is a libc-level concern: it goes through fileagent IPC, not
+  the kernel.  S14 will implement addopen in userspace:
+  libcapsule's `posix_spawn` will open the path via fileagent,
+  transfer the channel handle to the child via the kernel's
+  handle table, and the child's init code will populate
+  `USER_FD_TABLE` accordingly.
 * `posix_spawn_file_actions_addclose` — **fully wired**:
   closed in the freshly-spawned child's fd_table by
   `apply_file_action` in `sys_spawn_std`.
@@ -78,13 +82,16 @@ spawn time the table is encoded into a third VMO with the
 format below and handed to `sys_spawn_std`, which calls
 `apply_file_action` against the freshly-spawned child's
 fd_table.  The 1.0 subset is `close(fd)` + `dup2(oldfd, newfd)`
-with `newfd ∈ {0, 1, 2}`; `addopen` is recorded but the
-kernel encodes it as op=0 (no-op) until the path VMO machinery
-ships.
+with `newfd ∈ {0, 1, 2}`; `addopen` is recorded but encoded
+as op=0 (no-op) until the S14 userspace path lands.
 
 ### What is NOT yet implemented
 
-* Real `addopen` (recorded but not exercised — see above).
+* **S14: Real `addopen`** — the userspace path where
+  libcapsule opens the file via fileagent IPC, transfers the
+  channel handle to the child, and the child's init populates
+  `USER_FD_TABLE`.  Currently `addopen` is recorded but the
+  kernel encodes it as op=0 (no-op).
 
 ## Exposed Interfaces
 
@@ -113,7 +120,7 @@ ships.
 | `fn posix_spawn_file_actions_init` | Zero-init the object. |
 | `fn posix_spawn_file_actions_destroy` | Release any internal state.  Inline in 1.0, so this is a no-op. |
 | `fn posix_spawn_file_actions_addopen(actions, newfd, path, oflag, mode)` | Record an `open(path)` redirecting to `newfd`.  Recorded only; the kernel does not yet perform the open. |
-| `fn posix_spawn_file_actions_addclose(actions, fd)` | Record a `close(fd)` for the child.  Recorded only. |
+| `fn posix_spawn_file_actions_addclose(actions, fd)` | Record a `close(fd)` for the child.  Fully wired. |
 | `fn posix_spawn_file_actions_adddup2(actions, oldfd, newfd)` | Record a `dup2(oldfd, newfd)` for the child.  Honoured for `newfd` ∈ {0, 1, 2}; silently no-op for higher fds in 1.0. |
 
 ### Attributes
@@ -143,20 +150,23 @@ ships.
 2. The underlying `SYSCALL_FORK` syscall is **not** used by
    `posix_spawn`.  See `capsule_deprecation.h` for the
    rationale.
-3. `addopen` / `addclose` are recorded but not performed by
-   the kernel.  Calling them does NOT affect the spawned
-   child in 1.0.  This is documented here so callers don't
-   silently observe no-ops.
+3. `addopen` is recorded but not performed (S14 tracked).
+   Calling `addopen` does NOT affect the spawned child in 1.0.
+   This is documented here so callers don't silently observe
+   no-ops.
 4. Only `newfd` ∈ {0, 1, 2} in `adddup2` is honoured.  A
    caller that tries to dup2 into a higher slot still gets a
    fresh process — the dup2 itself just becomes a no-op.
 
 ## Future Work
 
-* Push real `addopen` support into the kernel's spawn path:
-  this requires a third VMO carrying the path blob so the
-  kernel can complete the `open` against `fileagent`'s IPC
-  VFS protocol.  `addclose` already works.
+* **S14: Real `addopen`** — userspace implementation in
+  libcapsule's `posix_spawn`: open the path via fileagent IPC
+  before the kernel spawn, transfer the channel handle through
+  the kernel's handle table, and have the child's init code
+  populate `USER_FD_TABLE` with `FdType::File { channel_handle,
+  remote_fd }`.  This keeps file I/O entirely in userspace
+  (the kernel never touches fileagent).
 * Promote `POSIX_SPAWN_SETSIGDEF` / `POSIX_SPAWN_SETSIGMASK`
   to first-class once the signal subsystem has per-process
   state.  The attr VMO already reserves space for them.

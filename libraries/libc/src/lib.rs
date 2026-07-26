@@ -139,6 +139,51 @@ _hnx_exit_fallback:
 "#
 );
 
+/// Invoked from `_hnx_user_entry` after `env_init()` and before
+/// `main()`.  Calls `SYSCALL_GET_EXTRA_FDS` to discover any
+/// `FdEntry::File` entries cloned by `posix_spawn`'s `addopen`
+/// action, and installs them into `USER_FD_TABLE`.
+fn init_extra_fds() {
+    let mut buf = [0u8; 192]; // 16 entries × 12 bytes
+    let max_entries = buf.len() / 12;
+    let n = unsafe {
+        libcapsule::syscall!(
+            SYSCALL_GET_EXTRA_FDS,
+            buf.as_mut_ptr() as usize,
+            max_entries,
+            0, 0, 0, 0
+        )
+    };
+    if n == 0 || n as usize > max_entries {
+        return;
+    }
+    for i in 0..n as usize {
+        let off = i * 12;
+        let fd_num = u32::from_le_bytes([
+            buf[off], buf[off + 1], buf[off + 2], buf[off + 3],
+        ]);
+        let hv = u32::from_le_bytes([
+            buf[off + 4], buf[off + 5], buf[off + 6], buf[off + 7],
+        ]);
+        let remote_fd = u32::from_le_bytes([
+            buf[off + 8], buf[off + 9], buf[off + 10], buf[off + 11],
+        ]);
+        let entry = fd::FdEntry {
+            r#type: fd::FdType::File {
+                channel_handle: hv as usize,
+                remote_fd,
+            },
+            flags: 0,
+        };
+        let slot = fd_num as usize;
+        unsafe {
+            if slot < fd::USER_FD_TABLE.len() {
+                fd::USER_FD_TABLE[slot] = Some(entry);
+            }
+        }
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn _hnx_user_entry() -> ! {
     // Capture argc / argv the kernel hands us in x0 / x1 before any
@@ -238,6 +283,7 @@ pub unsafe extern "C" fn _hnx_user_entry() -> ! {
     // S1: seed the environment with a sensible default so `bash`
     // (and `osh`) start with $PATH / $HOME / $USER already set.
     env::env_init();
+    init_extra_fds();
 
     let code = main();
     exit(code);

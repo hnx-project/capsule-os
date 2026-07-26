@@ -33,14 +33,11 @@ typedef enum FileActionKind {
     /**
      * `addopen(path, flags, mode)` — open `path` and put the
      * resulting fd into the child's fd_table at the recorded
-     * `newfd` slot.  Limited support in 1.0: we only carry the
-     * `newfd` slot through to the spawn descriptor; actual
-     * open is performed by the kernel-side loader.
+     * `newfd` slot.
      */
     Open,
     /**
-     * `addclose(fd)` — close `fd` in the child.  Marked so the
-     * loader knows not to inherit this fd if it would otherwise.
+     * `addclose(fd)` — close `fd` in the child.
      */
     Close,
     /**
@@ -69,9 +66,21 @@ typedef struct FileActionEntry {
      */
     int32_t arg0;
     /**
-     * `oldfd` for `Dup2`; unused otherwise.
+     * `oldfd` for `Dup2`; `mode` for `Open`; unused for `Close`.
      */
     int32_t arg1;
+    /**
+     * `oflag` for `Open`; unused for `Close` / `Dup2`.
+     */
+    int32_t arg2;
+    /**
+     * Byte offset into `PATH_POOL` for the path string (Open only).
+     */
+    int32_t arg3;
+    /**
+     * Byte length of the path string in `PATH_POOL` (Open only).
+     */
+    int32_t arg4;
 } FileActionEntry;
 
 typedef struct posix_spawn_file_actions_t {
@@ -122,6 +131,10 @@ int32_t posix_spawnattr_setsigmask(struct posix_spawnattr_t *attr, uint64_t sigm
  * Append an `open(path, oflag, mode)` action.  After the
  * child boots, `path` is opened with `oflag`/`mode` and the
  * resulting fd is placed at `newfd` in the child's fd_table.
+ *
+ * The path string is copied into a per-call static buffer
+ * (`PATH_POOL`); the caller may free the original `path`
+ * pointer after this function returns.
  */
 int32_t posix_spawn_file_actions_addopen(struct posix_spawn_file_actions_t *actions,
                                          int32_t newfd,

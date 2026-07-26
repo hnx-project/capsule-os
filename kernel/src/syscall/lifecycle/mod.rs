@@ -127,6 +127,13 @@ pub fn dispatch_lifecycle(
             }
         }
 
+        SYSCALL_GET_EXTRA_FDS => {
+            match handlers::process::sys_get_extra_fds(arg0, arg1) {
+                Ok(n) => n,
+                Err(e) => e.to_raw() as usize,
+            }
+        }
+
         SYSCALL_YIELD => {
             unsafe {
                 crate::task::scheduler::SCHEDULER.schedule();

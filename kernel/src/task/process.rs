@@ -7,19 +7,26 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use shared::status::{Result, Status};
 use shared::types::HandleValue;
 
-/// One slot in `Process::fd_table`.  For 1.0 we only carry
-/// pipe-end entries; once fileagent starts serving fds directly
-/// to a process (rather than through the channel forwarder) we
-/// will add a `VfsHandle(HandleValue)` variant here.
+/// One slot in `Process::fd_table`.  Pipe and Tty entries are
+/// managed directly by the kernel; `File` entries carry a cloned
+/// channel handle to the fileagent VFS service and a remote file
+/// descriptor number — these are set up by `posix_spawn(3)` via
+/// `addopen` so the child can use the fd through the user-space
+/// `USER_FD_TABLE` without any kernel I/O.
 #[derive(Debug, Clone, Copy)]
 pub enum FdEntry {
     Pipe { pipe: PipeId, role: PipeRole },
     Tty {
         pty: crate::object::tty::PtyId,
-        /// `Master` reads from / writes to the master side;
-        /// `Slave` is the OS-side terminal (used by the bash
-        /// child after `setsid`).
         role: TtyRole,
+    },
+    File {
+        /// Channel handle (in the child's handle table) to
+        /// the fileagent `svc.vfs` service.  The clone is
+        /// created by `apply_file_action` during spawn.
+        hv: HandleValue,
+        /// Remote fd number in the fileagent session.
+        remote_fd: u32,
     },
 }
 

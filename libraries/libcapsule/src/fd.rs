@@ -97,6 +97,17 @@ impl FdManager {
         }
     }
 
+    /// Detach an fd from the user fd table without closing the
+    /// underlying resource (no IPC to fileagent).  Returns the
+    /// entry so the caller can extract the channel_handle +
+    /// remote_fd and pass them to a child process.
+    pub fn detach(fd: i32) -> Result<FdEntry> {
+        if fd < 0 || fd >= 64 {
+            return Err(Status::InvalidArgs);
+        }
+        unsafe { USER_FD_TABLE[fd as usize].take().ok_or(Status::NotFound) }
+    }
+
     /// Duplicate a process-local FD slot into another specific slot.
     pub fn dup2(oldfd: i32, newfd: i32) -> Result<i32> {
         if oldfd < 0 || oldfd >= 64 || newfd < 0 || newfd >= 64 {

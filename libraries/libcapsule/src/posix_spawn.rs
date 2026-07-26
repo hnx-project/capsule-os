@@ -68,12 +68,9 @@ const MAX_FILE_ACTIONS: usize = 32;
 enum FileActionKind {
     /// `addopen(path, flags, mode)` — open `path` and put the
     /// resulting fd into the child's fd_table at the recorded
-    /// `newfd` slot.  Limited support in 1.0: we only carry the
-    /// `newfd` slot through to the spawn descriptor; actual
-    /// open is performed by the kernel-side loader.
+    /// `newfd` slot.
     Open,
-    /// `addclose(fd)` — close `fd` in the child.  Marked so the
-    /// loader knows not to inherit this fd if it would otherwise.
+    /// `addclose(fd)` — close `fd` in the child.
     Close,
     /// `adddup2(oldfd, newfd)` — in the child, dup2 `oldfd`
     /// into `newfd` immediately after the std fd handoff.
@@ -87,8 +84,14 @@ struct FileActionEntry {
     /// `newfd` slot for `Open` and `Dup2`; the fd to close for
     /// `Close`.
     arg0: i32,
-    /// `oldfd` for `Dup2`; unused otherwise.
+    /// `oldfd` for `Dup2`; `mode` for `Open`; unused for `Close`.
     arg1: i32,
+    /// `oflag` for `Open`; unused for `Close` / `Dup2`.
+    arg2: i32,
+    /// Byte offset into `PATH_POOL` for the path string (Open only).
+    arg3: i32,
+    /// Byte length of the path string in `PATH_POOL` (Open only).
+    arg4: i32,
 }
 
 #[repr(C)]
@@ -223,6 +226,10 @@ pub extern "C" fn posix_spawnattr_setsigmask(
 /// Append an `open(path, oflag, mode)` action.  After the
 /// child boots, `path` is opened with `oflag`/`mode` and the
 /// resulting fd is placed at `newfd` in the child's fd_table.
+///
+/// The path string is copied into a per-call static buffer
+/// (`PATH_POOL`); the caller may free the original `path`
+/// pointer after this function returns.
 #[no_mangle]
 pub extern "C" fn posix_spawn_file_actions_addopen(
     actions: *mut posix_spawn_file_actions_t,
@@ -239,20 +246,44 @@ pub extern "C" fn posix_spawn_file_actions_addopen(
         if a.count >= MAX_FILE_ACTIONS {
             return E2BIG;
         }
-        // We don't actually carry the path / oflag / mode into
-        // the kernel in 1.0 — see the addopen doc-comment on
-        // `posix_spawn_file_actions_addopen` in the API.md.  We
-        // still record the `newfd` slot so the kernel knows not
-        // to leave whatever fd the parent had at that slot
-        // dangling in the child.
-        a.actions[a.count] = FileActionEntry {
-            kind: FileActionKind::Open,
-            arg0: newfd,
-            arg1: mode,
-        };
+        // Copy the path into the per-call pool.
+        let mut path_len = 0usize;
+        let path_off = PATH_OFFSET;
+        while path_len < MAX_PATH_BYTES - path_off {
+            let b = *path.add(path_len);
+            if b == 0 {
+                break;
+            }
+            PATH_POOL[path_off + path_len] = b;
+            path_len += 1;
+        }
+        if path_len == 0 {
+            return EINVAL; // empty path
+        }
+        if path_off + path_len >= MAX_PATH_BYTES {
+            // Pool exhausted.  Record with arg3 = -1 so
+            // spawn_impl knows to skip this entry.
+            PATH_OFFSET = 0; // reset for next call
+            a.actions[a.count] = FileActionEntry {
+                kind: FileActionKind::Open,
+                arg0: newfd,
+                arg1: mode,
+                arg2: oflag,
+                arg3: -1,
+                arg4: 0,
+            };
+        } else {
+            PATH_OFFSET = path_off + path_len;
+            a.actions[a.count] = FileActionEntry {
+                kind: FileActionKind::Open,
+                arg0: newfd,
+                arg1: mode,
+                arg2: oflag,
+                arg3: path_off as i32,
+                arg4: path_len as i32,
+            };
+        }
         a.count += 1;
-        // `oflag` is intentionally ignored here — see API.md.
-        let _ = oflag;
     }
     0
 }
@@ -276,6 +307,9 @@ pub extern "C" fn posix_spawn_file_actions_addclose(
             kind: FileActionKind::Close,
             arg0: fd,
             arg1: 0,
+            arg2: 0,
+            arg3: -1,
+            arg4: 0,
         };
         a.count += 1;
     }
@@ -304,6 +338,9 @@ pub extern "C" fn posix_spawn_file_actions_adddup2(
             kind: FileActionKind::Dup2,
             arg0: newfd,
             arg1: oldfd,
+            arg2: 0,
+            arg3: -1,
+            arg4: 0,
         };
         a.count += 1;
     }
@@ -430,14 +467,47 @@ fn spawn_impl(
     };
     let envp_slice: &[&[u8]] = unsafe { as_slice(&ENVP_BUF, &ENVP_LENS, envp_count) };
 
-    // 7. Translate the file_actions table into the kernel's
-    //    VMO format.  We honour every action the 1.0 kernel
-    //    supports (close + dup2).  Returns `0` when the
-    //    caller passed no actions — the kernel treats
-    //    `file_actions_vmo == 0` as "skip this step".
-    let file_actions_vmo = build_file_actions_vmo(file_actions);
+    // 7. Process addopen entries: open each file via the
+    //    fileagent VFS protocol BEFORE calling the kernel.
+    //    We collect (channel_handle, remote_fd) pairs for
+    //    passing through the file_actions VMO.
+    unsafe { PATH_OFFSET = 0; }
+    let mut open_handles: [(u32, u32); MAX_FILE_ACTIONS] = [(0, 0); MAX_FILE_ACTIONS];
+    let mut open_count = 0usize;
+    if !file_actions.is_null() {
+        let a = unsafe { &*file_actions };
+        for i in 0..a.count {
+            if a.actions[i].kind == FileActionKind::Open {
+                let e = a.actions[i];
+                if e.arg3 < 0 {
+                    continue; // pool was exhausted at record time
+                }
+                let path_off = e.arg3 as usize;
+                let path_len = e.arg4 as usize;
+                let path_slice =
+                    unsafe { &PATH_POOL[path_off..path_off + path_len] };
+                if let Ok((chan_hv, rfd)) =
+                    open_via_vfs(path_slice, e.arg2)
+                {
+                    if open_count < MAX_FILE_ACTIONS {
+                        open_handles[open_count] = (chan_hv as u32, rfd);
+                        open_count += 1;
+                    }
+                }
+                // Best-effort: if open fails we skip this entry;
+                // the kernel will see arg1=arg2=0 and no-op it.
+            }
+        }
+    }
 
-    // 8. Actually spawn.  Try the std-fds path first (lets us
+    // 8. Translate the file_actions table (plus open handles)
+    //    into the kernel's VMO format.  Returns 0 when there
+    //    are no actions — the kernel treats vmo == 0 as
+    //    "skip this step".
+    let file_actions_vmo =
+        build_file_actions_vmo(file_actions, &open_handles[..open_count]);
+
+    // 9. Actually spawn.  Try the std-fds path first (lets us
     //    wire dup2 redirects onto fd 0/1/2).  Fall back to the
     //    plain `spawn_program` if the std-fds handoff returns
     //    NotFound — that happens when a previous test exhausted
@@ -450,14 +520,16 @@ fn spawn_impl(
     let pid = match spawn_res {
         Ok(p) => p,
         Err(_e) => {
-            // Best-effort: surface ENOENT (file not in BootFS)
-            // so the caller can fall back.  We intentionally do
-            // not log every error path here because posix_spawn
-            // is hot enough that doing so would drown out
-            // useful traces.
             return ENOENT;
         }
     };
+
+    // 10. Close the temporary channel handles we opened for
+    //     addopen.  The kernel has cloned them into the child
+    //     process, so the child retains access.
+    for &(hv, _) in &open_handles[..open_count] {
+        let _ = crate::syscalls::close(hv as usize);
+    }
 
     if !pid_out.is_null() {
         unsafe { *pid_out = pid as i32; }
@@ -531,11 +603,14 @@ fn resolve_std_fds(
                     stderr = src as u32;
                 }
             }
-            FileActionKind::Open | FileActionKind::Close => {
-                // 1.0 limitation: we can't actually open or
-                // close arbitrary fds in the child without
-                // pushing more VMOs through the spawn
-                // descriptor.  Documented in the API.md.
+            FileActionKind::Open => {
+                // addopen targets non-std fds (≥ 3) so there is
+                // nothing to resolve here.  The open handles are
+                // passed through the file_actions VMO instead.
+            }
+            FileActionKind::Close => {
+                // addclose is applied by the kernel's
+                // apply_file_action; nothing to resolve here.
             }
         }
     }
@@ -574,6 +649,18 @@ const ENOENT: i32 = 2;
 const MAX_ARGV_ENTRIES: usize = 16;
 /// Maximum bytes per argv / envp string (kernel cap).
 const MAX_ARG_LEN: usize = 256;
+
+/// Maximum total path bytes across all addopen entries in one
+/// spawn call.  1024 covers the typical POSIX worst case:
+/// 32 addopen entries × 32-byte average path.
+const MAX_PATH_BYTES: usize = 1024;
+
+/// Per-call buffer for paths captured by
+/// `posix_spawn_file_actions_addopen`.  Holds up to 1024 bytes
+/// total.  `PATH_OFFSET` tracks the next free byte; reset to 0
+/// at the start of each `spawn_impl` call.
+static mut PATH_POOL: [u8; MAX_PATH_BYTES] = [0u8; MAX_PATH_BYTES];
+static mut PATH_OFFSET: usize = 0;
 
 /// Per-call storage for argv / envp slices.  The arrays are
 /// `Copy` byte buffers with fixed capacity; we hold one per
@@ -663,21 +750,55 @@ unsafe fn as_slice<'a>(
     &leaked[..count]
 }
 
+/// Open a file via the fileagent IPC VFS protocol.  Returns
+/// `(channel_handle, remote_fd)` on success, or an error if
+/// the VFS channel cannot be opened or the file doesn't exist.
+///
+/// This is the same protocol `libc::open()` uses; we replicate
+/// the IPC here because `posix_spawn` lives in libcapsule
+/// (which can't depend on libc).
+fn open_via_vfs(path: &[u8], oflag: i32) -> Result<(usize, u32)> {
+    let chan = crate::syscalls::channel_lookup("svc.vfs")?;
+    let mut cmd = [0u8; 148];
+    cmd[0] = 1; // VFS_OPEN
+    cmd[4..8].copy_from_slice(&(oflag as u32).to_le_bytes());
+    let plen = path.len().min(128);
+    cmd[20..20 + plen].copy_from_slice(&path[..plen]);
+    crate::syscalls::channel_write(chan, &cmd, &[])?;
+    let mut resp = [0u8; 8];
+    let _ = crate::syscalls::channel_read(chan, &mut resp, &mut [0u32; 2])?;
+    let rfd = i64::from_le_bytes(resp);
+    if rfd < 0 {
+        Err(Status::NotFound)
+    } else {
+        Ok((chan, rfd as u32))
+    }
+}
+
 /// Translate the caller's `posix_spawn_file_actions_t` into
-/// the kernel's file-actions VMO format:
+/// the kernel's file-actions VMO format.  Accepts a parallel
+/// array of open results (channel_handle + remote_fd) for any
+/// `Open` entries.
+///
+/// VMO format (7 u32s per action, 28 bytes each):
 ///
 ///     [u32 count]
-///     [u32 op][u32 arg0][u32 arg1]
-///     ...
+///     for i in 0..count:
+///         [u32 op]     // 1 = close, 2 = dup2, 3 = open
+///         [u32 arg0]   // close:fd / dup2:newfd / open:newfd
+///         [u32 arg1]   // dup2:oldfd / open:handle_value
+///         [u32 arg2]   // open:remote_fd
+///         [u32 arg3]   // reserved (0)
+///         [u32 arg4]   // reserved (0)
+///         [u32 arg5]   // reserved (0)
 ///
-/// where `op` is `1` (close) or `2` (dup2).  `addopen`
-/// entries are skipped — the 1.0 kernel does not have the
-/// path VMO machinery; the API.md documents this as the
-/// future-work direction.
-///
-/// Returns `0` when the caller passed no actions.
+/// `open_handles` is indexed by `open_idx`: when processing
+/// the i-th Open entry we consume `open_handles[open_idx]`.
+/// Returns `0` when no actions need to be communicated
+/// (caller passed NULL or zero actions).
 fn build_file_actions_vmo(
     actions: *const posix_spawn_file_actions_t,
+    open_handles: &[(u32, u32)], // (handle_value, remote_fd)
 ) -> usize {
     if actions.is_null() {
         return 0;
@@ -688,30 +809,32 @@ fn build_file_actions_vmo(
         return 0;
     }
 
-    // Encode each entry as 3 u32s (op, arg0, arg1) plus a
-    // leading u32 count.  We materialise into a fixed
-    // 4 KiB buffer; with MAX_FILE_ACTIONS=32 we use at
-    // most 1 + 32*3 = 97 u32 = 388 bytes — well under 4 KiB.
-    let total = 4 + count * 12;
-    let mut buf = [0u8; 4096];
+    let total = 4 + count * 28;
+    let mut buf = [0u8; 4096 + 32 * 28];
     buf[0..4].copy_from_slice(&(count as u32).to_le_bytes());
     let mut off = 4usize;
+    let mut open_idx = 0usize;
     for i in 0..count {
         let e = a.actions[i];
-        let (op, arg0, arg1): (u32, u32, u32) = match e.kind {
-            FileActionKind::Close => (1, e.arg0 as u32, 0),
-            FileActionKind::Dup2 => (2, e.arg0 as u32, e.arg1 as u32),
-            // addopen: 1.0 has no path VMO machinery.  Encode
-            // the entry but pick an op code the kernel treats
-            // as no-op (`0`); the kernel logs a single
-            // "applied" line so the user can see whether
-            // something got dropped.
-            FileActionKind::Open => (0, e.arg0 as u32, 0),
+        let (op, arg0, arg1, arg2): (u32, u32, u32, u32) = match e.kind {
+            FileActionKind::Close => (1, e.arg0 as u32, 0, 0),
+            FileActionKind::Dup2 => (2, e.arg0 as u32, e.arg1 as u32, 0),
+            FileActionKind::Open => {
+                let (hv, rfd) = if open_idx < open_handles.len() {
+                    open_handles[open_idx]
+                } else {
+                    (0, 0) // no handle — skip at kernel
+                };
+                open_idx += 1;
+                (3, e.arg0 as u32, hv, rfd)
+            }
         };
         buf[off..off + 4].copy_from_slice(&op.to_le_bytes());
         buf[off + 4..off + 8].copy_from_slice(&arg0.to_le_bytes());
         buf[off + 8..off + 12].copy_from_slice(&arg1.to_le_bytes());
-        off += 12;
+        buf[off + 12..off + 16].copy_from_slice(&arg2.to_le_bytes());
+        // arg3..arg5 = 0 (already zero-initialised)
+        off += 28;
     }
     let vmo = match crate::syscalls::vmo_create(total) {
         Ok(v) => v,
