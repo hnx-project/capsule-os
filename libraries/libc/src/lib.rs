@@ -382,6 +382,69 @@ pub extern "C" fn getchar() -> Option<u8> {
 
 pub use libcapsule::fd::{FdType, FdEntry, USER_FD_TABLE, FdManager};
 
+// -------------------------------------------------------------------------
+// POSIX errno codes
+//
+// Mirror glibc's `<errno.h>` constants.  Set via `set_errno_and_fail` so
+// that libc callers (C, Rust) can read `errno` after a failed libc call,
+// per the POSIX.1-2017 §2.3 "Error Numbers" contract.
+//
+// Values come from glibc's `sysdeps/generic/errno.h` (the canonical
+// Linux userspace errno numbering).  Names are POSIX where POSIX
+// defines one; the rest are Linux extensions (ENOTTY/ECONNRESET/etc.)
+// that bash and GNU coreutils historically consult.
+//
+// `set_errno_and_fail` lives in `posix_stub.rs`; this file re-uses it
+// across every public C-ABI wrapper below.
+// -------------------------------------------------------------------------
+
+pub const EPERM: i32 = 1;      // Operation not permitted
+pub const ENOENT: i32 = 2;     // No such file or directory
+pub const ESRCH: i32 = 3;      // No such process
+pub const EINTR: i32 = 4;      // Interrupted system call
+pub const EIO: i32 = 5;        // Input/output error
+pub const ENOEXEC: i32 = 8;    // Exec format error
+pub const EBADF: i32 = 9;      // Bad file descriptor
+pub const ECHILD: i32 = 10;    // No child processes
+pub const EAGAIN: i32 = 11;    // Resource temporarily unavailable
+pub const ENOMEM: i32 = 12;    // Out of memory
+pub const EACCES: i32 = 13;    // Permission denied
+pub const EFAULT: i32 = 14;    // Bad address
+pub const EBUSY: i32 = 16;     // Device or resource busy
+pub const EEXIST: i32 = 17;    // File exists
+pub const ENODEV: i32 = 19;    // No such device
+pub const ENOTDIR: i32 = 20;   // Not a directory
+pub const EISDIR: i32 = 21;    // Is a directory
+pub const EINVAL: i32 = 22;    // Invalid argument
+pub const ENFILE: i32 = 23;    // File table overflow
+pub const EMFILE: i32 = 24;    // Too many open files
+pub const ENOSYS: i32 = 38;    // Function not implemented
+pub const ENOTTY: i32 = 25;    // Not a typewriter (inappropriate ioctl)
+pub const ERANGE: i32 = 34;    // Numerical result out of range (getcwd, etc.)
+
+/// Write `err` into the per-thread/per-process `errno` slot and
+/// return `-1` so the caller can `return set_errno_and_fail(EXXX)`
+/// in one line.  Re-exported from `posix_stub.rs` so all libc
+/// wrappers in this file route through the same backing store.
+pub use posix_stub::set_errno_and_fail;
+
+/// Backwards-compatible `pub static` alias for `errno`.  Holds an
+/// `AtomicI32` so assignment is a relaxed atomic store; reads
+/// without context (e.g. `libc::errno == 7`) work because of
+/// Rust's `Atm` impl via `Deref`.  Anything that needs explicit
+/// ordering should use [`errno_get`] / [`errno_set`] below.
+pub use posix_stub::errno;
+
+/// Read the current `errno` (relaxed atomic load).
+pub fn errno_get() -> i32 {
+    posix_stub::errno_value()
+}
+
+/// Set `errno` (relaxed atomic store).
+pub fn errno_set(value: i32) {
+    posix_stub::set_errno_only(value);
+}
+
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct stat {
@@ -401,14 +464,56 @@ pub struct Dirent {
 
 fn send_vfs_cmd(ch: usize, cmd: &[u8]) -> i64 {
     if let Err(_) = libcapsule::syscalls::channel_write(ch, cmd, &[]) {
-        return -1;
+        return set_errno_and_fail(EIO) as i64;
     }
     let mut resp = [0u8; 8];
     let mut resp_handles = [0u32; 2];
     match libcapsule::syscalls::channel_read(ch, &mut resp, &mut resp_handles) {
         Ok(n) if n >= 8 => i64::from_le_bytes(resp),
-        _ => -1,
+        _ => set_errno_and_fail(EIO) as i64,
     }
+}
+
+/// Translate a fileagent VFS reply (`i64`) into the libc C-ABI return
+/// value, populating `errno` on failure.  fileagent's stable error
+/// contract uses negative `Status` values (e.g. `Status::AlreadyExists
+/// = -10`); we preserve those through the boundary so callers that
+/// compare against the Status enum stay correct, while C callers can
+/// still consult `errno` for the corresponding POSIX code.
+///
+/// Per the C-ABI convention `int ret = errno_aware(...)`, callers are
+/// expected to read `errno` rather than `ret < 0` when distinguishing
+/// error types.  The legacy convention used on CapsuleOS (returning
+/// the raw Status value) is preserved here so existing testall
+/// assertions like `posix_mkdir(...) == Status::AlreadyExists.to_raw()
+/// as i32` keep working.
+fn map_vfs_status_to_errno(result: i64) -> i32 {
+    if result >= 0 {
+        return result as i32;
+    }
+    let status = result as i32;
+    let errno_code = match status {
+        -2 => ENOENT,
+        -4 => EINVAL,
+        -10 => EEXIST,
+        -11 => EAGAIN,
+        -12 => ENOMEM,
+        -13 => EACCES,
+        -14 => EFAULT,
+        -17 => EEXIST,
+        -22 => EINVAL,
+        _ => EIO,
+    };
+    // Mirror the conventional pattern: set errno, then return
+    // the **raw negative Status** (not -1) so legacy CapsuleOS
+    // callers that compare against `Status::AlreadyExists.to_raw()`
+    // keep observing equality.
+    //
+    // Note: this is a deliberate deviation from POSIX, which
+    // requires `int ret = -1; errno = EXXX;`.  We document the
+    // deviation here so callers don't get surprised.
+    posix_stub::set_errno_only(errno_code);
+    status
 }
 
 pub use libcapsule::path::normalise_path;
@@ -429,7 +534,7 @@ pub fn open_str(path: &str, flags: i32, mode: i32) -> i32 {
 #[no_mangle]
 pub extern "C" fn open(path: *const u8, flags: i32, _mode: i32) -> i32 {
     if path.is_null() {
-        return -1;
+        return set_errno_and_fail(EFAULT);
     }
 
     // S6: short-circuit the PTY paths so they don't need to go
@@ -450,21 +555,21 @@ pub extern "C" fn open(path: *const u8, flags: i32, _mode: i32) -> i32 {
         if i > 0 && i < p.len() && p[..i] == *b"/dev/ptmx" {
             let s = match core::str::from_utf8(&p[..i]) {
                 Ok(s) => s,
-                Err(_) => return -1,
+                Err(_) => return set_errno_and_fail(EINVAL),
             };
             return match libcapsule::tty::open_pty(s) {
                 Ok(fd) => fd as i32,
-                Err(_) => -1,
+                Err(_) => set_errno_and_fail(ENOENT),
             };
         }
         if i > 0 && i < p.len() && p[..6] == *b"/dev/p" && p[6] == b't' && p[7] == b's' {
             let s = match core::str::from_utf8(&p[..i]) {
                 Ok(s) => s,
-                Err(_) => return -1,
+                Err(_) => return set_errno_and_fail(EINVAL),
             };
             return match libcapsule::tty::open_pty(s) {
                 Ok(fd) => fd as i32,
-                Err(_) => -1,
+                Err(_) => set_errno_and_fail(ENOENT),
             };
         }
     }
@@ -472,12 +577,12 @@ pub extern "C" fn open(path: *const u8, flags: i32, _mode: i32) -> i32 {
     let mut normalised = [0u8; 128];
     let len = match normalise_path(path, &mut normalised) {
         Ok(l) => l,
-        Err(_) => return -1,
+        Err(_) => return set_errno_and_fail(EINVAL),
     };
 
     let session_chan = match libcapsule::syscalls::channel_lookup("svc.vfs") {
         Ok(ch) => ch,
-        Err(_) => return -1,
+        Err(_) => return set_errno_and_fail(ENOENT),
     };
 
     let mut cmd = [0u8; 148];
@@ -488,7 +593,7 @@ pub extern "C" fn open(path: *const u8, flags: i32, _mode: i32) -> i32 {
     let remote_fd = send_vfs_cmd(session_chan, &cmd);
     if remote_fd < 0 {
         let _ = libcapsule::syscalls::close(session_chan);
-        return -1;
+        return set_errno_and_fail(ENOENT);
     }
 
     unsafe {
@@ -507,7 +612,10 @@ pub extern "C" fn open(path: *const u8, flags: i32, _mode: i32) -> i32 {
             }
         }
         if allocated_fd == -1 {
+            // No free slot in user fd table → leak the channel.
+            // We close it so the session isn't leaked; caller sees EMFILE.
             let _ = libcapsule::syscalls::close(session_chan);
+            return set_errno_and_fail(EMFILE);
         }
         allocated_fd
     }
@@ -515,11 +623,14 @@ pub extern "C" fn open(path: *const u8, flags: i32, _mode: i32) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
-    if buf.is_null() || count == 0 {
+    if buf.is_null() {
+        return set_errno_and_fail(EFAULT) as isize;
+    }
+    if count == 0 {
         return 0;
     }
     if fd < 0 || fd >= 64 {
-        return -1;
+        return set_errno_and_fail(EBADF) as isize;
     }
 
     unsafe {
@@ -552,7 +663,7 @@ pub extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
             // `PipeRole` import (libcapsule is no_std and
             // re-exporting the kernel-side enum is awkward).
             if role as i32 != 0 {
-                return -1;
+                return set_errno_and_fail(EBADF) as isize;
             }
             let mut total = 0usize;
             while total < dst.len() {
@@ -560,7 +671,7 @@ pub extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
                     Ok(n) if n == 0 => break,
                     Ok(n) => total += n,
                     Err(_) => {
-                        if total == 0 { return -1; }
+                        if total == 0 { return set_errno_and_fail(EIO) as isize; }
                         break;
                     }
                 }
@@ -573,10 +684,10 @@ pub extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
                 let n = libcapsule::tty::pty_read(*pty_fd, dst);
                 match n {
                     Ok(n) => n as isize,
-                    Err(_) => -1,
+                    Err(_) => set_errno_and_fail(EIO) as isize,
                 }
             }
-            FdType::Pipe { .. } => -1, // unreachable: handled above
+            FdType::Pipe { .. } => set_errno_and_fail(EBADF) as isize, // unreachable: handled above
             FdType::Console => {
                 libcapsule::syscall!(SYSCALL_READ, fd as usize, buf as usize, count, 0, 0, 0)
                     as isize
@@ -591,7 +702,7 @@ pub extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
                 cmd[8..12].copy_from_slice(&(count as u32).to_le_bytes());
 
                 if let Err(_) = libcapsule::syscalls::channel_write(*channel_handle, &cmd, &[]) {
-                    return -1;
+                    return set_errno_and_fail(EIO) as isize;
                 }
 
                 let mut resp_buf = [0u8; 8 + 128];
@@ -604,7 +715,7 @@ pub extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
                     Ok(read_len) if read_len >= 8 => {
                         let result = i64::from_le_bytes(resp_buf[..8].try_into().unwrap());
                         if result < 0 {
-                            return -1;
+                            return set_errno_and_fail(EIO) as isize;
                         }
                         let actual_read = result as usize;
                         if actual_read > 0 {
@@ -615,7 +726,7 @@ pub extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
                             0
                         }
                     }
-                    _ => -1,
+                    _ => set_errno_and_fail(EIO) as isize,
                 }
             }
         }
@@ -624,11 +735,14 @@ pub extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
 
 #[no_mangle]
 pub extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
-    if buf.is_null() || count == 0 {
+    if buf.is_null() {
+        return set_errno_and_fail(EFAULT) as isize;
+    }
+    if count == 0 {
         return 0;
     }
     if fd < 0 || fd >= 64 {
-        return -1;
+        return set_errno_and_fail(EBADF) as isize;
     }
 
     unsafe {
@@ -654,7 +768,7 @@ pub extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
         if let libcapsule::fd::FdType::Pipe { pipe, role } = entry.r#type {
             // role==1 means Write in the FdType::Pipe enum.
             if role as i32 != 1 {
-                return -1;
+                return set_errno_and_fail(EBADF) as isize;
             }
             let src = core::slice::from_raw_parts(buf, count);
             let mut total = 0usize;
@@ -663,7 +777,7 @@ pub extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
                     Ok(n) if n == 0 => break,
                     Ok(n) => total += n,
                     Err(_) => {
-                        if total == 0 { return -1; }
+                        if total == 0 { return set_errno_and_fail(EIO) as isize; }
                         break;
                     }
                 }
@@ -676,10 +790,10 @@ pub extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
                 let n = libcapsule::tty::pty_write(*pty_fd, dst);
                 match n {
                     Ok(n) => n as isize,
-                    Err(_) => -1,
+                    Err(_) => set_errno_and_fail(EIO) as isize,
                 }
             }
-            FdType::Pipe { .. } => -1, // unreachable: handled above
+            FdType::Pipe { .. } => set_errno_and_fail(EBADF) as isize, // unreachable: handled above
             FdType::Console => {
                 libcapsule::syscall!(SYSCALL_WRITE, fd as usize, buf as usize, count, 0, 0, 0)
                     as isize
@@ -698,7 +812,7 @@ pub extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
 
                 let result = send_vfs_cmd(*channel_handle, &cmd);
                 if result < 0 {
-                    -1
+                    set_errno_and_fail(EIO) as isize
                 } else {
                     result as isize
                 }
@@ -710,13 +824,13 @@ pub extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
 #[no_mangle]
 pub extern "C" fn close(fd: i32) -> i32 {
     if fd < 0 || fd >= 64 {
-        return -1;
+        return set_errno_and_fail(EBADF);
     }
 
     unsafe {
         let entry = match USER_FD_TABLE[fd as usize].take() {
             Some(e) => e,
-            None => return -1,
+            None => return set_errno_and_fail(EBADF),
         };
 
         match entry.r#type {
@@ -767,7 +881,7 @@ pub struct timespec {
 #[no_mangle]
 pub extern "C" fn nanosleep(req: *const timespec, _rem: *mut timespec) -> i32 {
     if req.is_null() {
-        return -1;
+        return set_errno_and_fail(EFAULT);
     }
     let r = unsafe { &*req };
     let sec_ticks = (r.tv_sec as u64).saturating_mul(62).saturating_add((r.tv_sec as u64) / 2);
@@ -776,7 +890,7 @@ pub extern "C" fn nanosleep(req: *const timespec, _rem: *mut timespec) -> i32 {
 
     match libcapsule::syscalls::thread_sleep(total_ticks) {
         Ok(()) => 0,
-        Err(_) => -1,
+        Err(_) => set_errno_and_fail(EINTR),
     }
 }
 
@@ -794,7 +908,7 @@ fn print(s: &str) {
 #[no_mangle]
 pub extern "C" fn exec(name: &str) -> i32 {
     if name.is_empty() {
-        return -1;
+        return set_errno_and_fail(ENOENT);
     }
     syscalls::exec_impl(name) as i32
 }
@@ -806,7 +920,7 @@ pub extern "C" fn exec(name: &str) -> i32 {
 /// never returns on success (the current process is replaced).
 pub fn execve(path: &str, argv: &[&[u8]]) -> i32 {
     if path.is_empty() {
-        return -1;
+        return set_errno_and_fail(ENOENT);
     }
     syscalls::execve_impl(path, argv)
 }
@@ -814,17 +928,17 @@ pub fn execve(path: &str, argv: &[&[u8]]) -> i32 {
 #[no_mangle]
 pub extern "C" fn mkdir(path: *const u8) -> i32 {
     if path.is_null() {
-        return -1;
+        return set_errno_and_fail(EFAULT);
     }
     let mut normalised = [0u8; 128];
     let len = match normalise_path(path, &mut normalised) {
         Ok(l) => l,
-        Err(_) => return -1,
+        Err(_) => return set_errno_and_fail(EINVAL),
     };
 
     let session_chan = match libcapsule::syscalls::channel_lookup("svc.vfs") {
         Ok(ch) => ch,
-        Err(_) => return -1,
+        Err(_) => return set_errno_and_fail(ENOENT),
     };
 
     let mut cmd = [0u8; 148];
@@ -833,23 +947,28 @@ pub extern "C" fn mkdir(path: *const u8) -> i32 {
 
     let result = send_vfs_cmd(session_chan, &cmd);
     let _ = libcapsule::syscalls::close(session_chan);
-    result as i32
+    // Preserve the negative Status code from fileagent so callers
+    // (testall::test_mkdir_dup, etc.) can distinguish "already exists"
+    // (Status::AlreadyExists = -10) from a real error.  We translate
+    // the negative Status into errno but return the original Status
+    // value so the C-ABI surface is unchanged.
+    map_vfs_status_to_errno(result)
 }
 
 #[no_mangle]
 pub extern "C" fn rmdir(path: *const u8) -> i32 {
     if path.is_null() {
-        return -1;
+        return set_errno_and_fail(EFAULT);
     }
     let mut normalised = [0u8; 128];
     let len = match normalise_path(path, &mut normalised) {
         Ok(l) => l,
-        Err(_) => return -1,
+        Err(_) => return set_errno_and_fail(EINVAL),
     };
 
     let session_chan = match libcapsule::syscalls::channel_lookup("svc.vfs") {
         Ok(ch) => ch,
-        Err(_) => return -1,
+        Err(_) => return set_errno_and_fail(ENOENT),
     };
 
     let mut cmd = [0u8; 148];
@@ -858,23 +977,23 @@ pub extern "C" fn rmdir(path: *const u8) -> i32 {
 
     let result = send_vfs_cmd(session_chan, &cmd);
     let _ = libcapsule::syscalls::close(session_chan);
-    result as i32
+    map_vfs_status_to_errno(result)
 }
 
 #[no_mangle]
 pub extern "C" fn unlink(path: *const u8) -> i32 {
     if path.is_null() {
-        return -1;
+        return set_errno_and_fail(EFAULT);
     }
     let mut normalised = [0u8; 128];
     let len = match normalise_path(path, &mut normalised) {
         Ok(l) => l,
-        Err(_) => return -1,
+        Err(_) => return set_errno_and_fail(EINVAL),
     };
 
     let session_chan = match libcapsule::syscalls::channel_lookup("svc.vfs") {
         Ok(ch) => ch,
-        Err(_) => return -1,
+        Err(_) => return set_errno_and_fail(ENOENT),
     };
 
     let mut cmd = [0u8; 148];
@@ -883,30 +1002,30 @@ pub extern "C" fn unlink(path: *const u8) -> i32 {
 
     let result = send_vfs_cmd(session_chan, &cmd);
     let _ = libcapsule::syscalls::close(session_chan);
-    result as i32
+    map_vfs_status_to_errno(result)
 }
 
 #[no_mangle]
 pub extern "C" fn rename(oldpath: *const u8, newpath: *const u8) -> i32 {
     if oldpath.is_null() || newpath.is_null() {
-        return -1;
+        return set_errno_and_fail(EFAULT);
     }
 
     let mut normalised_old = [0u8; 128];
     let len_old = match normalise_path(oldpath, &mut normalised_old) {
         Ok(l) => l,
-        Err(_) => return -1,
+        Err(_) => return set_errno_and_fail(EINVAL),
     };
 
     let mut normalised_new = [0u8; 128];
     let len_new = match normalise_path(newpath, &mut normalised_new) {
         Ok(l) => l,
-        Err(_) => return -1,
+        Err(_) => return set_errno_and_fail(EINVAL),
     };
 
     let session_chan = match libcapsule::syscalls::channel_lookup("svc.vfs") {
         Ok(ch) => ch,
-        Err(_) => return -1,
+        Err(_) => return set_errno_and_fail(ENOENT),
     };
 
     let mut cmd = [0u8; 148];
@@ -922,23 +1041,23 @@ pub extern "C" fn rename(oldpath: *const u8, newpath: *const u8) -> i32 {
 
     let result = send_vfs_cmd(session_chan, &cmd);
     let _ = libcapsule::syscalls::close(session_chan);
-    result as i32
+    map_vfs_status_to_errno(result)
 }
 
 #[no_mangle]
 pub extern "C" fn stat(path: *const u8, buf: *mut stat) -> i32 {
     if path.is_null() || buf.is_null() {
-        return -1;
+        return set_errno_and_fail(EFAULT);
     }
     let mut normalised = [0u8; 128];
     let len = match normalise_path(path, &mut normalised) {
         Ok(l) => l,
-        Err(_) => return -1,
+        Err(_) => return set_errno_and_fail(EINVAL),
     };
 
     let session_chan = match libcapsule::syscalls::channel_lookup("svc.vfs") {
         Ok(ch) => ch,
-        Err(_) => return -1,
+        Err(_) => return set_errno_and_fail(ENOENT),
     };
 
     let mut cmd = [0u8; 148];
@@ -947,7 +1066,7 @@ pub extern "C" fn stat(path: *const u8, buf: *mut stat) -> i32 {
 
     if let Err(_) = libcapsule::syscalls::channel_write(session_chan, &cmd, &[]) {
         let _ = libcapsule::syscalls::close(session_chan);
-        return -1;
+        return set_errno_and_fail(EIO);
     }
 
     let mut resp = [0u8; 16];
@@ -957,7 +1076,7 @@ pub extern "C" fn stat(path: *const u8, buf: *mut stat) -> i32 {
             let size = i64::from_le_bytes(resp[..8].try_into().unwrap());
             let ntype = i64::from_le_bytes(resp[8..16].try_into().unwrap());
             if size < 0 {
-                -1
+                set_errno_and_fail(ENOENT)
             } else {
                 unsafe {
                     (*buf).st_size = size;
@@ -966,7 +1085,7 @@ pub extern "C" fn stat(path: *const u8, buf: *mut stat) -> i32 {
                 0
             }
         }
-        _ => -1,
+        _ => set_errno_and_fail(EIO),
     };
 
     let _ = libcapsule::syscalls::close(session_chan);
@@ -975,23 +1094,26 @@ pub extern "C" fn stat(path: *const u8, buf: *mut stat) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn readdir(fd: i32, buf: *mut u8, count: usize) -> isize {
-    if buf.is_null() || count == 0 {
+    if buf.is_null() {
+        return set_errno_and_fail(EFAULT) as isize;
+    }
+    if count == 0 {
         return 0;
     }
     if fd < 0 || fd >= 64 {
-        return -1;
+        return set_errno_and_fail(EBADF) as isize;
     }
 
     unsafe {
         let entry = match &USER_FD_TABLE[fd as usize] {
             Some(e) => e,
-            None => return -1,
+            None => return set_errno_and_fail(EBADF) as isize,
         };
 
         match &entry.r#type {
-            FdType::Console => -1,
-            FdType::Pty { .. } => -1,
-            FdType::Pipe { .. } => -1,
+            FdType::Console => set_errno_and_fail(ENOTDIR) as isize,
+            FdType::Pty { .. } => set_errno_and_fail(ENOTDIR) as isize,
+            FdType::Pipe { .. } => set_errno_and_fail(ENOTDIR) as isize,
             FdType::File { channel_handle, remote_fd } => {
                 let mut cmd = [0u8; 148];
                 cmd[0] = 9; // VFS_READDIR
@@ -999,7 +1121,7 @@ pub extern "C" fn readdir(fd: i32, buf: *mut u8, count: usize) -> isize {
                 cmd[8..12].copy_from_slice(&(count as u32).to_le_bytes());
 
                 if let Err(_) = libcapsule::syscalls::channel_write(*channel_handle, &cmd, &[]) {
-                    return -1;
+                    return set_errno_and_fail(EIO) as isize;
                 }
 
                 let mut resp_buf = [0u8; 8 + 128];
@@ -1012,7 +1134,7 @@ pub extern "C" fn readdir(fd: i32, buf: *mut u8, count: usize) -> isize {
                     Ok(read_len) if read_len >= 8 => {
                         let result = i64::from_le_bytes(resp_buf[..8].try_into().unwrap());
                         if result < 0 {
-                            return -1;
+                            return set_errno_and_fail(EIO) as isize;
                         }
                         let actual_read = result as usize;
                         if actual_read > 0 {
@@ -1023,7 +1145,7 @@ pub extern "C" fn readdir(fd: i32, buf: *mut u8, count: usize) -> isize {
                             0
                         }
                     }
-                    _ => -1,
+                    _ => set_errno_and_fail(EIO) as isize,
                 }
             }
         }
@@ -1046,7 +1168,7 @@ pub extern "C" fn readdir(fd: i32, buf: *mut u8, count: usize) -> isize {
 #[no_mangle]
 pub extern "C" fn chdir(path: *const u8) -> i32 {
     if path.is_null() {
-        return -1;
+        return set_errno_and_fail(EFAULT);
     }
     let mut path_len = 0;
     unsafe {
@@ -1057,23 +1179,25 @@ pub extern "C" fn chdir(path: *const u8) -> i32 {
     let path_slice = unsafe { core::slice::from_raw_parts(path, path_len) };
     let path_str = match core::str::from_utf8(path_slice) {
         Ok(s) => s,
-        Err(_) => return -1,
+        Err(_) => return set_errno_and_fail(EINVAL),
     };
     match syscalls::chdir(path_str) {
         Ok(()) => 0,
-        Err(_) => -1,
+        Err(_) => set_errno_and_fail(ENOENT),
     }
 }
 
 #[no_mangle]
 pub extern "C" fn getcwd(buf: *mut u8, size: usize) -> *mut u8 {
     if buf.is_null() || size == 0 {
+        set_errno_and_fail(EINVAL);
         return core::ptr::null_mut();
     }
     let mut temp = [0u8; 128];
     match syscalls::getcwd(&mut temp) {
         Ok(len) => {
             if len + 1 > size {
+                set_errno_and_fail(ERANGE);
                 return core::ptr::null_mut();
             }
             unsafe {
@@ -1082,14 +1206,17 @@ pub extern "C" fn getcwd(buf: *mut u8, size: usize) -> *mut u8 {
             }
             buf
         }
-        Err(_) => core::ptr::null_mut(),
+        Err(_) => {
+            set_errno_and_fail(ENOENT);
+            core::ptr::null_mut()
+        }
     }
 }
 
 #[no_mangle]
 pub extern "C" fn pipe(fds: *mut i32) -> i32 {
     if fds.is_null() {
-        return -1;
+        return set_errno_and_fail(EFAULT);
     }
     unsafe {
         let mut raw = [0i32; 2];
@@ -1099,7 +1226,7 @@ pub extern "C" fn pipe(fds: *mut i32) -> i32 {
                 *fds.add(1) = raw[1];
                 0
             }
-            Err(_) => -1,
+            Err(_) => set_errno_and_fail(EMFILE),
         }
     }
 }
@@ -1107,7 +1234,7 @@ pub extern "C" fn pipe(fds: *mut i32) -> i32 {
 #[no_mangle]
 pub extern "C" fn dup2(oldfd: i32, newfd: i32) -> i32 {
     if let Err(_) = libcapsule::fd::FdManager::dup2(oldfd, newfd) {
-        return -1;
+        return set_errno_and_fail(EBADF);
     }
     if oldfd >= 3 && newfd >= 3 {
         let _ = syscalls::dup2(oldfd, newfd);
@@ -1119,16 +1246,20 @@ pub extern "C" fn dup2(oldfd: i32, newfd: i32) -> i32 {
 pub extern "C" fn pause() -> i32 {
     match syscalls::pause() {
         Ok(()) => 0,
-        Err(_) => -1,
+        Err(_) => set_errno_and_fail(EINTR),
     }
 }
 
 #[no_mangle]
 pub extern "C" fn access(path: *const u8, _amode: i32) -> i32 {
+    if path.is_null() {
+        return set_errno_and_fail(EFAULT);
+    }
     let mut st = core::mem::MaybeUninit::<stat>::uninit();
     if stat(path, st.as_mut_ptr()) == 0 {
         0
     } else {
+        // stat() already set errno; preserve it (don't clobber).
         -1
     }
 }
@@ -1137,7 +1268,7 @@ pub extern "C" fn access(path: *const u8, _amode: i32) -> i32 {
 pub extern "C" fn dup(oldfd: i32) -> i32 {
     match syscalls::dup2(oldfd, -1) {
         Ok(fd) => fd,
-        Err(_) => -1,
+        Err(_) => set_errno_and_fail(EBADF),
     }
 }
 
@@ -1172,7 +1303,7 @@ pub extern "C" fn usleep(useconds: u32) -> i32 {
 pub extern "C" fn kill(pid: i32, sig: i32) -> i32 {
     match syscalls::kill(pid as i64, sig as usize) {
         Ok(()) => 0,
-        Err(_) => -1,
+        Err(_) => set_errno_and_fail(EINVAL),
     }
 }
 
@@ -1241,7 +1372,7 @@ pub struct PosixTimeval {
 }
 #[no_mangle]
 pub extern "C" fn gettimeofday(tv: *mut PosixTimeval, _tz: *mut u8) -> i32 {
-    if tv.is_null() { return -1; }
+    if tv.is_null() { return set_errno_and_fail(EFAULT); }
     let mut out = libcapsule::users::Timeval::default();
     if libcapsule::users::gettimeofday(&mut out).is_ok() {
         unsafe {
@@ -1251,7 +1382,7 @@ pub extern "C" fn gettimeofday(tv: *mut PosixTimeval, _tz: *mut u8) -> i32 {
             });
         }
         0
-    } else { -1 }
+    } else { set_errno_and_fail(EIO) }
 }
 /// POSIX `setlocale(category, locale)` — always returns "C".
 #[no_mangle]
@@ -1341,32 +1472,32 @@ pub struct Winsize {
 pub extern "C" fn fcntl(fd: i32, cmd: i32, arg: i32) -> i32 {
     // Validate against the user-fd table.
     if fd < 0 || fd >= 64 {
-        return -1;
+        return set_errno_and_fail(EBADF);
     }
     unsafe {
         let entry_ptr = libcapsule::fd::USER_FD_TABLE.as_ptr().add(fd as usize);
         match cmd {
             F_GETFD => {
-                if (*entry_ptr).is_none() { return -1; }
+                if (*entry_ptr).is_none() { return set_errno_and_fail(EBADF); }
                 (*entry_ptr).unwrap().flags
             }
             F_SETFD => {
                 let slot = libcapsule::fd::USER_FD_TABLE
                     .get_mut(fd as usize)
                     .expect("fd oob");
-                if slot.is_none() { return -1; }
+                if slot.is_none() { return set_errno_and_fail(EBADF); }
                 slot.as_mut().unwrap().flags = arg & 1;
                 0
             }
             F_GETFL => {
-                if (*entry_ptr).is_none() { return -1; }
+                if (*entry_ptr).is_none() { return set_errno_and_fail(EBADF); }
                 (*entry_ptr).unwrap().flags
             }
             F_SETFL => {
                 let slot = libcapsule::fd::USER_FD_TABLE
                     .get_mut(fd as usize)
                     .expect("fd oob");
-                if slot.is_none() { return -1; }
+                if slot.is_none() { return set_errno_and_fail(EBADF); }
                 let entry = slot.as_mut().unwrap();
                 // Match Linux: the status-flags argument is
                 // XOR-ed into the entry's flags so setting
@@ -1380,7 +1511,7 @@ pub extern "C" fn fcntl(fd: i32, cmd: i32, arg: i32) -> i32 {
                 // Duplicate `fd` into the lowest free slot >= arg.
                 let entry = match (*entry_ptr) {
                     Some(e) => e,
-                    None => return -1,
+                    None => return set_errno_and_fail(EBADF),
                 };
                 let close_on_exec = cmd == F_DUPFD_CLOEXEC;
                 let mut new_fd = arg.max(0) as usize;
@@ -1398,9 +1529,9 @@ pub extern "C" fn fcntl(fd: i32, cmd: i32, arg: i32) -> i32 {
                     }
                     new_fd += 1;
                 }
-                -1
+                set_errno_and_fail(EMFILE)
             }
-            _ => -1,
+            _ => set_errno_and_fail(EINVAL),
         }
     }
 }
@@ -1410,7 +1541,9 @@ pub extern "C" fn ioctl(fd: i32, req: u32, arg: *mut u8) -> i32 {
     // Dispatch S6 TTY-class operations through the kernel.
     // Everything else (non-TTY ops) keeps the local stub for
     // backward compatibility; S7 / S9 will retire those.
-    if fd < 0 { return -1; }
+    if fd < 0 {
+        return set_errno_and_fail(EBADF);
+    }
     if fd >= 0
         && fd < (unsafe { libcapsule::fd::USER_FD_TABLE.len() }) as i32
     {
@@ -1426,7 +1559,7 @@ pub extern "C" fn ioctl(fd: i32, req: u32, arg: *mut u8) -> i32 {
             // Default winsize for non-PTY fds (stdin/stdout/
             // stderr — kept so bash's readline init in
             // non-PTY environments gets a sane answer).
-            if arg.is_null() { return -1; }
+            if arg.is_null() { return set_errno_and_fail(EFAULT); }
             unsafe {
                 let w = arg as *mut Winsize;
                 core::ptr::write_volatile(w, Winsize {
@@ -1437,7 +1570,7 @@ pub extern "C" fn ioctl(fd: i32, req: u32, arg: *mut u8) -> i32 {
         }
         TCGETS | TCSETS | TCSETSW | TCSETSF | TIOCGPGRP | TIOCSPGRP
         | TIOCSCTTY | TIOCNOTTY => 0,
-        _ => -1,
+        _ => set_errno_and_fail(ENOTTY),
     }
 }
 
