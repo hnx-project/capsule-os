@@ -46,8 +46,6 @@ fn intern_name(name: &str) -> Result<&'static str> {
 }
 
 pub fn sys_exit(code: i32) -> ! {
-    crate::log_info!("SYSCALL", "Process exited with code {}", code);
-
     // Mark the caller thread Dead and immediately reschedule.  Without
     // this, the calling thread stays in its current EL0 trap context,
     // the timer tick keeps selecting it via the self.threads fallback
@@ -96,7 +94,6 @@ pub fn sys_exit(code: i32) -> ! {
     // kernel either picks another thread or halts.
     let _ = caller_pid;
     unsafe { crate::task::scheduler::SCHEDULER.schedule(); }
-    crate::log_info!("SYSCALL", "SCHEDULER schedule caller_pid {}, pid {}", caller_pid, code);
 
     // `schedule()` either switched to another thread (and will not
     // return) or hit the all-dead halt path.  The `wfe` / `wfi`
@@ -170,12 +167,6 @@ pub fn sys_exec(table: &HandleTable, program_name: &str) -> Result<()> {
     // CPU should idle.
     unsafe { crate::task::scheduler::SCHEDULER.schedule(); }
 
-    crate::log_info!(
-        "EXEC",
-        "{} launched at EL0 (path={})",
-        program_name,
-        path_str
-    );
     Ok(())
 }
 
@@ -609,11 +600,6 @@ pub fn sys_spawn_std(
                 off += len;
             }
         }
-        crate::log_info!(
-            "SPAWN_STD",
-            "pid={} envp parsed (bytes_consumed={})",
-            pid, off
-        );
     }
 
     // 4. Resolve the new process and install the std fds.
@@ -675,13 +661,8 @@ pub fn sys_spawn_std(
                 {
                     apply_file_action(child, table, op, arg0, arg1, arg2);
                 }
-                applied += 1;
+                    applied += 1;
             }
-            crate::log_info!(
-                "SPAWN_STD",
-                "pid={} file_actions applied={}",
-                pid, applied
-            );
         }
     }
 
@@ -725,11 +706,6 @@ pub fn sys_spawn_std(
                     child.pgroup = new_pgroup;
                 }
             }
-            crate::log_info!(
-                "SPAWN_STD",
-                "pid={} attr flags={:#x} pgroup={}",
-                pid, flags, pgroup_arg
-            );
         }
     }
 
@@ -1127,15 +1103,12 @@ pub fn sys_service_spawn(
     desc.path = unsafe { core::mem::transmute(path_str) };
 
     // 4. Delegate completely to our high-level, zero-duplication ServiceLauncher!
-    crate::log_info!("SYSCALL_SPAWN", "sys_service_spawn: Entering ServiceLauncher::launch for desc: name={}, path={}", desc.name, desc.path);
     let pid = crate::loader::ServiceLauncher::launch(&desc)?;
-    crate::log_info!("SYSCALL_SPAWN", "sys_service_spawn: ServiceLauncher::launch succeeded with PID={}", pid);
-    
+
     // Register the Process handle so the caller can wait/terminate it normally
     let rights = Rights::READ.bits() | Rights::WRITE.bits();
     let _ = table.add(crate::object::handle_table::KernelObject::Process(pid), rights);
-    
-    crate::log_info!("SYSCALL_SPAWN", "sys_service_spawn: Successfully added to handle table, returning PID={}", pid);
+
     Ok(pid)
 }
 
@@ -1165,23 +1138,12 @@ pub fn sys_getcwd(buf_ptr: usize, buf_len: usize) -> Result<usize> {
     if l0_pa == 0 {
         return Err(Status::InvalidArgs);
     }
-    crate::log_info!(
-        "GETCWD",
-        "pid={} cwd_len={} buf_len={} copy_len={}",
-        caller_pid, proc.cwd_len, buf_len, copy_len
-    );
     crate::syscall::handlers::ipc::safe_copy_to_user(
         l0_pa,
         &proc.cwd[..copy_len],
         buf_ptr,
         copy_len,
     )?;
-    crate::log_info!(
-        "GETCWD",
-        "pid={} copied {:?}",
-        caller_pid,
-        core::str::from_utf8(&proc.cwd[..copy_len]).unwrap_or("?")
-    );
     Ok(copy_len)
 }
 
@@ -1213,12 +1175,6 @@ pub fn sys_chdir(path_ptr: usize, path_len: usize) -> Result<usize> {
     )?;
     proc.cwd[..copy_len].copy_from_slice(&path_buf[..copy_len]);
     proc.cwd_len = copy_len;
-    crate::log_info!(
-        "CHDIR",
-        "process '{}' cwd -> {:?}",
-        proc.name,
-        core::str::from_utf8(&proc.cwd[..proc.cwd_len]).unwrap_or("?")
-    );
     Ok(0)
 }
 
@@ -1405,20 +1361,8 @@ pub fn sys_wait4(
             // next opportunity to reap will be the caller's next
             // `wait4()` invocation.  This matches the busy-poll
             // flavour every other use site already exhibits.
-            crate::log_info!(
-                "WAIT4",
-                "caller pid={}: WNOHANG and running child pid={}",
-                caller_pid,
-                running_pid
-            );
             return Ok(0);
         }
-        crate::log_info!(
-            "WAIT4",
-            "caller pid={} has running child pid={}, no zombie yet",
-            caller_pid,
-            running_pid
-        );
         return Err(Status::TryAgain);
     }
     Err(Status::NotFound)
@@ -1590,14 +1534,6 @@ pub fn sys_pipe(
     )
     .ok();
 
-    crate::log_info!(
-        "PIPE",
-        "allocated pipe id={} for pid={} -> read_fd={} write_fd={}",
-        pipe_id.0,
-        caller_pid,
-        rd_fd,
-        wr_fd
-    );
     Ok(())
 }
 
