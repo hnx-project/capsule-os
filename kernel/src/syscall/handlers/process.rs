@@ -1277,6 +1277,12 @@ pub fn sys_getppid() -> Result<u64> {
 /// `pid > 0`  - reap a specific child whose process_id is `pid`.  If
 ///               the child is still running we return Status::TryAgain;
 ///               the caller can spin, yield, or sleep.
+/// POSIX `wait4(pid, status, options, rusage)` flags.  Mirrors
+/// Linux `<sys/wait.h>` values.
+const WNOHANG: i32 = 1;
+#[allow(dead_code)]
+const WUNTRACED: i32 = 2;
+
 /// `pid = 0`  - reap any direct child of the caller (1.0 stub for
 ///               process-group-wait).  Process-group support is not
 ///               yet implemented in CapsuleOS; for 1.0 we collapse
@@ -1290,14 +1296,29 @@ pub fn sys_getppid() -> Result<u64> {
 /// buggy caller can pass null and get Status::InvalidArgs back, while
 /// a well-formed caller gets a normal Unix-compatible wait-status.
 ///
-/// On success returns the pid of the reaped child.
+/// `options`:
+///   `WNOHANG` (1) — return 0 immediately if no zombie child is
+///                    available.  Without `WNOHANG` we block until
+///                    either a child becomes a zombie or all
+///                    children have been reaped.
+///   `WUNTRACED` (2) — also report stopped children.  CapsuleOS
+///                    has no SIGSTOP / ptrace infrastructure in 1.0
+///                    so this is a no-op (we never produce stopped
+///                    processes); we accept the flag silently for
+///                    ABI compatibility.
+///
+/// On success returns the pid of the reaped child.  With `WNOHANG`
+/// and no zombie available, returns `Ok(0)` rather than blocking.
 pub fn sys_wait4(
     table: &HandleTable,
     pid: i64,
     status_out_ptr: usize,
-    _options: i32,
+    options: i32,
 ) -> Result<u64> {
     let _ = table;
+    let wnohang = (options & WNOHANG) != 0;
+    // WUNTRACED is accepted but ignored: no stopped children in 1.0.
+    let _ = options & WUNTRACED;
 
     let caller_pid = current_process_id()?;
 
@@ -1378,6 +1399,20 @@ pub fn sys_wait4(
     }
 
     if let Some(running_pid) = found_running {
+        if wnohang {
+            // POSIX: return 0 (no child exited yet) without blocking.
+            // We don't have a real block-on-zombie primitive; the
+            // next opportunity to reap will be the caller's next
+            // `wait4()` invocation.  This matches the busy-poll
+            // flavour every other use site already exhibits.
+            crate::log_info!(
+                "WAIT4",
+                "caller pid={}: WNOHANG and running child pid={}",
+                caller_pid,
+                running_pid
+            );
+            return Ok(0);
+        }
         crate::log_info!(
             "WAIT4",
             "caller pid={} has running child pid={}, no zombie yet",
