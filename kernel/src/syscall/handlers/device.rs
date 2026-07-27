@@ -158,3 +158,24 @@ pub fn sys_net_recv(buf_user_va: usize, max_len: usize) -> Result<usize> {
     
     Ok(actual_len)
 }
+
+/// SYSCALL_DISPLAY_FLUSH: copy VMO window frame to Virtio-GPU backing memory and flush to screen.
+pub fn sys_display_flush(table: &crate::object::handle_table::HandleTable, handle_raw: u32) -> Result<()> {
+    let hv = shared::types::HandleValue::new(handle_raw);
+    let rights = crate::object::rights::Rights::READ.bits();
+    
+    table.with_vmo(hv, rights, |vmo| {
+        let size = vmo.size();
+        let mut offset = 0;
+        while offset < size {
+            let page_idx = offset / 4096;
+            let page_slot = vmo.page_slot(page_idx);
+            if let Some(pa) = unsafe { *page_slot } {
+                crate::drivers::virtio_gpu::copy_to_gpu_buffer(pa.as_usize(), offset);
+            }
+            offset += 4096;
+        }
+        
+        crate::drivers::virtio_gpu::flush_to_screen();
+    })
+}

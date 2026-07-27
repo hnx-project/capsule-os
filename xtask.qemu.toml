@@ -18,15 +18,16 @@ args = [
     "-cpu", "cortex-a72",
     "-smp", "{smp}",
     "-m", "512M",
-    "-nographic",
     "-device", "loader,file={bootloader_bin},addr={boot_addr},cpu-num=0,force-raw=on",
     "-device", "loader,file={kernel_bin},addr={ohc_addr},force-raw=on",
     "-device", "loader,file={qemu_dtb},addr={dtb_addr},force-raw=on",
     "-device", "loader,file={rootfs_img},addr={rootfs_addr},force-raw=on",
     "-drive", "if=none,format=raw,id=hd0,file=disk.img",
     "-device", "virtio-blk-device,drive=hd0",
+    "-device", "virtio-gpu-device",
+    "-serial", "stdio",
     "-semihosting"
-]
+  ]
 dtb_dump_args = [
     "-M", "virt,secure=off",
     "-cpu", "cortex-a72",

@@ -203,6 +203,8 @@ pub const SYSCALL_GET_EXTRA_FDS: u32 = 160;
 /// registering `svc.vfs`, etc.) without blocking on the IPC bus.
 pub const SYSCALL_YIELD: u32 = 114;
 
+pub const SYSCALL_DISPLAY_FLUSH: u32 = 161;
+
 /// Process Manager syscall — multiplexed over `cmd`:
 ///   cmd=0: CREATE(parent_pid, name_ptr, l0_pa) → pid
 ///   cmd=1: EXIT(pid, exit_code) → status

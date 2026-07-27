@@ -633,6 +633,24 @@ pub fn thread_start(thread_handle: u32) -> Result<()> {
     }
 }
 
+/// Commit and flush our local GPU frame buffer VMO to the host screen display window.
+pub fn display_flush(vmo_handle: usize) -> Result<()> {
+    let ret = syscall!(
+        shared::syscall_nums::SYSCALL_DISPLAY_FLUSH,
+        vmo_handle,
+        0,
+        0,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(())
+    }
+}
+
 /// Read a single 512-byte sector from the block device.
 pub fn block_read(sector: u64, dst_va: usize) -> Result<()> {
     let ret = syscall!(

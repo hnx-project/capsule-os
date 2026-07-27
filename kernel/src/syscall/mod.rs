@@ -133,6 +133,12 @@ pub fn syscall_dispatch(
             Err(e) => e.to_raw(),
         };
     }
+    if syscall_num == SYSCALL_DISPLAY_FLUSH {
+        return match handlers::device::sys_display_flush(table, arg0 as u32) {
+            Ok(()) => 0,
+            Err(e) => e.to_raw(),
+        };
+    }
 
     // 3c. S1 identity / clock syscalls.
     if let Some(res) = dispatch_identity(syscall_num, arg0, arg1, arg2, arg3, arg4, arg5) {
