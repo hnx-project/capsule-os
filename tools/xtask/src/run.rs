@@ -20,10 +20,10 @@ pub fn run(resolved: &Resolved, plat: &Platform, gdb: bool) -> Result<(), String
     let (boot_bin, boot_bin_raw, kern_bin, r_img) = resolve_artifact_paths(&resolved.build, plat)?;
 
     // 2. Generate Device Tree Blob
-    generate_qemu_dtb(plat, &boot_bin, &boot_bin_raw, &kern_bin, &r_img)?;
+    generate_qemu_dtb(resolved, plat, &boot_bin, &boot_bin_raw, &kern_bin, &r_img)?;
 
     // 3. Launch QEMU with fully rendered dynamic arguments
-    launch_qemu(plat, gdb, &boot_bin, &boot_bin_raw, &kern_bin, &r_img);
+    launch_qemu(resolved, plat, gdb, &boot_bin, &boot_bin_raw, &kern_bin, &r_img);
     Ok(())
 }
 
@@ -68,6 +68,7 @@ pub fn resolve_artifact_paths(
 }
 
 pub fn generate_qemu_dtb(
+    resolved: &Resolved,
     plat: &Platform,
     bootloader_bin: &str,
     bootloader_bin_raw: &str,
@@ -83,6 +84,7 @@ pub fn generate_qemu_dtb(
     // Render dtb_dump_args dynamically
     for arg in &plat.qemu_dtb_dump_args {
         let rendered_arg = render_variables(
+            resolved,
             arg,
             plat,
             bootloader_bin,
@@ -114,6 +116,7 @@ pub fn generate_qemu_dtb(
         return Err("failed to decompile DTB".to_string());
     }
 
+    let dtb_output = format!("{}/qemu.dtb", resolved.root.project.dist_dir());
     let result = run_silent(
         Command::new("dtc").args([
             "-I",
@@ -122,7 +125,7 @@ pub fn generate_qemu_dtb(
             "dtb",
             "/tmp/qemu.dts",
             "-o",
-            "build/dist/qemu.dtb",
+            &dtb_output,
         ]),
         || {},
     );
@@ -136,6 +139,7 @@ pub fn generate_qemu_dtb(
 }
 
 fn launch_qemu(
+    resolved: &Resolved,
     plat: &Platform,
     gdb: bool,
     bootloader_bin: &str,
@@ -151,6 +155,7 @@ fn launch_qemu(
     let mut qemu = Command::new(&plat.qemu_bin);
     for arg in &plat.qemu_args {
         let rendered_arg = render_variables(
+            resolved,
             arg,
             plat,
             bootloader_bin,
@@ -172,6 +177,7 @@ fn launch_qemu(
 }
 
 fn render_variables(
+    resolved: &Resolved,
     template: &str,
     plat: &Platform,
     bootloader_bin: &str,
@@ -179,6 +185,7 @@ fn render_variables(
     kernel_bin: &str,
     rootfs_img: &str,
 ) -> String {
+    let dtb_output = format!("{}/qemu.dtb", resolved.root.project.dist_dir());
     template
         .replace("{rust_target}", &plat.rust_target)
         .replace("{boot_addr}", &plat.boot_addr)
@@ -189,7 +196,7 @@ fn render_variables(
         .replace("{bootloader_bin_raw}", bootloader_bin_raw)
         .replace("{kernel_bin}", kernel_bin)
         .replace("{rootfs_img}", rootfs_img)
-        .replace("{qemu_dtb}", "build/dist/qemu.dtb")
+        .replace("{qemu_dtb}", &dtb_output)
         .replace("{smp}", &plat.qemu_smp.to_string())
 }
 
@@ -206,5 +213,5 @@ pub fn generate_qemu_dtb_artifact_paths(resolved: &Resolved, plat: &Platform) ->
         &plat.arch, "virt", &resolved.build, &resolved.runtime,
     )
     .ok_or_else(|| "virt profile missing for dtb generation".to_string())?;
-    generate_qemu_dtb(&virt, &boot_bin, &boot_bin_raw, &kern_bin, &r_img)
+    generate_qemu_dtb(resolved, &virt, &boot_bin, &boot_bin_raw, &kern_bin, &r_img)
 }

@@ -1,0 +1,4 @@
+name = "fileagent"
+path = "fileagent"
+dependencies = ["blkdev", "devmgr", "procmgr"]
+is_program = false

@@ -25,7 +25,7 @@ members = [
     "userspace/services/loader",
     "userspace/services/procmgr",
     "userspace/services/tty",
-    "userspace/services/initd",
+    "userspace/services/servicesd",
     "userspace/services/netd",
     # "userspace/services/init",
     "userspace/programs/osh",

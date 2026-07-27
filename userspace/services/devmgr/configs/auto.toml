@@ -1,0 +1,4 @@
+name = "devmgr"
+path = "devmgr"
+dependencies = []
+is_program = false

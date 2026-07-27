@@ -1,10 +1,10 @@
 [package]
-name = "hnx-initd"
+name = "hnx-servicesd"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "initd"
+name = "servicesd"
 path = "src/main.rs"
 
 [dependencies]

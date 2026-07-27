@@ -1,0 +1,4 @@
+name = "procmgr"
+path = "procmgr"
+dependencies = []
+is_program = false

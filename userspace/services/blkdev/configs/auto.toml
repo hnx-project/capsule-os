@@ -1,0 +1,4 @@
+name = "blkdev"
+path = "blkdev"
+dependencies = []
+is_program = false

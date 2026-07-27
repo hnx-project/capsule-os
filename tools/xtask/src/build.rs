@@ -133,18 +133,23 @@ const BOLD_GREEN: &str = "\x1b[1;32m";
 const BOLD_CYAN: &str = "\x1b[1;36m";
 const RESET: &str = "\x1b[0m";
 
-fn generate_c_bindings() -> Result<(), String> {
-    let crate_dir = "libraries/libcapsule";
+fn generate_c_bindings(config: &crate::config::RootConfig) -> Result<(), String> {
+    let cb = match &config.toolchain.c_bindings {
+        Some(x) => x,
+        None => return Ok(()),
+    };
     let bindings = cbindgen::Builder::new()
-        .with_crate(crate_dir)
+        .with_crate(&cb.crate_path)
         .with_config(
-            cbindgen::Config::from_file("libraries/libcapsule/cbindgen.toml").unwrap_or_default(),
+            cbindgen::Config::from_file(&cb.config_path).unwrap_or_default(),
         )
         .generate()
         .map_err(|e| format!("cbindgen failed: {:?}", e))?;
 
-    std::fs::create_dir_all("libraries/libcapsule/include").map_err(|e| e.to_string())?;
-    bindings.write_to_file("libraries/libcapsule/include/capsule.h");
+    if let Some(parent) = Path::new(&cb.output_header).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    bindings.write_to_file(&cb.output_header);
     Ok(())
 }
 
@@ -155,7 +160,7 @@ pub fn build(resolved: &Resolved, plat: &Platform, generate_dist: bool) -> Resul
     );
 
     // Generate C bindings first
-    generate_c_bindings()?;
+    generate_c_bindings(&resolved.root)?;
 
     let v = get_parsed_version(&resolved.root);
 
@@ -181,7 +186,7 @@ pub fn build(resolved: &Resolved, plat: &Platform, generate_dist: bool) -> Resul
                         build_userspace_program(plat, u_crate, &v)?;
                     }
                 }
-                pack_user_programs(plat, sub)?;
+                pack_user_programs(&resolved.root, plat, sub)?;
                 if let (Some(src_etc), Some(dst_etc)) = (&sub.etc_source, &sub.etc_target) {
                     stage_etc_files(src_etc, dst_etc).map_err(|e| e.to_string())?;
                 }
@@ -194,7 +199,7 @@ pub fn build(resolved: &Resolved, plat: &Platform, generate_dist: bool) -> Resul
             }
             "bootloader" => {
                 build_bootloader(sub, plat, &v)?;
-                extract_bootloader_bin(sub, plat)?;
+                extract_bootloader_bin(&resolved.root, sub, plat)?;
             }
             "foreign" => {
                 // Foreign-build arm: autotools / cmake / gnu-make
@@ -226,7 +231,7 @@ pub fn build(resolved: &Resolved, plat: &Platform, generate_dist: bool) -> Resul
     }
 
     if generate_dist {
-        generate_dist_image(&resolved.root, plat, &v)?;
+        generate_dist_image(resolved, plat, &v)?;
     }
 
     println!(
@@ -304,7 +309,7 @@ fn build_userspace_program(
     }
 }
 
-fn pack_user_programs(plat: &Platform, sub: &Subproject) -> Result<(), String> {
+fn pack_user_programs(config: &crate::config::RootConfig, plat: &Platform, sub: &Subproject) -> Result<(), String> {
     let staging_bin = sub
         .staging_bin_dir
         .as_ref()
@@ -316,11 +321,17 @@ fn pack_user_programs(plat: &Platform, sub: &Subproject) -> Result<(), String> {
         .as_ref()
         .ok_or_else(|| "missing crates in userspace config".to_string())?;
 
+    let target_name = Path::new(&plat.userspace_target)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("aarch64-unknown-capsule");
+
     for u_crate in crates {
         print!("{}  Packing{} {}...", BOLD_GREEN, RESET, u_crate.out_name);
         let elf = format!(
-            "build/target/{}-unknown-capsule/release/{}",
-            plat.arch,
+            "{}/{}/release/{}",
+            config.project.target_dir,
+            target_name,
             u_crate.crate_name.replace("hnx-", "")
         );
         let output = format!("{}/{}", staging_bin, u_crate.out_name);
@@ -328,9 +339,9 @@ fn pack_user_programs(plat: &Platform, sub: &Subproject) -> Result<(), String> {
             Command::new("cargo").args([
                 "run",
                 "--manifest-path",
-                "tools/ohlink-toolchain/Cargo.toml",
+                &config.toolchain.linker.path,
                 "-p",
-                "ohlink-linker",
+                &config.toolchain.linker.package,
                 "--",
                 "--input",
                 &elf,
@@ -348,6 +359,39 @@ fn pack_user_programs(plat: &Platform, sub: &Subproject) -> Result<(), String> {
         );
         if !result.success {
             return Err(format!("failed to pack {}", u_crate.out_name));
+        }
+
+        if let Some(cfg_path) = &u_crate.config_path {
+            let src_path = Path::new(cfg_path);
+            if src_path.exists() {
+                let staging_bin_path = Path::new(staging_bin);
+                let system_dir = staging_bin_path.parent().ok_or_else(|| "staging_bin_dir has no parent".to_string())?;
+                let dst_dir = system_dir.join("share/configs").join(&u_crate.out_name);
+
+                if src_path.is_dir() {
+                    for entry in std::fs::read_dir(src_path).map_err(|e| e.to_string())? {
+                        let entry = entry.map_err(|e| e.to_string())?;
+                        let path = entry.path();
+                        if path.is_file() {
+                            if let Some(ext) = path.extension() {
+                                if ext == "toml" {
+                                    std::fs::create_dir_all(&dst_dir).map_err(|e| e.to_string())?;
+                                    if let Some(file_name) = path.file_name() {
+                                        let dst_path = dst_dir.join(file_name);
+                                        std::fs::copy(&path, &dst_path).map_err(|e| {
+                                            format!("Failed to copy config {:?} to {:?}: {}", path, dst_path, e)
+                                        })?;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if src_path.is_file() {
+                    std::fs::create_dir_all(&dst_dir).map_err(|e| e.to_string())?;
+                    let dst_path = dst_dir.join("auto.toml");
+                    std::fs::copy(src_path, &dst_path).map_err(|e| format!("Failed to copy config for {}: {}", u_crate.out_name, e))?;
+                }
+            }
         }
     }
 
@@ -419,6 +463,11 @@ fn link_kernel(sub: &Subproject, plat: &Platform) -> Result<(), String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
+    let sub_path = sub
+        .path
+        .as_ref()
+        .ok_or_else(|| "missing path in kernel config".to_string())?;
+
     print!("{}  Linking{} {}...", BOLD_GREEN, RESET, link_output);
     let lld = find_rust_lld();
     let result = run_silent(
@@ -432,7 +481,8 @@ fn link_kernel(sub: &Subproject, plat: &Platform) -> Result<(), String> {
             "-T",
             &plat.linker_script,
             &format!(
-                "kernel/build/target/{}/release/libkernel.a",
+                "{}/build/target/{}/release/libkernel.a",
+                sub_path,
                 plat.rust_target
             ),
             "--no-whole-archive",
@@ -557,7 +607,7 @@ fn build_bootloader(sub: &Subproject, plat: &Platform, v: &ParsedVersion) -> Res
     }
 }
 
-fn extract_bootloader_bin(sub: &Subproject, plat: &Platform) -> Result<(), String> {
+fn extract_bootloader_bin(config: &crate::config::RootConfig, sub: &Subproject, plat: &Platform) -> Result<(), String> {
     let package = sub
         .package
         .as_ref()
@@ -579,7 +629,7 @@ fn extract_bootloader_bin(sub: &Subproject, plat: &Platform) -> Result<(), Strin
         Command::new(&objcopy).args([
             "-O",
             "binary",
-            &format!("build/target/{}/release/{}", plat.rust_target, package),
+            &format!("{}/{}/release/{}", config.project.target_dir, plat.rust_target, package),
             &resolved_bin,
         ]),
         || {},
@@ -624,14 +674,15 @@ fn print_build_summary(build: &crate::config::BuildConfig, plat: &Platform) {
     }
 }
 
-fn generate_dist_image(config: &crate::config::RootConfig, plat: &Platform, v: &ParsedVersion) -> Result<(), String> {
+fn generate_dist_image(resolved: &Resolved, plat: &Platform, v: &ParsedVersion) -> Result<(), String> {
+    let config = &resolved.root;
     if plat.profile == "rpi" {
         // Step 1: Create build output directory and dynamic firmware cache
         std::fs::create_dir_all(&config.distribution.output_dir)
             .map_err(|e| format!("Failed to create distribution directory: {}", e))?;
 
-        let cache_dir = "build/dist/rpi_firmware_cache";
-        std::fs::create_dir_all(cache_dir)
+        let cache_dir = format!("{}/rpi_firmware_cache", config.project.dist_dir());
+        std::fs::create_dir_all(&cache_dir)
             .map_err(|e| format!("Failed to create cache dir: {}", e))?;
 
         // Download official Broadcom firmware dynamically from stable GitHub URL
@@ -679,9 +730,9 @@ fn generate_dist_image(config: &crate::config::RootConfig, plat: &Platform, v: &
 
         // Build dual-in-one kernel8.img (bootloader padded to 128KB + kernel hnxcore)
         let mut kernel8_data = Vec::new();
-        let bootloader_path = "build/target/aarch64-unknown-none/release/capsule-bootloader.bin";
-        let mut boot_data = std::fs::read(bootloader_path)
-            .map_err(|e| format!("Failed to read bootloader: {}", e))?;
+        let bootloader_path = format!("{}/aarch64-unknown-none/release/capsule-bootloader.bin", config.project.target_dir);
+        let mut boot_data = std::fs::read(&bootloader_path)
+            .map_err(|e| format!("Failed to read bootloader from {}: {}", bootloader_path, e))?;
         if boot_data.len() > 131072 {
             return Err(format!(
                 "Bootloader size exceeds 128KB: {}",
@@ -691,9 +742,9 @@ fn generate_dist_image(config: &crate::config::RootConfig, plat: &Platform, v: &
         boot_data.resize(131072, 0);
         kernel8_data.extend_from_slice(&boot_data);
 
-        let kernel_path = "build/dist/kernel/hnxcore";
+        let kernel_path = format!("{}/kernel/hnxcore", config.project.dist_dir());
         let kernel_data =
-            std::fs::read(kernel_path).map_err(|e| format!("Failed to read kernel: {}", e))?;
+            std::fs::read(&kernel_path).map_err(|e| format!("Failed to read kernel from {}: {}", kernel_path, e))?;
         kernel8_data.extend_from_slice(&kernel_data);
 
         // Step 2: Create raw physical SD disk image file
@@ -813,7 +864,12 @@ initramfs rootfs.img 0x46000000
             .map_err(|e| e.to_string())?;
 
         // Write rootfs.img
-        let rootfs_src = "kernel/files/rootfs.img";
+        let rootfs_src_owned = resolved.build.subprojects.iter()
+            .find(|sub| sub.subproject_type == "userspace")
+            .and_then(|sub| sub.rootfs_output.as_ref())
+            .cloned()
+            .unwrap_or_else(|| "kernel/files/rootfs.img".to_string());
+        let rootfs_src = &rootfs_src_owned;
         if Path::new(rootfs_src).exists() {
             let mut rfs_file = root_dir
                 .create_file("rootfs.img")
@@ -823,7 +879,9 @@ initramfs rootfs.img 0x46000000
         }
 
         // Write DTB folder
-        let dtb_src = "dtb";
+        let dtb_src_owned = config.distribution.dtb_dir.clone()
+            .unwrap_or_else(|| "dtb".to_string());
+        let dtb_src = &dtb_src_owned;
         if Path::new(dtb_src).exists() {
             let dtb_dir = root_dir.create_dir("dtb").map_err(|e| e.to_string())?;
             copy_dir_to_fat32_recursive(Path::new(dtb_src), &dtb_dir)?;

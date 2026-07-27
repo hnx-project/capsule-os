@@ -43,6 +43,13 @@ pub struct Project {
     pub codename: String,
     pub version: String,
     pub target_dir: String,
+    pub dist_dir: Option<String>,
+}
+
+impl Project {
+    pub fn dist_dir(&self) -> &str {
+        self.dist_dir.as_deref().unwrap_or("build/dist")
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -63,6 +70,15 @@ pub struct Submodule {
 pub struct Toolchain {
     pub bootstrap: Vec<BootstrapItem>,
     pub linker: Linker,
+    #[serde(default)]
+    pub c_bindings: Option<CBindingsConfig>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct CBindingsConfig {
+    pub crate_path: String,
+    pub config_path: String,
+    pub output_header: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -82,6 +98,7 @@ pub struct Linker {
 pub struct Distribution {
     pub output_dir: String,
     pub image_name_template: String,
+    pub dtb_dir: Option<String>,
     // Stages only live in the root config because they apply to both
     // QEMU and RPI final-image generation.
     #[serde(default)]
@@ -165,6 +182,7 @@ pub struct UserCrate {
     pub crate_name: String,
     pub out_name: String,
     pub entry: String,
+    pub config_path: Option<String>,
 }
 
 // ----------------------------------------------------------------------------

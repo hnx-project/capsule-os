@@ -124,10 +124,10 @@ impl ServiceManager {
     }
 }
 
-/// Notify the Init Service (initd) that this service has finished initialization
+/// Notify the Service Manager (servicesd) that this service has finished initialization
 /// and is ready to accept client connections.
 pub fn notify_init(service_name: &str) -> Result<()> {
-    if let Ok(init_chan) = crate::syscalls::channel_lookup("svc.init") {
+    if let Ok(init_chan) = crate::syscalls::channel_lookup("svc.servicesd") {
         let mut msg = [0u8; 148];
         msg[0] = 1; // INIT_CMD_READY
         let name_bytes = service_name.as_bytes();

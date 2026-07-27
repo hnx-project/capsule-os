@@ -1,0 +1,4 @@
+name = "netd"
+path = "netd"
+dependencies = ["devmgr", "procmgr"]
+is_program = false

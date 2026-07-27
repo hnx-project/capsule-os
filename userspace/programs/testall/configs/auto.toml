@@ -1,0 +1,4 @@
+name = "testall"
+path = "testall"
+dependencies = ["fileagent", "tty", "netd"]
+is_program = true

@@ -49,14 +49,14 @@ name    = "userspace-apps"
 type    = "userspace"
 enable  = true
 crates = [
-    { crate_name = "hnx-devmgr", out_name = "devmgr", entry = "65536" },
-    { crate_name = "hnx-blkdev", out_name = "blkdev", entry = "65536" },
-    { crate_name = "hnx-fileagent", out_name = "fileagent", entry = "65536" },
+    { crate_name = "hnx-devmgr", out_name = "devmgr", entry = "65536", config_path = "userspace/services/devmgr/configs" },
+    { crate_name = "hnx-blkdev", out_name = "blkdev", entry = "65536", config_path = "userspace/services/blkdev/configs" },
+    { crate_name = "hnx-fileagent", out_name = "fileagent", entry = "65536", config_path = "userspace/services/fileagent/configs" },
     { crate_name = "hnx-loader", out_name = "loader", entry = "65536" },
-    { crate_name = "hnx-procmgr", out_name = "procmgr", entry = "65536" },
-    { crate_name = "hnx-tty", out_name = "tty", entry = "65536" },
-    { crate_name = "hnx-initd", out_name = "initd", entry = "65536" },
-    { crate_name = "hnx-netd", out_name = "netd", entry = "65536" },
+    { crate_name = "hnx-procmgr", out_name = "procmgr", entry = "65536", config_path = "userspace/services/procmgr/configs" },
+    { crate_name = "hnx-tty", out_name = "tty", entry = "65536", config_path = "userspace/services/tty/configs" },
+    { crate_name = "hnx-servicesd", out_name = "servicesd", entry = "65536" },
+    { crate_name = "hnx-netd", out_name = "netd", entry = "65536", config_path = "userspace/services/netd/configs" },
     { crate_name = "hnx-osh", out_name = "osh", entry = "65536" },
     { crate_name = "hnx-ls", out_name = "ls", entry = "65536" },
     { crate_name = "hnx-cat", out_name = "cat", entry = "65536" },
@@ -66,7 +66,7 @@ crates = [
     { crate_name = "hnx-rmdir", out_name = "rmdir", entry = "65536" },
     { crate_name = "hnx-ps", out_name = "ps", entry = "65536" },
     { crate_name = "hnx-kill", out_name = "kill", entry = "65536" },
-    { crate_name = "hnx-testall", out_name = "testall", entry = "65536" }
+    { crate_name = "hnx-testall", out_name = "testall", entry = "65536", config_path = "userspace/programs/testall/configs" }
 ]
 staging_bin_dir = "build/dist/staging_rootfs/system/bin"
 rootfs_output   = "kernel/files/rootfs.img"

@@ -34,11 +34,22 @@ pub fn test(resolved: &Resolved, plat: &Platform, timeout_secs: u64) -> Result<(
         return Err(format!("prebuild failed: {}", e));
     }
 
-    let boot_bin =
-        std::path::Path::new("build/target/aarch64-unknown-none/release/capsule-bootloader.bin");
-    let kernel_bin = std::path::Path::new("build/dist/kernel/hnxcore");
-    let rootfs_img = std::path::Path::new("kernel/files/rootfs.img");
-    let dtb_img = std::path::Path::new("build/dist/qemu.dtb");
+    let boot_bin_owned = format!("{}/aarch64-unknown-none/release/capsule-bootloader.bin", resolved.root.project.target_dir);
+    let boot_bin = std::path::Path::new(&boot_bin_owned);
+
+    let kernel_bin_owned = format!("{}/kernel/hnxcore", resolved.root.project.dist_dir());
+    let kernel_bin = std::path::Path::new(&kernel_bin_owned);
+
+    let rootfs_img_owned = resolved.build.subprojects.iter()
+        .find(|sub| sub.subproject_type == "userspace")
+        .and_then(|sub| sub.rootfs_output.as_ref())
+        .cloned()
+        .unwrap_or_else(|| "kernel/files/rootfs.img".to_string());
+    let rootfs_img = std::path::Path::new(&rootfs_img_owned);
+
+    let dtb_img_owned = format!("{}/qemu.dtb", resolved.root.project.dist_dir());
+    let dtb_img = std::path::Path::new(&dtb_img_owned);
+
     for p in [boot_bin, kernel_bin, rootfs_img, dtb_img] {
         if !p.exists() {
             return Err(format!(

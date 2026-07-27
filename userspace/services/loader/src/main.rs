@@ -20,20 +20,20 @@ pub fn main() -> i32 {
     // 1. Instantiate the stateless BootFS ServiceLoader
     let bootstrap_service = libcapsule::ServiceLoader::new(BOOTFS_VMO_HANDLE);
 
-    // 2. Spawn 'initd' (Service Manager) from BootFS
+    // 2. Spawn 'servicesd' (Service Manager) from BootFS
     //    We deliberately use the user-mode `ServiceLoader` here, matching the
     //    same call shape that previously launched every L3 service.  This keeps
     //    the Loader as a thin EL0 bootstrap host without ever needing the
     //    kernel-level `sys_service_spawn` privileged path, so the BootFS VMO
     //    handle (slot 100) is never copied across process boundaries and
-    //    initd resolves the VFS archive directly via the same primitive.
-    kprintln!("Loader: Spawning 'initd' service manager via ServiceLoader...");
-    match bootstrap_service.spawn_service("initd") {
-        Ok(handle) => kprintln!("Loader: [SUCCESS] 'initd' spawned, handle={}", handle),
-        Err(e) => kprintln!("Loader: [ERROR] Failed to spawn 'initd': {:?}", e),
+    //    servicesd resolves the VFS archive directly via the same primitive.
+    kprintln!("Loader: Spawning 'servicesd' service manager via ServiceLoader...");
+    match bootstrap_service.spawn_service("servicesd") {
+        Ok(handle) => kprintln!("Loader: [SUCCESS] 'servicesd' spawned, handle={}", handle),
+        Err(e) => kprintln!("Loader: [ERROR] Failed to spawn 'servicesd': {:?}", e),
     }
 
-    kprintln!("Loader: Bootloader bootstrap hand-off to initd complete.");
+    kprintln!("Loader: Bootloader bootstrap hand-off to servicesd complete.");
     kprintln!("====================================================");
 
     // 3. Fallback yield loop to let other spawned services execute
