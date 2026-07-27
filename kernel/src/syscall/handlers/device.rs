@@ -64,6 +64,32 @@ pub fn sys_device_info(dst_user_va: usize, buf_len: usize) -> Result<usize> {
         idx += 1;
     }
 
+    if idx < records_cap {
+        let width = unsafe { crate::drivers::virtio_gpu::SCREEN_WIDTH };
+        let height = unsafe { crate::drivers::virtio_gpu::SCREEN_HEIGHT };
+        let rec = DeviceInfoRecord::new(DEVICE_TYPE_DISPLAY, "display", width as u64, height as u64, 0xFFFFFFFF);
+        write_record(&mut local, idx, &rec);
+        idx += 1;
+    }
+
+    if idx < records_cap {
+        // Poll latest events from physical mouse hardware
+        crate::drivers::virtio_input::poll_events();
+
+        let mouse_x = crate::drivers::virtio_input::get_mouse_x();
+        let mouse_y = crate::drivers::virtio_input::get_mouse_y();
+        let mouse_down = crate::drivers::virtio_input::is_mouse_down();
+
+        // Compactly encode mouse state into base field
+        let metadata = (mouse_x as u64 & 0xFFFF)
+            | ((mouse_y as u64 & 0xFFFF) << 16)
+            | ((if mouse_down { 1 } else { 0 }) << 32);
+
+        let rec = DeviceInfoRecord::new(DEVICE_TYPE_MOUSE, "mouse", metadata, 0, 0xFFFFFFFF);
+        write_record(&mut local, idx, &rec);
+        idx += 1;
+    }
+
     let total_bytes = 4 + idx * DEVICE_RECORD_SIZE;
     let count_bytes = (idx as u32).to_le_bytes();
     local[..4].copy_from_slice(&count_bytes);

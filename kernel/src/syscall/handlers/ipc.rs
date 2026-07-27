@@ -88,7 +88,9 @@ pub fn sys_channel_create(table: &HandleTable) -> Result<(HandleValue, HandleVal
 pub fn sys_channel_read(table: &HandleTable, handle_raw: u32,
                         buf_ptr: usize, buf_len: usize,
                         handles_ptr: usize, handles_len: usize) -> Result<usize> {
-    let hv = HandleValue::new(handle_raw);
+    let non_blocking = (handle_raw & 0x80000000) != 0;
+    let real_handle = handle_raw & 0x7FFFFFFF;
+    let hv = HandleValue::new(real_handle);
     
     // Extract current thread's process page table base (L0_PA)
     let thread_ptr = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() };
@@ -119,6 +121,26 @@ pub fn sys_channel_read(table: &HandleTable, handle_raw: u32,
 
     // Retrieve raw pointer of Channel inside the HandleTable to avoid deadlock on schedule()
     let chan_ptr = table.with_channel(hv, Rights::READ.bits(), |chan| chan as *mut Channel)?;
+
+    if non_blocking {
+        let has_sender = unsafe {
+            if let Some(peer_ptr) = (*chan_ptr).peer {
+                let mut found = false;
+                for slot in (*peer_ptr).send_waiters.iter() {
+                    if slot.is_some() {
+                        found = true;
+                        break;
+                    }
+                }
+                found
+            } else {
+                return Err(Status::PeerClosed);
+            }
+        };
+        if !has_sender {
+            return Err(Status::TryAgain);
+        }
+    }
 
     // Call inner channel read WITHOUT holding HandleTable lock
     let read_bytes = unsafe {

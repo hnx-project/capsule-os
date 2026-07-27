@@ -86,13 +86,56 @@ impl SlabAllocator {
     }
 
     fn allocate(&self, layout: &Layout) -> *mut u8 {
+        let ci = match class_index(layout.size(), layout.align()) {
+            Some(i) => i,
+            None => {
+                // Large allocation (> 2048 bytes): Allocate contiguous page frames directly
+                let size = layout.size();
+                let needed_bytes = size + 8; // 8-byte header to store page count
+                let pages = (needed_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+
+                let mut start_pa = 0;
+                for i in 0..pages {
+                    match phys::alloc_kheap_page() {
+                        Ok(p) => {
+                            if i == 0 {
+                                start_pa = p.as_usize();
+                            } else if p.as_usize() != start_pa + i * PAGE_SIZE {
+                                // Non-contiguous fallback: free allocated pages and return null
+                                unsafe {
+                                    for j in 0..i {
+                                        phys::free_page(PhysAddr::new(start_pa + j * PAGE_SIZE));
+                                    }
+                                }
+                                return ptr::null_mut();
+                            }
+                        }
+                        Err(_) => {
+                            if i > 0 {
+                                unsafe {
+                                    for j in 0..i {
+                                        phys::free_page(PhysAddr::new(start_pa + j * PAGE_SIZE));
+                                    }
+                                }
+                            }
+                            return ptr::null_mut();
+                        }
+                    }
+                }
+
+                let kva = pa_to_kernel_va(start_pa) as *mut u8;
+                unsafe {
+                    // Write page count in first 8 bytes
+                    ptr::write(kva as *mut usize, pages);
+                    // Return pointer after header
+                    return kva.add(8);
+                }
+            }
+        };
+
         if layout.align() > 64 {
             return ptr::null_mut();
         }
-        let ci = match class_index(layout.size(), layout.align()) {
-            Some(i) => i,
-            None => return ptr::null_mut(),
-        };
 
         loop {
             let head = self.heads[ci].load(Ordering::Acquire);
@@ -116,7 +159,18 @@ impl SlabAllocator {
     fn deallocate(&self, ptr: *mut u8, layout: &Layout) {
         let ci = match class_index(layout.size(), layout.align()) {
             Some(i) => i,
-            None => return,
+            None => {
+                // Large allocation: retrieve page count from header and free the pages
+                unsafe {
+                    let kva = ptr.sub(8);
+                    let pages = ptr::read(kva as *const usize);
+                    let start_pa = kva as usize - 0xffff800000000000;
+                    for i in 0..pages {
+                        phys::free_page(PhysAddr::new(start_pa + i * PAGE_SIZE));
+                    }
+                }
+                return;
+            }
         };
 
         loop {

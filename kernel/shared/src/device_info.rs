@@ -4,6 +4,8 @@ pub const DEVICE_TYPE_GICC: u8 = 2;
 pub const DEVICE_TYPE_TIMER: u8 = 3;
 pub const DEVICE_TYPE_RTC: u8 = 4;
 pub const DEVICE_TYPE_MEMORY: u8 = 5;
+pub const DEVICE_TYPE_DISPLAY: u8 = 6;
+pub const DEVICE_TYPE_MOUSE: u8 = 7;
 
 pub const DEVICE_RECORD_SIZE: usize = 40;
 

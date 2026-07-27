@@ -25,6 +25,7 @@ args = [
     "-drive", "if=none,format=raw,id=hd0,file=disk.img",
     "-device", "virtio-blk-device,drive=hd0",
     "-device", "virtio-gpu-device",
+    "-device", "virtio-tablet-device",
     "-serial", "stdio",
     "-semihosting"
   ]

@@ -122,6 +122,9 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
 
                     // Initialize Virtio-GPU MMIO Driver
                     drivers::virtio_gpu::init();
+
+                    // Initialize Virtio-Input MMIO Driver
+                    drivers::virtio_input::init();
                 } else {
                     crate::log_warn!("IRQ", "no GIC in FDT, skipping timer bring-up");
                 }

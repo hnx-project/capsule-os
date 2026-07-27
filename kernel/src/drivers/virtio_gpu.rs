@@ -12,8 +12,8 @@ use crate::arch::mmu_facade::pa_to_kernel_va;
 static VIRTIO_GPU_BASE: AtomicUsize = AtomicUsize::new(0);
 
 const QUEUE_SIZE: usize = 16;
-const SCREEN_WIDTH: u32 = 400;
-const SCREEN_HEIGHT: u32 = 300;
+pub static mut SCREEN_WIDTH: u32 = 400;
+pub static mut SCREEN_HEIGHT: u32 = 300;
 
 // Virtio Descriptor Table entry
 #[repr(C, align(16))]
@@ -213,9 +213,14 @@ unsafe fn init_gpu_device(base: usize) -> Result<()> {
     GPU_REQ_FLUSH = (buf_kva + 1280) as *mut VirtioGpuResourceFlush;
     GPU_RESP = (buf_kva + 2048) as *mut VirtioGpuRespHdr;
 
-    // Allocate 120 contiguous pages for our 400x300 graphical framebuffer (roughly 480KB)
+    let width = unsafe { SCREEN_WIDTH };
+    let height = unsafe { SCREEN_HEIGHT };
+    let frame_bytes = (width * height * 4) as usize;
+    let required_pages = (frame_bytes + 4095) / 4096;
+
+    // Allocate required contiguous physical pages dynamically
     let mut backing_start_pa = 0;
-    for i in 0..120 {
+    for i in 0..required_pages {
         let page = alloc_page(PageTag::KernelHeap)?;
         if i == 0 {
             backing_start_pa = page.as_usize();
@@ -224,7 +229,7 @@ unsafe fn init_gpu_device(base: usize) -> Result<()> {
         }
     }
     // Zero-initialize the framebuffer backplane
-    core::ptr::write_bytes(pa_to_kernel_va(backing_start_pa) as *mut u8, 0, 120 * 4096);
+    core::ptr::write_bytes(pa_to_kernel_va(backing_start_pa) as *mut u8, 0, required_pages * 4096);
     GPU_BACKING_PHYS_ADDR = backing_start_pa;
 
     // Set DRIVER_OK status
@@ -244,8 +249,8 @@ unsafe fn init_gpu_device(base: usize) -> Result<()> {
         },
         resource_id,
         format: 3, // B8G8R8A8_UNORM
-        width: SCREEN_WIDTH,
-        height: SCREEN_HEIGHT,
+        width,
+        height,
     });
     submit_command(base, GPU_REQ_CREATE as usize, core::mem::size_of::<VirtioGpuResourceCreate2d>())?;
 
@@ -262,7 +267,7 @@ unsafe fn init_gpu_device(base: usize) -> Result<()> {
         nr_entries: 1,
         entry: VirtioGpuMemEntry {
             addr: GPU_BACKING_PHYS_ADDR as u64,
-            length: 120 * 4096,
+            length: (required_pages * 4096) as u32,
             padding: 0,
         },
     });
@@ -280,8 +285,8 @@ unsafe fn init_gpu_device(base: usize) -> Result<()> {
         r: VirtioGpuRect {
             x: 0,
             y: 0,
-            width: SCREEN_WIDTH,
-            height: SCREEN_HEIGHT,
+            width,
+            height,
         },
         scanout_id: 0,
         resource_id,
@@ -376,6 +381,8 @@ pub fn flush_to_screen() {
     let resource_id = 1u32;
 
     unsafe {
+        let width = SCREEN_WIDTH;
+        let height = SCREEN_HEIGHT;
         // 1. Transfer RAM Backplane content to host 2D resource
         core::ptr::write_volatile(GPU_REQ_TRANSFER, VirtioGpuTransferToHost2d {
             hdr: VirtioGpuCtrlHdr {
@@ -388,8 +395,8 @@ pub fn flush_to_screen() {
             r: VirtioGpuRect {
                 x: 0,
                 y: 0,
-                width: SCREEN_WIDTH,
-                height: SCREEN_HEIGHT,
+                width,
+                height,
             },
             offset: 0,
             resource_id,
@@ -409,8 +416,8 @@ pub fn flush_to_screen() {
             r: VirtioGpuRect {
                 x: 0,
                 y: 0,
-                width: SCREEN_WIDTH,
-                height: SCREEN_HEIGHT,
+                width,
+                height,
             },
             resource_id,
             padding: 0,
