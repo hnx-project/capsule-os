@@ -1,0 +1,4 @@
+name = "gpud"
+path = "gpud"
+dependencies = ["devmgr", "procmgr"]
+is_program = false

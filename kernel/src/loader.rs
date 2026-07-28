@@ -34,12 +34,26 @@ impl ServiceLauncher {
         let handle_idx = desc
             .bootstrap_vmo_handle_index
             .unwrap_or(DEFAULT_BOOTFS_HANDLE_SLOT);
-        let rootfs_vmo = unsafe {
-            Vmo::create_physical(crate::BOOTFS_PHYS_ADDR, crate::BOOTFS_PHYS_SIZE)?
-        };
         if let Some(proc) = crate::task::process::find_process_mut(pid) {
             let rights = Rights::READ.bits() | Rights::WRITE.bits();
-            let _ = proc.handle_table.add_raw_handle(handle_idx, KernelObject::Vmo(rootfs_vmo), rights);
+            if desc.name == "loader" {
+                // Dual injection: 100 for LoaderPhase (loader.img) and 101 for ServicesPhase (rootfs.img)
+                let loader_vmo = unsafe {
+                    Vmo::create_physical(crate::BOOTFS_PHYS_ADDR, crate::BOOTFS_PHYS_SIZE)?
+                };
+                let services_vmo = unsafe {
+                    Vmo::create_physical(crate::SERVICES_PHYS_ADDR, crate::SERVICES_PHYS_SIZE)?
+                };
+                let _ = proc.handle_table.add_raw_handle(100, KernelObject::Vmo(loader_vmo), rights);
+                let _ = proc.handle_table.add_raw_handle(101, KernelObject::Vmo(services_vmo), rights);
+                crate::log_info!("BOOT", "Dual VMO injection completed for loader (100 -> loader.img, 101 -> rootfs.img)");
+            } else {
+                // Normal early service injection (Slot 100 -> services image)
+                let rootfs_vmo = unsafe {
+                    Vmo::create_physical(crate::SERVICES_PHYS_ADDR, crate::SERVICES_PHYS_SIZE)?
+                };
+                let _ = proc.handle_table.add_raw_handle(handle_idx, KernelObject::Vmo(rootfs_vmo), rights);
+            }
         }
 
         // CANARY: check PID 1's L3 page is still intact after launch.

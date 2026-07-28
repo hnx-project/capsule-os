@@ -5,8 +5,8 @@ extern crate libcapsule;
 
 use libcapsule::kprintln;
 
-/// The standard boot-time Cap handle index where the BootFS VMO is injected by the kernel.
-pub const BOOTFS_VMO_HANDLE: usize = 100;
+/// The standard boot-time Cap handle index where the Services VMO is injected by the kernel.
+pub const SERVICES_VMO_HANDLE: usize = 101;
 
 #[no_mangle]
 pub fn main() -> i32 {
@@ -17,8 +17,8 @@ pub fn main() -> i32 {
     );
     kprintln!("====================================================");
 
-    // 1. Instantiate the stateless BootFS ServiceLoader
-    let bootstrap_service = libcapsule::ServiceLoader::new(BOOTFS_VMO_HANDLE);
+    // 1. Instantiate the stateless BootFS ServiceLoader on Services VMO
+    let bootstrap_service = libcapsule::ServiceLoader::new(SERVICES_VMO_HANDLE);
 
     // 2. Spawn 'servicesd' (Service Manager) from BootFS
     //    We deliberately use the user-mode `ServiceLoader` here, matching the

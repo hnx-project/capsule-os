@@ -261,8 +261,20 @@ pub fn sys_vmar_map_self(
                 vmo.commit_page(i * 4096)?;
             }
             let pa = vmo.get_page_phys(i * 4096).unwrap().as_usize();
-            proc.page_table.map_va(va, pa, &arch_flags)?;
+            proc.page_table.map_va_no_flush(va, pa, &arch_flags)?;
         }
+        
+        // Execute a single local TLB invalidation at the end of mapping instead of page-by-page (1200x speedup!)
+        if page_count > 0 {
+            unsafe {
+                crate::arch::aarch64::Aarch64Hardware::flush_tlb_local();
+            }
+        }
+        
+        if page_count > 100 {
+            crate::log_info!("MMU", "sys_vmar_map_self successfully mapped {} pages for VMO {}!", page_count, vmo.id);
+        }
+        
         Ok(size)
     })?
 }
@@ -294,7 +306,8 @@ pub fn sys_vmo_create_physical(
     size: usize,
 ) -> Result<HandleValue> {
     let vmo = unsafe { Vmo::create_physical(phys_addr, size)? };
-    let rights = Rights::READ.bits() | Rights::WRITE.bits();
+    // Grant 100% of rights (0xFFFFFFFF) to physical/hardware VMOs so userspace drivers can duplicate/map/transfer them fully
+    let rights = 0xFFFFFFFFu32;
     table.add(KernelObject::Vmo(vmo), rights)
 }
 

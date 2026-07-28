@@ -55,6 +55,8 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 pub static mut DTB_POINTER: *const u8 = core::ptr::null();
 pub static mut BOOTFS_PHYS_ADDR: usize = 0;
 pub static mut BOOTFS_PHYS_SIZE: usize = 0;
+pub static mut SERVICES_PHYS_ADDR: usize = 0x48000000;
+pub static mut SERVICES_PHYS_SIZE: usize = 8 * 1024 * 1024;
 
 static mut DEVICE_INFO_BOOT: core::mem::MaybeUninit<crate::fdt::BootInfo> =
     core::mem::MaybeUninit::new(crate::fdt::BootInfo::empty());
@@ -102,6 +104,13 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
             arch::mmu::build_and_enable(boot.ram_base, boot.ram_size, boot.uart_base);
             crate::log_info!("MMU", "4-level page tables ACTIVE");
 
+            // Dynamically detect Services VFS size
+            unsafe {
+                if let Some(detected_size) = detect_vfs_size(SERVICES_PHYS_ADDR) {
+                    SERVICES_PHYS_SIZE = detected_size;
+                }
+            }
+
             // Phase 3.1: bring up the GIC and the generic timer.
             // This must happen AFTER the MMU is on so the timer reads
             // (which use the virtual system-register interface) and
@@ -120,11 +129,11 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
                     // Initialize Virtio-Net MMIO Driver
                     drivers::virtio_net::init();
 
-                    // Initialize Virtio-GPU MMIO Driver
-                    drivers::virtio_gpu::init();
+                    // Virtio-GPU MMIO Driver is decoupled and runs in user space (gpud)
+                    // drivers::virtio_gpu::init();
 
-                    // Initialize Virtio-Input MMIO Driver
-                    drivers::virtio_input::init();
+                    // Virtio-Input MMIO Driver is decoupled and runs in user space (inputd)
+                    // drivers::virtio_input::init();
                 } else {
                     crate::log_warn!("IRQ", "no GIC in FDT, skipping timer bring-up");
                 }
@@ -233,5 +242,40 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
     arch::aarch64::trap::enable_irqs();
     loop {
         unsafe { crate::arch::CurrentArch::wait_for_interrupt() }
+    }
+}
+
+fn detect_vfs_size(phys_addr: usize) -> Option<usize> {
+    unsafe {
+        let base = crate::arch::mmu_facade::pa_to_kernel_va(phys_addr) as *const u8;
+        let mut sig = [0u8; 8];
+        core::ptr::copy_nonoverlapping(base, sig.as_mut_ptr(), 8);
+        if &sig == b"HNXF_VFS" {
+            let mut count_bytes = [0u8; 8];
+            core::ptr::copy_nonoverlapping(base.add(8), count_bytes.as_mut_ptr(), 8);
+            let count = u64::from_le_bytes(count_bytes) as usize;
+
+            let mut max_end = 16;
+            for i in 0..count {
+                let entry_offset = 16 + i * 144;
+                let path_end = entry_offset + 128;
+
+                let mut off_bytes = [0u8; 8];
+                core::ptr::copy_nonoverlapping(base.add(path_end), off_bytes.as_mut_ptr(), 8);
+                let file_offset = u64::from_le_bytes(off_bytes) as usize;
+
+                let mut sz_bytes = [0u8; 8];
+                core::ptr::copy_nonoverlapping(base.add(path_end + 8), sz_bytes.as_mut_ptr(), 8);
+                let file_size = u64::from_le_bytes(sz_bytes) as usize;
+
+                let end = file_offset + file_size;
+                if end > max_end {
+                    max_end = end;
+                }
+            }
+            Some((max_end + 4095) & !4095)
+        } else {
+            None
+        }
     }
 }

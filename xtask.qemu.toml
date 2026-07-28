@@ -21,10 +21,11 @@ args = [
     "-device", "loader,file={bootloader_bin},addr={boot_addr},cpu-num=0,force-raw=on",
     "-device", "loader,file={kernel_bin},addr={ohc_addr},force-raw=on",
     "-device", "loader,file={qemu_dtb},addr={dtb_addr},force-raw=on",
-    "-device", "loader,file={rootfs_img},addr={rootfs_addr},force-raw=on",
+    "-device", "loader,file={loader_img},addr={rootfs_addr},force-raw=on",
+    "-device", "loader,file={rootfs_img},addr=0x48000000,force-raw=on",
     "-drive", "if=none,format=raw,id=hd0,file=disk.img",
     "-device", "virtio-blk-device,drive=hd0",
-    "-device", "virtio-gpu-device",
+    "-device", "virtio-gpu-device,xres=1280,yres=960",
     "-device", "virtio-tablet-device",
     "-serial", "stdio",
     "-semihosting"

@@ -396,13 +396,19 @@ fn pack_user_programs(config: &crate::config::RootConfig, plat: &Platform, sub: 
     }
 
     if let Some(rootfs_out) = &sub.rootfs_output {
-        print!("{}  Archiving{} rootfs.img...", BOLD_GREEN, RESET);
+        let staging_root = if let Some(bin_dir) = &sub.staging_bin_dir {
+            let p = Path::new(bin_dir);
+            p.parent().unwrap().parent().unwrap().to_str().unwrap().to_string()
+        } else {
+            "build/dist/staging_rootfs".to_string()
+        };
+        print!("{}  Archiving{} {}...", BOLD_GREEN, RESET, rootfs_out);
         if let Some(parent) = Path::new(rootfs_out).parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        crate::pack::pack_rootfs("build/dist/staging_rootfs", rootfs_out)
-            .map_err(|e| format!("Failed to archive rootfs: {}", e))?;
-        println!("\r{}  Archiving{} rootfs.img... Done", BOLD_GREEN, RESET);
+        crate::pack::pack_rootfs(&staging_root, rootfs_out)
+            .map_err(|e| format!("Failed to archive {}: {}", rootfs_out, e))?;
+        println!("\r{}  Archiving{} {}... Done", BOLD_GREEN, RESET, rootfs_out);
     }
 
     Ok(())
@@ -666,7 +672,12 @@ fn print_build_summary(build: &crate::config::BuildConfig, plat: &Platform) {
             }
             "userspace" => {
                 if let Some(rootfs_out) = &sub.rootfs_output {
-                    print_size("rootfs.img", rootfs_out);
+                    let label = if rootfs_out.contains("loader.img") {
+                        "loader.img"
+                    } else {
+                        "rootfs.img"
+                    };
+                    print_size(label, rootfs_out);
                 }
             }
             _ => {}

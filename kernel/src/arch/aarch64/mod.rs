@@ -362,6 +362,18 @@ impl ArchHardware for Aarch64Hardware {
     }
 }
 
+impl Aarch64Hardware {
+    pub unsafe fn flush_tlb_local() {
+        asm!(
+            "dsb sy",
+            "tlbi vmalle1",
+            "dsb sy",
+            "isb",
+            options(nostack)
+        );
+    }
+}
+
 pub fn early_init() {
     // Phase 3.1 wiring happens later
 }

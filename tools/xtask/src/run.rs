@@ -17,24 +17,25 @@ pub fn run(resolved: &Resolved, plat: &Platform, gdb: bool) -> Result<(), String
     let _ = Command::new("killall").arg(&plat.qemu_bin).status();
 
     // 1. Resolve dynamic compiled artifact paths from subprojects configuration
-    let (boot_bin, boot_bin_raw, kern_bin, r_img) = resolve_artifact_paths(&resolved.build, plat)?;
+    let (boot_bin, boot_bin_raw, kern_bin, loader_img, services_img) = resolve_artifact_paths(&resolved.build, plat)?;
 
     // 2. Generate Device Tree Blob
-    generate_qemu_dtb(resolved, plat, &boot_bin, &boot_bin_raw, &kern_bin, &r_img)?;
+    generate_qemu_dtb(resolved, plat, &boot_bin, &boot_bin_raw, &kern_bin, &loader_img, &services_img)?;
 
     // 3. Launch QEMU with fully rendered dynamic arguments
-    launch_qemu(resolved, plat, gdb, &boot_bin, &boot_bin_raw, &kern_bin, &r_img);
+    launch_qemu(resolved, plat, gdb, &boot_bin, &boot_bin_raw, &kern_bin, &loader_img, &services_img);
     Ok(())
 }
 
 pub fn resolve_artifact_paths(
     build: &crate::config::BuildConfig,
     plat: &Platform,
-) -> Result<(String, String, String, String), String> {
+) -> Result<(String, String, String, String, String), String> {
     let mut bootloader_bin = String::new();
     let mut bootloader_bin_raw = String::new();
     let mut kernel_bin = String::new();
-    let mut rootfs_img = String::new();
+    let mut loader_img = String::new();
+    let mut services_img = String::new();
 
     for sub in &build.subprojects {
         match sub.subproject_type.as_str() {
@@ -50,21 +51,31 @@ pub fn resolve_artifact_paths(
                 }
             }
             "userspace" => {
-                if let Some(rootfs_out) = &sub.rootfs_output {
-                    rootfs_img = rootfs_out.clone();
+                if sub.name == "userspace-loader" {
+                    if let Some(rootfs_out) = &sub.rootfs_output {
+                        loader_img = rootfs_out.clone();
+                    }
+                } else if sub.name == "userspace-apps" {
+                    if let Some(rootfs_out) = &sub.rootfs_output {
+                        services_img = rootfs_out.clone();
+                    }
+                } else {
+                    if let Some(rootfs_out) = &sub.rootfs_output {
+                        loader_img = rootfs_out.clone();
+                    }
                 }
             }
             _ => {}
         }
     }
 
-    if bootloader_bin.is_empty() || kernel_bin.is_empty() || rootfs_img.is_empty() {
+    if bootloader_bin.is_empty() || kernel_bin.is_empty() {
         return Err(
             "Failed to resolve compiled artifact paths from subprojects configuration.".to_string(),
         );
     }
 
-    Ok((bootloader_bin, bootloader_bin_raw, kernel_bin, rootfs_img))
+    Ok((bootloader_bin, bootloader_bin_raw, kernel_bin, loader_img, services_img))
 }
 
 pub fn generate_qemu_dtb(
@@ -73,7 +84,8 @@ pub fn generate_qemu_dtb(
     bootloader_bin: &str,
     bootloader_bin_raw: &str,
     kernel_bin: &str,
-    rootfs_img: &str,
+    loader_img: &str,
+    services_img: &str,
 ) -> Result<(), String> {
     println!(
         "{}  Generate{} QEMU Device Tree Blob (DTB)...",
@@ -90,7 +102,8 @@ pub fn generate_qemu_dtb(
             bootloader_bin,
             bootloader_bin_raw,
             kernel_bin,
-            rootfs_img,
+            loader_img,
+            services_img,
         );
         dump_cmd.arg(rendered_arg);
     }
@@ -145,7 +158,8 @@ fn launch_qemu(
     bootloader_bin: &str,
     bootloader_bin_raw: &str,
     kernel_bin: &str,
-    rootfs_img: &str,
+    loader_img: &str,
+    services_img: &str,
 ) {
     println!(
         "{}  Running{} QEMU virtual machine. {}[Ctrl+A, X to exit]{}",
@@ -161,7 +175,8 @@ fn launch_qemu(
             bootloader_bin,
             bootloader_bin_raw,
             kernel_bin,
-            rootfs_img,
+            loader_img,
+            services_img,
         );
         qemu.arg(rendered_arg);
     }
@@ -183,7 +198,8 @@ fn render_variables(
     bootloader_bin: &str,
     bootloader_bin_raw: &str,
     kernel_bin: &str,
-    rootfs_img: &str,
+    loader_img: &str,
+    services_img: &str,
 ) -> String {
     let dtb_output = format!("{}/qemu.dtb", resolved.root.project.dist_dir());
     template
@@ -192,10 +208,12 @@ fn render_variables(
         .replace("{ohc_addr}", &plat.ohc_addr)
         .replace("{dtb_addr}", &plat.dtb_addr)
         .replace("{rootfs_addr}", &plat.rootfs_addr)
+        .replace("{services_addr}", "0x48000000")
         .replace("{bootloader_bin}", bootloader_bin)
         .replace("{bootloader_bin_raw}", bootloader_bin_raw)
         .replace("{kernel_bin}", kernel_bin)
-        .replace("{rootfs_img}", rootfs_img)
+        .replace("{loader_img}", loader_img)
+        .replace("{rootfs_img}", services_img)
         .replace("{qemu_dtb}", &dtb_output)
         .replace("{smp}", &plat.qemu_smp.to_string())
 }
@@ -205,7 +223,7 @@ fn render_variables(
 /// tooling that depends on the DTB doesn't have to wait for a
 /// separate `xtask code run` step.
 pub fn generate_qemu_dtb_artifact_paths(resolved: &Resolved, plat: &Platform) -> Result<(), String> {
-    let (boot_bin, boot_bin_raw, kern_bin, r_img) = resolve_artifact_paths(&resolved.build, plat)?;
+    let (boot_bin, boot_bin_raw, kern_bin, loader_img, services_img) = resolve_artifact_paths(&resolved.build, plat)?;
     // build.rs calls this against the non-"virt" Platform, so we
     // re-resolve a "virt" view to get the actual qemu_* args +
     // SMP value.
@@ -213,5 +231,5 @@ pub fn generate_qemu_dtb_artifact_paths(resolved: &Resolved, plat: &Platform) ->
         &plat.arch, "virt", &resolved.build, &resolved.runtime,
     )
     .ok_or_else(|| "virt profile missing for dtb generation".to_string())?;
-    generate_qemu_dtb(resolved, &virt, &boot_bin, &boot_bin_raw, &kern_bin, &r_img)
+    generate_qemu_dtb(resolved, &virt, &boot_bin, &boot_bin_raw, &kern_bin, &loader_img, &services_img)
 }

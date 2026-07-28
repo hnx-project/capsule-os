@@ -65,9 +65,17 @@ impl Memory {
         let page_count = size / 4096;
         let mut mapped_pages = 0;
 
+        if page_count > 100 {
+            crate::log_info!("MMU", "map_vmo_segment: starting mapping of {} pages for VMO {}", page_count, vmo.id);
+        }
+
         for i in 0..page_count {
             let vmo_off = vmo_offset + i * 4096;
             let va = virt_addr + i * 4096;
+
+            if page_count > 100 && i % 200 == 0 {
+                crate::log_info!("MMU", "map_vmo_segment: mapped {}/{} pages...", i, page_count);
+            }
 
             match vmo.commit_page(vmo_off) {
                 Ok(_) => {

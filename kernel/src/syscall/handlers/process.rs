@@ -1024,8 +1024,8 @@ pub fn sys_load_binary(
     // archive and cannot bootstrap any descendants.
     let rootfs_vmo = unsafe {
         crate::memory::vmo::Vmo::create_physical(
-            crate::BOOTFS_PHYS_ADDR,
-            crate::BOOTFS_PHYS_SIZE,
+            crate::SERVICES_PHYS_ADDR,
+            crate::SERVICES_PHYS_SIZE,
         )?
     };
     if let Some(proc) = crate::task::process::find_process_mut(pid) {

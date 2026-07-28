@@ -411,6 +411,80 @@ impl PageTableTree {
         Ok(())
     }
 
+    pub fn map_va_no_flush(&mut self, va: usize, pa: usize, flags: &crate::arch::mmu::MapFlags) -> Result<()> {
+        if va & 0xFFF != 0 || pa & 0xFFF != 0 {
+            return Err(Status::InvalidArgs);
+        }
+        if !self.has_root {
+            return Err(Status::InvalidArgs);
+        }
+
+        unsafe {
+            let l0_pa = self.l0_pa;
+            let l0_idx = va_l0_index(va);
+            let l0e = read_pte(l0_pa, l0_idx);
+            let l1_pa = if l0e & PTE_VALID != 0 && l0e & 0b10 != 0 {
+                (l0e & 0x0000_FFFF_FFFF_F000) as usize
+            } else if l0e & PTE_VALID != 0 {
+                return Err(Status::NotAllowed);
+            } else {
+                let new_l1 = phys::alloc_pt_page()?.as_usize();
+                flush_table_page(new_l1);
+                let entry = pa_to_pte_addr(new_l1) | PTE_VALID | PTE_TYPE_TABLE;
+                let clean_entry = entry & 0x0000_FFFF_FFFF_F003u64;
+                write_pte(l0_pa, l0_idx, clean_entry);
+                self.track(new_l1);
+                new_l1
+            };
+
+            let l1_idx = va_l1_index(va);
+            let l1e = read_pte(l1_pa, l1_idx);
+            let l2_pa = if l1e & PTE_VALID != 0 && l1e & 0b10 != 0 {
+                (l1e & 0x0000_FFFF_FFFF_F000) as usize
+            } else if l1e & PTE_VALID != 0 {
+                self.shatter_l1_block(l1_pa, l1_idx, l1e)?
+            } else {
+                let new_l2 = phys::alloc_pt_page()?.as_usize();
+                flush_table_page(new_l2);
+                let entry = pa_to_pte_addr(new_l2) | PTE_VALID | PTE_TYPE_TABLE;
+                let clean_entry = entry & 0x0000_FFFF_FFFF_F003u64;
+                write_pte(l1_pa, l1_idx, clean_entry);
+                self.track(new_l2);
+                new_l2
+            };
+
+            let l2_idx = va_l2_index(va);
+            let l2e = read_pte(l2_pa, l2_idx);
+            let l3_pa = if l2e & PTE_VALID != 0 && l2e & 0b10 != 0 {
+                (l2e & 0x0000_FFFF_FFFF_F000) as usize
+            } else if l2e & PTE_VALID != 0 {
+                self.shatter_l2_block(l2_pa, l2_idx, l2e)?
+            } else {
+                let new_l3 = phys::alloc_pt_page()?.as_usize();
+                flush_table_page(new_l3);
+                let entry = pa_to_pte_addr(new_l3) | PTE_VALID | PTE_TYPE_TABLE;
+                let clean_entry = entry & 0x0000_FFFF_FFFF_F003u64;
+                write_pte(l2_pa, l2_idx, clean_entry);
+                self.track(new_l3);
+                new_l3
+            };
+
+            let l3_idx = va_l3_index(va);
+            let entry = pa_to_pte_addr(pa)
+                      | PTE_VALID
+                      | PTE_TYPE_PAGE
+                      | pte_attr_bits(flags);
+            write_pte(l3_pa, l3_idx, entry);
+            if mmu_active() {
+                let line_va = pa_to_kernel_va(l3_pa) + l3_idx * 8;
+                unsafe {
+                    <crate::arch::aarch64::Aarch64Hardware as ArchHardware>::clean_and_invalidate_cache_range(line_va, 8);
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn translate_va(&self, va: usize) -> Option<usize> {
         if !self.has_root { return None; }
         unsafe {

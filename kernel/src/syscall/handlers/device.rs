@@ -72,23 +72,8 @@ pub fn sys_device_info(dst_user_va: usize, buf_len: usize) -> Result<usize> {
         idx += 1;
     }
 
-    if idx < records_cap {
-        // Poll latest events from physical mouse hardware
-        crate::drivers::virtio_input::poll_events();
-
-        let mouse_x = crate::drivers::virtio_input::get_mouse_x();
-        let mouse_y = crate::drivers::virtio_input::get_mouse_y();
-        let mouse_down = crate::drivers::virtio_input::is_mouse_down();
-
-        // Compactly encode mouse state into base field
-        let metadata = (mouse_x as u64 & 0xFFFF)
-            | ((mouse_y as u64 & 0xFFFF) << 16)
-            | ((if mouse_down { 1 } else { 0 }) << 32);
-
-        let rec = DeviceInfoRecord::new(DEVICE_TYPE_MOUSE, "mouse", metadata, 0, 0xFFFFFFFF);
-        write_record(&mut local, idx, &rec);
-        idx += 1;
-    }
+    // Mouse driver is completely decoupled from kernel space and runs in EL0 userspace.
+    // sys_device_info no longer exports DEVICE_TYPE_MOUSE.
 
     let total_bytes = 4 + idx * DEVICE_RECORD_SIZE;
     let count_bytes = (idx as u32).to_le_bytes();
@@ -185,7 +170,7 @@ pub fn sys_net_recv(buf_user_va: usize, max_len: usize) -> Result<usize> {
     Ok(actual_len)
 }
 
-/// SYSCALL_DISPLAY_FLUSH: copy VMO window frame to Virtio-GPU backing memory and flush to screen.
+/// SYSCALL_DISPLAY_FLUSH: Safely cleans and invalidates CPU data cache for all pages of the given VMO in EL1 privilege.
 pub fn sys_display_flush(table: &crate::object::handle_table::HandleTable, handle_raw: u32) -> Result<()> {
     let hv = shared::types::HandleValue::new(handle_raw);
     let rights = crate::object::rights::Rights::READ.bits();
@@ -197,11 +182,13 @@ pub fn sys_display_flush(table: &crate::object::handle_table::HandleTable, handl
             let page_idx = offset / 4096;
             let page_slot = vmo.page_slot(page_idx);
             if let Some(pa) = unsafe { *page_slot } {
-                crate::drivers::virtio_gpu::copy_to_gpu_buffer(pa.as_usize(), offset);
+                let kva = crate::arch::mmu_facade::pa_to_kernel_va(pa.as_usize());
+                unsafe {
+                    <crate::arch::CurrentArch as crate::arch::ArchHardware>::clean_and_invalidate_cache_range(kva, 4096);
+                }
             }
             offset += 4096;
         }
-        
-        crate::drivers::virtio_gpu::flush_to_screen();
-    })
+        Ok(())
+    })?
 }

@@ -12,7 +12,7 @@ use crate::memory::phys::PhysPage;
 const VMO_MAGIC: u64 = 0x564D_4F4D_4147_4341;
 const VMO_VERSION: u64 = 1;
 const PAGE_SIZE: usize = 4096;
-pub const VMO_MAX_PAGES: usize = 2048;
+pub const VMO_MAX_PAGES: usize = 8192;
 
 const PA_TABLE_SIZE: usize = 64;
 const PA_TABLE_BASE: usize = PAGE_SIZE - PA_TABLE_SIZE; // 4032

@@ -83,15 +83,15 @@ pub fn main() -> i32 {
         }
     }
 
-    // 2. Allocate Virtqueue buffers
-    let q_vmo = syscalls::vmo_create(4096).unwrap();
+    // 2. Allocate Virtqueue buffers (Requires 2 pages to align Used Ring at 4096-byte boundary)
+    let q_vmo = syscalls::vmo_create(8192).unwrap();
     let q_va = 0x6000000;
-    syscalls::vmar_map_self(q_vmo, q_va, 4096, 11).unwrap();
-    unsafe { core::ptr::write_bytes(q_va as *mut u8, 0, 4096); }
+    syscalls::vmar_map_self(q_vmo, q_va, 8192, 11).unwrap();
+    unsafe { core::ptr::write_bytes(q_va as *mut u8, 0, 8192); }
 
     let desc_table = q_va as *mut VirtqDesc;
-    let avail_ring = (q_va + 512) as *mut u16;
-    let used_ring = (q_va + 1024) as *mut u16;
+    let avail_ring = (q_va + 16 * QUEUE_SIZE) as *mut u16; // q_va + 1024 (Immediately following Descriptor Table)
+    let used_ring = (q_va + 4096) as *mut u16;            // Page 2 (offset 4096, strictly aligned to QueueAlign)
 
     let q_phys = syscalls::vmo_get_phys(q_vmo, 0).unwrap();
 
@@ -167,9 +167,9 @@ pub fn main() -> i32 {
     let mut current_mouse = MouseStatePacket { x: 200, y: 150, down: false };
     let mut used_idx = 0u16;
 
-    // Adaptive bounds (default 400x300, dynamically clamp coordinate updates)
-    let screen_w = 400;
-    let screen_h = 300;
+    // Adaptive bounds (default 1280x960, dynamically negotiated on connection)
+    let mut screen_w = 1280;
+    let mut screen_h = 960;
 
     loop {
         // A. Listen for new client connections (non-blocking style)
@@ -181,6 +181,25 @@ pub fn main() -> i32 {
                 active_sessions[session_count] = client_chan;
                 session_count += 1;
                 kprintln!("inputd: Connected new client compositor session");
+
+                // Read screen resolution handshake from compositor (using non-blocking channel read)
+                let mut res_buf = [0u8; 16];
+                let mut res_handles = [0u32; 2];
+                let mut attempts = 0;
+                while attempts < 100 {
+                    if let Ok(_) = syscalls::channel_read(client_chan | 0x80000000, &mut res_buf, &mut res_handles) {
+                        let w = u32::from_le_bytes(res_buf[0..4].try_into().unwrap()) as i32;
+                        let h = u32::from_le_bytes(res_buf[4..8].try_into().unwrap()) as i32;
+                        if w > 0 && h > 0 {
+                            screen_w = w;
+                            screen_h = h;
+                            kprintln!("inputd: Received screen resolution handshake: {}x{}", screen_w, screen_h);
+                        }
+                        break;
+                    }
+                    let _ = syscalls::yield_cpu();
+                    attempts += 1;
+                }
             }
         }
 

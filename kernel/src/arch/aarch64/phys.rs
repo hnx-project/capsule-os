@@ -318,6 +318,12 @@ pub fn init(ram_base: usize, ram_size: usize) {
                 next_set = true;
             }
             free_count += 1;
+        } else {
+            // Mark reserved page as occupied (KernelHeap) so alloc_page completely skips it
+            let pfn = pa_to_pfn(current_page);
+            unsafe {
+                PAGE_TAGS[pfn] = PageTag::KernelHeap as u8;
+            }
         }
 
         current_page += 4096;
@@ -334,6 +340,24 @@ fn is_page_reserved(page_addr: usize, kernel_end_page: usize, dtb_start_page: us
     }
     if dtb_start_page != 0 && page_addr >= dtb_start_page && page_addr < dtb_end_page {
         return true;
+    }
+    unsafe {
+        let bootfs_start = crate::BOOTFS_PHYS_ADDR;
+        let bootfs_end = bootfs_start + crate::BOOTFS_PHYS_SIZE;
+        if bootfs_start != 0 && page_addr >= bootfs_start && page_addr < bootfs_end {
+            return true;
+        }
+
+        let services_start = crate::SERVICES_PHYS_ADDR;
+        let services_end = services_start + crate::SERVICES_PHYS_SIZE;
+        if services_start != 0 && crate::SERVICES_PHYS_SIZE != 0 && page_addr >= services_start && page_addr < services_end {
+            return true;
+        }
+
+        // Reserve user-space GPU driver physical frame backplane: 0x4a000000 to 0x4ac00000 (12MB)
+        if page_addr >= 0x4a000000 && page_addr < 0x4ac00000 {
+            return true;
+        }
     }
     false
 }
