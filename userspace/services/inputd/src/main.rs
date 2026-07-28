@@ -1,0 +1,266 @@
+#![no_std]
+#![no_main]
+
+extern crate libcapsule;
+
+use libcapsule::{kprintln, syscalls};
+use shared::status::{Result, Status};
+
+const QUEUE_SIZE: usize = 64;
+
+#[repr(C, align(16))]
+struct VirtqDesc {
+    addr: u64,
+    len: u32,
+    flags: u16,
+    next: u16,
+}
+
+const VIRTQ_DESC_F_WRITE: u16 = 2;
+
+#[repr(C)]
+struct VirtqUsedElem {
+    id: u32,
+    len: u32,
+}
+
+#[repr(C)]
+struct VirtqUsed {
+    flags: u16,
+    idx: u16,
+    ring: [VirtqUsedElem; QUEUE_SIZE],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VirtioInputEvent {
+    pub r#type: u16,
+    pub code: u16,
+    pub value: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MouseStatePacket {
+    pub x: i32,
+    pub y: i32,
+    pub down: bool,
+}
+
+#[no_mangle]
+pub fn main() -> i32 {
+    kprintln!("====================================================");
+    kprintln!("inputd: User-Space Virtio-Input UMDF Driver booting...");
+    kprintln!("====================================================");
+
+    // 1. Probe Virtio-Input MMIO slots
+    let mut input_base: usize = 0;
+    // Map the entire 16KB Virtio MMIO block starting at 0x0a000000 (which is perfectly page-aligned)
+    let vmo_res = syscalls::vmo_create_physical(0x0a000000, 16384);
+    if let Ok(vmo) = vmo_res {
+        let target_va = 0x5000000;
+        let map_res = syscalls::vmar_map_self(vmo, target_va, 16384, 11);
+        if map_res.is_ok() {
+            for slot in 0..32 {
+                let slot_va = target_va + slot * 0x200;
+                let magic = unsafe { core::ptr::read_volatile(slot_va as *const u32) };
+                let dev_id = unsafe { core::ptr::read_volatile((slot_va + 0x008) as *const u32) };
+                if magic == 0x74726976 && dev_id == 18 {
+                    kprintln!("inputd: Discovered Virtio-Input device at slot {} MMIO {:#x}", slot, 0x0a000000 + slot * 0x200);
+                    input_base = slot_va;
+                    break;
+                }
+            }
+        }
+    }
+
+    if input_base == 0 {
+        kprintln!("inputd: No physical Virtio-Input device found. Exiting gracefully to satisfy DAG dependencies.");
+        // Notify servicesd that we are "ready" to avoid blocking downstream services
+        let _ = libcapsule::notify_init("inputd");
+        loop {
+            let _ = syscalls::yield_cpu();
+        }
+    }
+
+    // 2. Allocate Virtqueue buffers
+    let q_vmo = syscalls::vmo_create(4096).unwrap();
+    let q_va = 0x6000000;
+    syscalls::vmar_map_self(q_vmo, q_va, 4096, 11).unwrap();
+    unsafe { core::ptr::write_bytes(q_va as *mut u8, 0, 4096); }
+
+    let desc_table = q_va as *mut VirtqDesc;
+    let avail_ring = (q_va + 512) as *mut u16;
+    let used_ring = (q_va + 1024) as *mut u16;
+
+    let q_phys = syscalls::vmo_get_phys(q_vmo, 0).unwrap();
+
+    // 3. Allocate Event Buffers
+    let b_vmo = syscalls::vmo_create(4096).unwrap();
+    let b_va = 0x7000000;
+    syscalls::vmar_map_self(b_vmo, b_va, 4096, 11).unwrap();
+    unsafe { core::ptr::write_bytes(b_va as *mut u8, 0, 4096); }
+
+    let event_buffers = b_va as *mut VirtioInputEvent;
+    let b_phys = syscalls::vmo_get_phys(b_vmo, 0).unwrap();
+
+    // 4. Initialize Virtqueues
+    for i in 0..QUEUE_SIZE {
+        let buf_phys = b_phys + i * core::mem::size_of::<VirtioInputEvent>();
+        unsafe {
+            *desc_table.add(i) = VirtqDesc {
+                addr: buf_phys as u64,
+                len: core::mem::size_of::<VirtioInputEvent>() as u32,
+                flags: VIRTQ_DESC_F_WRITE,
+                next: 0,
+            };
+            *avail_ring.add(2 + i) = i as u16;
+        }
+    }
+    unsafe {
+        *avail_ring.add(0) = 0;
+        *avail_ring.add(1) = QUEUE_SIZE as u16;
+    }
+    let mut avail_idx = QUEUE_SIZE as u16;
+
+    // 5. Connect and activate the Virtio Device
+    unsafe {
+        // QueueSel = 0
+        core::ptr::write_volatile((input_base + 0x030) as *mut u32, 0);
+        // QueueNum = QUEUE_SIZE
+        core::ptr::write_volatile((input_base + 0x038) as *mut u32, QUEUE_SIZE as u32);
+        // QueueAlign = 4096
+        core::ptr::write_volatile((input_base + 0x03c) as *mut u32, 4096);
+        // QueuePFN = q_phys / 4096
+        core::ptr::write_volatile((input_base + 0x040) as *mut u32, (q_phys / 4096) as u32);
+
+        // Status = ACKNOWLEDGE | DRIVER | FEATURES_OK | DRIVER_OK
+        core::ptr::write_volatile((input_base + 0x070) as *mut u32, 1 | 2 | 8 | 4);
+        // QueueNotify = 0
+        core::ptr::write_volatile((input_base + 0x050) as *mut u32, 0);
+    }
+
+    kprintln!("inputd: Hardware initialization complete. Registering IPC service...");
+
+    // 6. Create service channel for clients (compositor)
+    let raw = match syscalls::channel_create() {
+        Ok(v) => v,
+        Err(_) => {
+            kprintln!("inputd: channel_create failed");
+            return -2;
+        }
+    };
+    let server_chan = (raw >> 32) as u32 as usize;
+
+    if let Err(e) = syscalls::channel_register("svc.input", server_chan) {
+        kprintln!("inputd: channel_register failed: {:?}", e);
+        return -3;
+    }
+    kprintln!("inputd: Registered 'svc.input' on channel {}", server_chan);
+
+    let _ = libcapsule::notify_init("inputd");
+
+    // Track active client sessions (compositor)
+    let mut active_sessions = [0usize; 8];
+    let mut session_count = 0;
+
+    let mut current_mouse = MouseStatePacket { x: 200, y: 150, down: false };
+    let mut used_idx = 0u16;
+
+    // Adaptive bounds (default 400x300, dynamically clamp coordinate updates)
+    let screen_w = 400;
+    let screen_h = 300;
+
+    loop {
+        // A. Listen for new client connections (non-blocking style)
+        let mut conn_buf = [0u8; 16];
+        let mut conn_handles = [0u32; 2];
+        if let Ok(_) = syscalls::channel_read(server_chan, &mut conn_buf, &mut conn_handles) {
+            if conn_handles[0] != 0 && session_count < 8 {
+                let client_chan = conn_handles[0] as usize;
+                active_sessions[session_count] = client_chan;
+                session_count += 1;
+                kprintln!("inputd: Connected new client compositor session");
+            }
+        }
+
+        // B. Poll hardware Virtqueue for mouse events
+        unsafe {
+            let used_ptr = used_ring as *const VirtqUsed;
+            let latest_used_idx = core::ptr::read_volatile(&(*used_ptr).idx);
+
+            if used_idx != latest_used_idx {
+                let count = latest_used_idx.wrapping_sub(used_idx) as usize;
+                let mut mouse_changed = false;
+
+                for k in 0..count {
+                    let ring_slot = (used_idx.wrapping_add(k as u16) as usize) % QUEUE_SIZE;
+                    let desc_idx = core::ptr::read_volatile(&(*used_ptr).ring[ring_slot].id) as usize;
+                    let ev = core::ptr::read_volatile(event_buffers.add(desc_idx));
+
+                    match ev.r#type {
+                        1 => { // EV_KEY
+                            if ev.code == 272 { // BTN_LEFT
+                                current_mouse.down = ev.value != 0;
+                                mouse_changed = true;
+                            }
+                        }
+                        2 => { // EV_REL (Relative)
+                            if ev.code == 0 { // REL_X
+                                current_mouse.x = (current_mouse.x + ev.value as i32).clamp(0, screen_w - 1);
+                                mouse_changed = true;
+                            } else if ev.code == 1 { // REL_Y
+                                current_mouse.y = (current_mouse.y + ev.value as i32).clamp(0, screen_h - 1);
+                                mouse_changed = true;
+                            }
+                        }
+                        3 => { // EV_ABS (Absolute)
+                            if ev.code == 0 { // ABS_X
+                                current_mouse.x = ((ev.value as i32 * screen_w) / 32768).clamp(0, screen_w - 1);
+                                mouse_changed = true;
+                            } else if ev.code == 1 { // ABS_Y
+                                current_mouse.y = ((ev.value as i32 * screen_h) / 32768).clamp(0, screen_h - 1);
+                                mouse_changed = true;
+                            }
+                        }
+                        _ => {}
+                    }
+
+                    // Recycle descriptor back to avail ring safely (no-overwrite Virtqueue Recycle)
+                    *avail_ring.add(2 + (avail_idx as usize % QUEUE_SIZE)) = desc_idx as u16;
+                    avail_idx = avail_idx.wrapping_add(1);
+                }
+
+                used_idx = latest_used_idx;
+
+                // Sync recycling index to avail ring
+                *avail_ring.add(1) = avail_idx;
+                core::ptr::write_volatile((input_base + 0x050) as *mut u32, 0); // QueueNotify
+
+                // C. Dispatch latest mouse state package to all connected client sessions (e.g. compositor)
+                if mouse_changed && session_count > 0 {
+                    let mut packet_buf = [0u8; 12];
+                    packet_buf[0..4].copy_from_slice(&current_mouse.x.to_le_bytes());
+                    packet_buf[4..8].copy_from_slice(&current_mouse.y.to_le_bytes());
+                    packet_buf[8] = if current_mouse.down { 1 } else { 0 };
+
+                    let mut i = 0;
+                    while i < session_count {
+                        let client_chan = active_sessions[i];
+                        if let Err(Status::PeerClosed) = syscalls::channel_write(client_chan, &packet_buf, &[]) {
+                            // Peer disconnected: clean up session
+                            let _ = syscalls::close(client_chan);
+                            active_sessions[i] = active_sessions[session_count - 1];
+                            session_count -= 1;
+                        } else {
+                            i += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Tiny delay or voluntary yield to keep CPU usage low
+        let _ = syscalls::yield_cpu();
+    }
+}

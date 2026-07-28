@@ -214,7 +214,9 @@ pub fn sys_vmar_map(
         let page_count = size / 4096;
         for i in 0..page_count {
             let va = target_va + i * 4096;
-            vmo.commit_page(vmo_offset + i * 4096)?;
+            if !vmo.is_physical() {
+                vmo.commit_page(vmo_offset + i * 4096)?;
+            }
             let pa = vmo.get_page_phys(vmo_offset + i * 4096).unwrap().as_usize();
             proc.page_table.map_va(va, pa, &arch_flags)?;
         }
@@ -255,7 +257,9 @@ pub fn sys_vmar_map_self(
         let page_count = size / 4096;
         for i in 0..page_count {
             let va = target_va + i * 4096;
-            vmo.commit_page(i * 4096)?;
+            if !vmo.is_physical() {
+                vmo.commit_page(i * 4096)?;
+            }
             let pa = vmo.get_page_phys(i * 4096).unwrap().as_usize();
             proc.page_table.map_va(va, pa, &arch_flags)?;
         }
@@ -282,4 +286,27 @@ pub fn sys_vmar_unmap(
         // proc.page_table.unmap_va(va)?;
     }
     Ok(())
+}
+
+pub fn sys_vmo_create_physical(
+    table: &HandleTable,
+    phys_addr: usize,
+    size: usize,
+) -> Result<HandleValue> {
+    let vmo = unsafe { Vmo::create_physical(phys_addr, size)? };
+    let rights = Rights::READ.bits() | Rights::WRITE.bits();
+    table.add(KernelObject::Vmo(vmo), rights)
+}
+
+pub fn sys_vmo_get_phys(
+    table: &HandleTable,
+    vmo_handle_raw: u32,
+    offset: usize,
+) -> Result<usize> {
+    let hv = HandleValue::new(vmo_handle_raw);
+    table.with_vmo(hv, Rights::READ.bits(), |vmo| {
+        vmo.get_page_phys(offset)
+            .map(|pa| pa.as_usize())
+            .ok_or(Status::NotFound)
+    })?
 }

@@ -1,0 +1,4 @@
+name = "inputd"
+path = "inputd"
+dependencies = ["devmgr", "procmgr"]
+is_program = false

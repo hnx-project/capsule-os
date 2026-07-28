@@ -2,7 +2,7 @@ use crate::ipc::channel::Channel;
 use core::sync::atomic::{AtomicBool, Ordering};
 use shared::status::{Result, Status};
 
-pub const MAX_SERVICES: usize = 8;
+pub const MAX_SERVICES: usize = 16;
 
 pub struct ServiceEntry {
     pub name: [u8; 16],
@@ -15,7 +15,10 @@ struct Registry {
 }
 
 static mut REGISTRY: Registry = Registry {
-    services: [None, None, None, None, None, None, None, None],
+    services: [
+        None, None, None, None, None, None, None, None,
+        None, None, None, None, None, None, None, None,
+    ],
 };
 
 static REGISTRY_LOCK: AtomicBool = AtomicBool::new(false);

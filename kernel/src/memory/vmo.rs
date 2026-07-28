@@ -54,6 +54,7 @@ impl Vmo {
     pub fn size(&self) -> usize { self.size }
     pub fn get_size(&self) -> usize { self.size }
     pub fn page_count(&self) -> usize { self.size / PAGE_SIZE }
+    pub fn is_physical(&self) -> bool { self.committed_pages.is_empty() }
 
     pub fn create_physical(phys_addr: usize, size: usize) -> Result<Self> {
         if size == 0 { return Err(Status::InvalidArgs); }

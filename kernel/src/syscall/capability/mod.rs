@@ -71,6 +71,24 @@ pub fn dispatch_capability(
             }
         }
 
+        SYSCALL_VMO_CREATE_PHYSICAL => {
+            let phys_addr = arg0;
+            let size = arg1;
+            match handlers::memory::sys_vmo_create_physical(table, phys_addr, size) {
+                Ok(hv) => hv.get() as usize,
+                Err(e) => e.to_raw(),
+            }
+        }
+
+        SYSCALL_VMO_GET_PHYS => {
+            let vmo_handle_raw = arg0 as u32;
+            let offset = arg1;
+            match handlers::memory::sys_vmo_get_phys(table, vmo_handle_raw, offset) {
+                Ok(phys) => phys,
+                Err(e) => e.to_raw(),
+            }
+        }
+
         SYSCALL_VMO_READ => {
             let handle = arg0 as u32;
             let offset = arg1;

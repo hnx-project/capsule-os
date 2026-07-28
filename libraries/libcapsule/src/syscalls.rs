@@ -308,6 +308,42 @@ pub fn vmo_create_child(parent_handle: usize, offset: usize, size: usize) -> Res
     }
 }
 
+/// Create a VMO representing a physical memory segment.
+pub fn vmo_create_physical(phys_addr: usize, size: usize) -> Result<usize> {
+    let ret = syscall!(
+        shared::syscall_nums::SYSCALL_VMO_CREATE_PHYSICAL,
+        phys_addr,
+        size,
+        0,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret)
+    }
+}
+
+/// Query the physical address of a mapped page within a VMO.
+pub fn vmo_get_phys(vmo_handle: usize, offset: usize) -> Result<usize> {
+    let ret = syscall!(
+        shared::syscall_nums::SYSCALL_VMO_GET_PHYS,
+        vmo_handle,
+        offset,
+        0,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret)
+    }
+}
+
 /// Synchronously read bytes from a VMO into user memory.
 pub fn vmo_read(handle: usize, offset: usize, buf: &mut [u8]) -> Result<usize> {
     let ret = syscall!(
