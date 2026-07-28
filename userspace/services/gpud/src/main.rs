@@ -409,38 +409,47 @@ pub fn main() -> i32 {
     let mut active_session = 0usize;
 
     loop {
-        // A. Listen for compositor connection
-        if active_session == 0 {
-            let mut conn_buf = [0u8; 16];
-            let mut conn_handles = [0u32; 2];
-            if let Ok(_) = syscalls::channel_read(server_chan, &mut conn_buf, &mut conn_handles) {
-                if conn_handles[0] != 0 {
-                    let client_chan = conn_handles[0] as usize;
-                    active_session = client_chan;
+        // A. Poll the service-channel (server_chan) non-blockingly to accept
+        //    new compositor connections. When a connection arrives, the first
+        //    transferred handle is the compositor's "server-end" of the new
+        //    session pair. From that point onward we serve the compositor
+        //    exclusively on that handle (it is paired with the compositor's
+        //    client-end which it will write to and read from).
+        let mut conn_buf = [0u8; 16];
+        let mut conn_handles = [0u32; 2];
+        let non_block_server = server_chan | 0x80000000;
+        if let Ok(_) = syscalls::channel_read(non_block_server, &mut conn_buf, &mut conn_handles) {
+            if conn_handles[0] != 0 {
+                let session_chan = conn_handles[0] as usize;
+                if active_session == 0 {
+                    active_session = session_chan;
                     kprintln!("gpud: Connected display-compositor session! Sending fb_vmo handle...");
 
-                     // Duplicate fb_vmo with READ | WRITE | USER = 11 permissions to hand to the compositor
-                     if let Ok(dup_handle) = syscalls::handle_duplicate(fb_vmo, 11) {
-                         let mut resp_buf = [0u8; 16];
-                         resp_buf[0..4].copy_from_slice(&SCREEN_WIDTH.to_le_bytes());
-                         resp_buf[4..8].copy_from_slice(&SCREEN_HEIGHT.to_le_bytes());
-                         let _ = syscalls::channel_write(client_chan, &resp_buf, &[dup_handle as u32]);
-                         let _ = syscalls::close(dup_handle);
-                     }
+                    // Duplicate fb_vmo and hand it to the compositor on its
+                    // session channel. The compositor is blocked on
+                    // channel_read(session_chan) waiting for this response.
+                    if let Ok(dup_handle) = syscalls::handle_duplicate(fb_vmo, 11) {
+                        let mut resp_buf = [0u8; 16];
+                        resp_buf[0..4].copy_from_slice(&SCREEN_WIDTH.to_le_bytes());
+                        resp_buf[4..8].copy_from_slice(&SCREEN_HEIGHT.to_le_bytes());
+                        let _ = syscalls::channel_write(session_chan, &resp_buf, &[dup_handle as u32]);
+                        let _ = syscalls::close(dup_handle);
+                    }
                 }
             }
         }
 
-        // B. Listen for flush requests from the active compositor session (non-blocking)
+        // B. Serve the active session. Block-read on its channel; the
+        //    compositor alternates between writing commands (0x20=flush) and
+        //    reading acknowledgements on this same channel.
         if active_session != 0 {
             let mut cmd_buf = [0u8; 16];
             let mut cmd_handles = [0u32; 2];
-            let non_block_session = active_session | 0x80000000;
-            if let Ok(_) = syscalls::channel_read(non_block_session, &mut cmd_buf, &mut cmd_handles) {
-                // cmd_buf[0] = 0x20 represents CMD_DISPLAY_FLUSH
+            if let Ok(_) = syscalls::channel_read(active_session, &mut cmd_buf, &mut cmd_handles) {
                 if cmd_buf[0] == 0x20 {
                     unsafe {
-                        // Clean/Flush compositor's written pixels in the framebuffer backplane from cache to physical RAM via EL1 system call (no EL0 traps!)
+                        // Clean/Flush compositor's written pixels in the
+                        // framebuffer backplane from cache to physical RAM.
                         let _ = syscalls::display_flush(fb_vmo);
 
                         // 1. Transfer RAM Backplane content to host 2D resource

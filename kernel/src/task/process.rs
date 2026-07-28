@@ -518,7 +518,7 @@ impl Process {
             proc.root_vmar.base + entry_point_abs
         });
 
-        let stack_size = 16 * 1024;
+        let stack_size = 64 * 1024;
         let mut stack_vmo = Vmo::create_with_size(stack_size)?;
         stack_vmo.commit_all()?;
         let stack_vaddr_offset = 0x2000000;
@@ -939,11 +939,11 @@ impl Process {
             ()
         };
 
-        // POST-LAUNCH stack PTE verification: confirm all 4 stack
+        // POST-LAUNCH stack PTE verification: confirm all stack
         // pages have valid L3 PTEs immediately after mapping.
         #[cfg(target_arch = "aarch64")]
         {
-            for i in 0..4 {
+            for i in 0..(stack_size / 4096) {
                 let check_va = stack_va + i * 4096;
                 match pt.translate_va(check_va) {
                     None => {
