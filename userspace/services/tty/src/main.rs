@@ -3,7 +3,7 @@
 
 extern crate libcapsule;
 
-use libcapsule::{kprint, kprintln, syscalls};
+use libcapsule::{kprint, log_info, log_error, syscalls};
 use shared::status::Status;
 
 /// TTY service protocol command codes.
@@ -14,25 +14,25 @@ const TTY_CMD_BIND_PGID: u8 = 4;
 
 #[no_mangle]
 pub fn main() -> i32 {
-    kprintln!("tty: initializing Terminal & TTY Console Service...");
+    log_info!("TTY", "initializing Terminal & TTY Console Service...");
 
     // 1. Create a bidirectional server channel
     let raw = match syscalls::channel_create() {
         Ok(v) => v,
         Err(_) => {
-            kprintln!("tty: [ERROR] channel_create failed");
+            log_error!("TTY", "[ERROR] channel_create failed");
             return -1;
         }
     };
     let server_chan = (raw >> 32) as u32 as usize;
-    kprintln!("tty: server channel handle={}", server_chan);
+    log_info!("TTY", "server channel handle={}", server_chan);
 
     // 2. Register global name "svc.tty"
     if let Err(e) = syscalls::channel_register("svc.tty", server_chan) {
-        kprintln!("tty: [ERROR] channel_register failed: {:?}", e);
+        log_error!("TTY", "[ERROR] channel_register failed: {:?}", e);
         return -2;
     }
-    kprintln!("tty: [SUCCESS] registered service as 'svc.tty'");
+    log_info!("TTY", "[SUCCESS] registered service as 'svc.tty'");
     let _ = libcapsule::notify_init("tty");
 
     let mut conn_buf = [0u8; 64];
@@ -47,7 +47,7 @@ pub fn main() -> i32 {
         if let Ok(_) = syscalls::channel_read(server_chan, &mut conn_buf, &mut conn_handles) {
             if conn_handles[0] != 0 {
                 let session_chan = conn_handles[0] as usize;
-                kprintln!("tty: accepted incoming connection session={}", session_chan);
+                log_info!("TTY", "accepted incoming connection session={}", session_chan);
 
                 // Handle session commands until the connection closes
                 loop {
@@ -140,7 +140,7 @@ pub fn main() -> i32 {
                         }
                         Ok(_) => {}
                         Err(Status::PeerClosed) | Err(_) => {
-                            kprintln!("tty: session closed, closing channel handle {}", session_chan);
+                            log_info!("TTY", "session closed, closing channel handle {}", session_chan);
                             let _ = syscalls::close(session_chan);
                             break;
                         }

@@ -3,7 +3,7 @@
 
 extern crate libcapsule;
 
-use libcapsule::{kprintln, syscalls};
+use libcapsule::{log_info, log_error, syscalls};
 use shared::status::{Result, Status};
 
 const QUEUE_SIZE: usize = 16;
@@ -108,7 +108,7 @@ const STATUS_PHYS: usize = 0x4a40_8200;
 impl BlkDriver {
     unsafe fn init() -> Result<Self> {
         let (slot, mmio_pa) = discover_blk().ok_or(Status::NotFound)?;
-        kprintln!("blkdev: discovered slot={} mmio_pa={:#x}", slot, mmio_pa);
+        log_info!("BLKDEV", "discovered slot={} mmio_pa={:#x}", slot, mmio_pa);
 
         // Allocate the three queue VMOs from the kernel bus layer.
         let handles = syscalls::virtio_setup_queue(slot, 0, QUEUE_SIZE as u16)?;
@@ -153,7 +153,7 @@ impl BlkDriver {
         // Drive the device via per-register syscalls (no MMIO mmap).
         let magic = unsafe { mmio_read(mmio_pa, 0x000) };
         if magic != MMIO_VIRTIO_MAGIC {
-            kprintln!("blkdev: magic mismatch (got {:#x})", magic);
+            log_error!("BLKDEV", "magic mismatch (got {:#x})", magic);
             return Err(Status::InvalidArgs);
         }
 
@@ -174,7 +174,7 @@ impl BlkDriver {
             let cap_lo = mmio_read(mmio_pa, 0x100);
             let cap_hi = mmio_read(mmio_pa, 0x104);
             let cap = ((cap_hi as u64) << 32) | (cap_lo as u64);
-            kprintln!("blkdev: capacity={} sectors (legacy fallback: 2880)", cap);
+            log_info!("BLKDEV", "capacity={} sectors (legacy fallback: 2880)", cap);
         }
 
         let _ = handles;
@@ -293,13 +293,13 @@ fn write_response_data(chan: usize, val: i64, data: &[u8]) {
 
 #[no_mangle]
 pub fn main() -> i32 {
-    kprintln!("blkdev: init (microkernel EL0 virtio-blk)");
+    log_info!("BLKDEV", "blkdev: init (microkernel EL0 virtio-blk)");
 
     let driver = unsafe {
         match BlkDriver::init() {
             Ok(d) => d,
             Err(e) => {
-                kprintln!("blkdev: init failed: {:?}", e);
+                log_error!("BLKDEV", "init failed: {:?}", e);
                 let raw = syscalls::channel_create().unwrap_or(0);
                 let chan = (raw >> 32) as u32 as usize;
                 let _ = syscalls::channel_register("svc.blk", chan);
@@ -312,13 +312,13 @@ pub fn main() -> i32 {
 
     let raw = syscalls::channel_create().unwrap_or(0);
     let server_chan = (raw >> 32) as u32 as usize;
-    kprintln!("blkdev: channel={}", server_chan);
+    log_info!("BLKDEV", "channel={}", server_chan);
 
     if syscalls::channel_register("svc.blk", server_chan).is_err() {
-        kprintln!("blkdev: register failed");
+        log_error!("BLKDEV", "register failed");
         return -2;
     }
-    kprintln!("blkdev: registered svc.blk");
+    log_info!("BLKDEV", "registered svc.blk");
     let _ = libcapsule::notify_init("blkdev");
 
     let mut conn_buf = [0u8; 64];

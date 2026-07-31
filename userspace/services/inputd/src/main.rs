@@ -3,7 +3,7 @@
 
 extern crate libcapsule;
 
-use libcapsule::{kprintln, syscalls};
+use libcapsule::{log_info, log_warn, log_error, syscalls};
 use shared::status::{Result, Status};
 
 const QUEUE_SIZE: usize = 64;
@@ -49,9 +49,7 @@ pub struct MouseStatePacket {
 
 #[no_mangle]
 pub fn main() -> i32 {
-    kprintln!("====================================================");
-    kprintln!("inputd: User-Space Virtio-Input UMDF Driver booting...");
-    kprintln!("====================================================");
+    log_info!("INPUTD", "User-Space Virtio-Input UMDF Driver booting...");
 
     // 1. Probe Virtio-Input MMIO slots
     let mut input_base: usize = 0;
@@ -66,7 +64,7 @@ pub fn main() -> i32 {
                 let magic = unsafe { core::ptr::read_volatile(slot_va as *const u32) };
                 let dev_id = unsafe { core::ptr::read_volatile((slot_va + 0x008) as *const u32) };
                 if magic == 0x74726976 && dev_id == 18 {
-                    kprintln!("inputd: Discovered Virtio-Input device at slot {} MMIO {:#x}", slot, 0x0a000000 + slot * 0x200);
+                    log_info!("INPUTD", "Discovered Virtio-Input device at slot {} MMIO {:#x}", slot, 0x0a000000 + slot * 0x200);
                     input_base = slot_va;
                     break;
                 }
@@ -75,7 +73,7 @@ pub fn main() -> i32 {
     }
 
     if input_base == 0 {
-        kprintln!("inputd: No physical Virtio-Input device found. Exiting gracefully to satisfy DAG dependencies.");
+        log_warn!("INPUTD", "No physical Virtio-Input device found. Exiting gracefully to satisfy DAG dependencies.");
         // Notify servicesd that we are "ready" to avoid blocking downstream services
         let _ = libcapsule::notify_init("inputd");
         loop {
@@ -140,23 +138,23 @@ pub fn main() -> i32 {
         core::ptr::write_volatile((input_base + 0x050) as *mut u32, 0);
     }
 
-    kprintln!("inputd: Hardware initialization complete. Registering IPC service...");
+    log_info!("INPUTD", "Hardware initialization complete. Registering IPC service...");
 
     // 6. Create service channel for clients (compositor)
     let raw = match syscalls::channel_create() {
         Ok(v) => v,
         Err(_) => {
-            kprintln!("inputd: channel_create failed");
+            log_error!("INPUTD", "channel_create failed");
             return -2;
         }
     };
     let server_chan = (raw >> 32) as u32 as usize;
 
     if let Err(e) = syscalls::channel_register("svc.input", server_chan) {
-        kprintln!("inputd: channel_register failed: {:?}", e);
+        log_error!("INPUTD", "channel_register failed: {:?}", e);
         return -3;
     }
-    kprintln!("inputd: Registered 'svc.input' on channel {}", server_chan);
+    log_info!("INPUTD", "Registered 'svc.input' on channel {}", server_chan);
 
     let _ = libcapsule::notify_init("inputd");
 
@@ -180,7 +178,7 @@ pub fn main() -> i32 {
                 let client_chan = conn_handles[0] as usize;
                 active_sessions[session_count] = client_chan;
                 session_count += 1;
-                kprintln!("inputd: Connected new client compositor session");
+                log_info!("INPUTD", "Connected new client compositor session");
 
                 // Read screen resolution handshake from compositor (using non-blocking channel read)
                 let mut res_buf = [0u8; 16];
@@ -193,7 +191,7 @@ pub fn main() -> i32 {
                         if w > 0 && h > 0 {
                             screen_w = w;
                             screen_h = h;
-                            kprintln!("inputd: Received screen resolution handshake: {}x{}", screen_w, screen_h);
+                             log_info!("INPUTD", "Received screen resolution handshake: {}x{}", screen_w, screen_h);
                         }
                         break;
                     }

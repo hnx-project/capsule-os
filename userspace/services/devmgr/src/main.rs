@@ -6,7 +6,7 @@ extern crate libcapsule;
 mod protocol;
 mod device;
 
-use libcapsule::{kprintln, syscalls};
+use libcapsule::{log_info, log_error, syscalls};
 use protocol::*;
 use device::MAX_OPEN_PER_SESSION;
 use shared::status::Status;
@@ -221,23 +221,23 @@ fn parse_three_usizes(s: &str) -> [usize; 3] {
 
 #[no_mangle]
 pub fn main() -> i32 {
-    kprintln!("devmgr: init");
+    log_info!("DEVMGR", "devmgr: init");
 
     let raw = match syscalls::channel_create() {
         Ok(v) => v,
         Err(_) => {
-            kprintln!("devmgr: channel_create failed");
+            log_error!("DEVMGR", "devmgr: channel_create failed");
             return -1;
         }
     };
     let server_chan = (raw >> 32) as u32 as usize;
-    kprintln!("devmgr: channel={}", server_chan);
+    log_info!("DEVMGR", "devmgr: channel={}", server_chan);
 
     if let Err(e) = syscalls::channel_register("svc.dev", server_chan) {
-        kprintln!("devmgr: channel_register failed: {:?}", e);
+        log_error!("DEVMGR", "devmgr: channel_register failed: {:?}", e);
         return -2;
     }
-    kprintln!("devmgr: registered svc.dev");
+    log_info!("DEVMGR", "devmgr: registered svc.dev");
 
     let mut dev_buf = [0u8; shared::device_info::DEVICE_BUFFER_SIZE];
     match syscalls::device_info(&mut dev_buf) {
@@ -245,13 +245,13 @@ pub fn main() -> i32 {
             let status = device::parse_kernel_buffer(&dev_buf[..n]);
             if status == 0 {
                 let count = unsafe { device::DEVICE_TABLE.count };
-                kprintln!("devmgr: {} device(s) discovered", count);
+                log_info!("DEVMGR", "{} device(s) discovered", count);
             } else {
-                kprintln!("devmgr: parse error: {}", status);
+                log_error!("DEVMGR", "parse error: {}", status);
             }
         }
         Err(e) => {
-            kprintln!("devmgr: device_info syscall failed: {:?}", e);
+            log_error!("DEVMGR", "device_info syscall failed: {:?}", e);
         }
     }
 

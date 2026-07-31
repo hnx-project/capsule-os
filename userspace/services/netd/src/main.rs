@@ -3,7 +3,7 @@
 
 extern crate libcapsule;
 
-use libcapsule::{kprintln, syscalls, syscalls::VirtioDeviceInfo};
+use libcapsule::{log_info, log_error, syscalls, syscalls::VirtioDeviceInfo};
 use shared::status::{Result, Status};
 
 /// Net service protocol command codes (from API.md).
@@ -42,7 +42,7 @@ unsafe fn mmio_write(base: usize, off: usize, val: u32) -> Result<()> {
 /// in place: the kernel never touches net protocol code.
 fn activate_net() -> Option<(u32, usize)> {
     let (slot, mmio_pa) = discover_net()?;
-    kprintln!("netd: discovered slot={} mmio_pa={:#x}", slot, mmio_pa);
+    log_info!("NETD", "discovered slot={} mmio_pa={:#x}", slot, mmio_pa);
 
     let vmo = syscalls::vmo_create_physical(mmio_pa, MMIO_MAP_SIZE).ok()?;
     syscalls::vmar_map_self(vmo, MMIO_MAP_BASE, MMIO_MAP_SIZE, 11).ok()?;
@@ -50,7 +50,7 @@ fn activate_net() -> Option<(u32, usize)> {
 
     let magic = unsafe { core::ptr::read_volatile(mmio_va as *const u32) };
     if magic != MMIO_VIRTIO_MAGIC {
-        kprintln!("netd: magic mismatch (got {:#x})", magic);
+        log_error!("NETD", "magic mismatch (got {:#x})", magic);
         return None;
     }
 
@@ -72,25 +72,25 @@ fn activate_net() -> Option<(u32, usize)> {
 
 #[no_mangle]
 pub fn main() -> i32 {
-    kprintln!("netd: initializing Network Daemon Service (microkernel EL0 virtio-net)...");
+    log_info!("NETD", "initializing Network Daemon Service (microkernel EL0 virtio-net)...");
 
     let _device = activate_net();
 
     let raw = match syscalls::channel_create() {
         Ok(v) => v,
         Err(_) => {
-            kprintln!("netd: channel_create failed");
+            log_error!("NETD", "channel_create failed");
             return -1;
         }
     };
     let server_chan = (raw >> 32) as u32 as usize;
-    kprintln!("netd: channel={}", server_chan);
+    log_info!("NETD", "channel={}", server_chan);
 
     if let Err(e) = syscalls::channel_register("svc.net", server_chan) {
-        kprintln!("netd: channel_register failed: {:?}", e);
+        log_error!("NETD", "channel_register failed: {:?}", e);
         return -2;
     }
-    kprintln!("netd: [SUCCESS] registered service as 'svc.net'");
+    log_info!("NETD", "[SUCCESS] registered service as 'svc.net'");
     let _ = libcapsule::notify_init("netd");
 
     let mut conn_buf = [0u8; 64];
@@ -116,7 +116,7 @@ pub fn main() -> i32 {
 
                             match command {
                                 NET_CMD_SOCKET => {
-                                    kprintln!("netd: socket creation requested, protocol={}", arg2);
+                                    log_info!("NETD", "socket creation requested, protocol={}", arg2);
                                     let mock_fd = 42u32;
                                     resp_buf[4..8].copy_from_slice(&mock_fd.to_le_bytes());
                                     let _ = syscalls::channel_write(session_chan, &resp_buf, &[]);
@@ -124,7 +124,7 @@ pub fn main() -> i32 {
                                 NET_CMD_CONNECT => {
                                     let mut ip = [0u8; 4];
                                     ip.copy_from_slice(&cmd_buf[12..16]);
-                                    kprintln!("netd: connect requested, fd={}, target={}.{}.{}.{}:{}", socket_id, ip[0], ip[1], ip[2], ip[3], arg2);
+                                    log_info!("NETD", "connect requested, fd={}, target={}.{}.{}.{}:{}", socket_id, ip[0], ip[1], ip[2], ip[3], arg2);
                                     let success = 0i32;
                                     resp_buf[4..8].copy_from_slice(&success.to_le_bytes());
                                     let _ = syscalls::channel_write(session_chan, &resp_buf, &[]);
@@ -146,7 +146,7 @@ pub fn main() -> i32 {
                                     let _ = syscalls::channel_write(session_chan, &resp_buf, &[]);
                                 }
                                 NET_CMD_CLOSE => {
-                                    kprintln!("netd: close requested, fd={}", socket_id);
+                                    log_info!("NETD", "close requested, fd={}", socket_id);
                                     let success = 0i32;
                                     resp_buf[4..8].copy_from_slice(&success.to_le_bytes());
                                     let _ = syscalls::channel_write(session_chan, &resp_buf, &[]);

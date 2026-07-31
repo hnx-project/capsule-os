@@ -3,7 +3,7 @@
 
 extern crate libcapsule;
 
-use libcapsule::{kprintln, syscalls};
+use libcapsule::{log_info, log_warn, log_error, syscalls};
 use shared::status::{Result, Status};
 
 const QUEUE_SIZE: usize = 16;
@@ -178,16 +178,14 @@ unsafe fn submit_command(
     if resp_type == 0x1100 { // VIRTIO_GPU_RESP_OK_NODATA
         Ok(())
     } else {
-        kprintln!("gpud: [ERROR] GPU Command failed with response: {:#x}", resp_type);
+        log_error!("GPUD", "[ERROR] GPU Command failed with response: {:#x}", resp_type);
         Err(Status::InvalidArgs)
     }
 }
 
 #[no_mangle]
 pub fn main() -> i32 {
-    kprintln!("====================================================");
-    kprintln!("gpud: User-Space Virtio-GPU UMDF Driver booting...");
-    kprintln!("====================================================");
+    log_info!("GPUD", "User-Space Virtio-GPU UMDF Driver booting...");
 
     // 1. Probe Virtio-GPU MMIO slots
     let mut gpu_base: usize = 0;
@@ -202,7 +200,7 @@ pub fn main() -> i32 {
                 let magic = unsafe { core::ptr::read_volatile(slot_va as *const u32) };
                 let dev_id = unsafe { core::ptr::read_volatile((slot_va + 0x008) as *const u32) };
                 if magic == 0x74726976 && dev_id == 16 {
-                    kprintln!("gpud: Discovered Virtio-GPU device at slot {} MMIO {:#x}", slot, 0x0a000000 + slot * 0x200);
+                    log_info!("GPUD", "Discovered Virtio-GPU device at slot {} MMIO {:#x}", slot, 0x0a000000 + slot * 0x200);
                     gpu_base = slot_va;
                     break;
                 }
@@ -211,7 +209,7 @@ pub fn main() -> i32 {
     }
 
     if gpu_base == 0 {
-        kprintln!("gpud: No physical Virtio-GPU device found. Exiting gracefully to satisfy DAG dependencies.");
+        log_warn!("GPUD", "No physical Virtio-GPU device found. Exiting gracefully to satisfy DAG dependencies.");
         let _ = libcapsule::notify_init("gpud");
         loop {
             let _ = syscalls::yield_cpu();
@@ -306,7 +304,7 @@ pub fn main() -> i32 {
             width: SCREEN_WIDTH,
             height: SCREEN_HEIGHT,
         });
-        kprintln!("gpud: Submitting CMD_RESOURCE_CREATE_2D...");
+        log_info!("GPUD", "Submitting CMD_RESOURCE_CREATE_2D...");
         submit_command(
             gpu_base,
             desc_table,
@@ -320,7 +318,7 @@ pub fn main() -> i32 {
             resp_phys as u64,
             resp_ptr,
         ).unwrap();
-        kprintln!("gpud: CMD_RESOURCE_CREATE_2D returned successfully!");
+        log_info!("GPUD", "CMD_RESOURCE_CREATE_2D returned successfully!");
 
         // B. CMD_RESOURCE_ATTACH_BACKING
         core::ptr::write_volatile(req_attach, VirtioGpuResourceAttachBackingCombined {
@@ -386,23 +384,23 @@ pub fn main() -> i32 {
         ).unwrap();
     }
 
-    kprintln!("gpud: Hardware initialization complete. Registering IPC service...");
+    log_info!("GPUD", "Hardware initialization complete. Registering IPC service...");
 
     // 7. Create service channel for client (display-compositor)
     let raw = match syscalls::channel_create() {
         Ok(v) => v,
         Err(_) => {
-            kprintln!("gpud: channel_create failed");
+            log_error!("GPUD", "channel_create failed");
             return -2;
         }
     };
     let server_chan = (raw >> 32) as u32 as usize;
 
     if let Err(e) = syscalls::channel_register("svc.gpu", server_chan) {
-        kprintln!("gpud: channel_register failed: {:?}", e);
+        log_error!("GPUD", "channel_register failed: {:?}", e);
         return -3;
     }
-    kprintln!("gpud: Registered 'svc.gpu' on channel {}", server_chan);
+    log_info!("GPUD", "Registered 'svc.gpu' on channel {}", server_chan);
 
     let _ = libcapsule::notify_init("gpud");
 
@@ -423,7 +421,7 @@ pub fn main() -> i32 {
                 let session_chan = conn_handles[0] as usize;
                 if active_session == 0 {
                     active_session = session_chan;
-                    kprintln!("gpud: Connected display-compositor session! Sending fb_vmo handle...");
+                    log_info!("GPUD", "Connected display-compositor session! Sending fb_vmo handle...");
 
                     // Duplicate fb_vmo and hand it to the compositor on its
                     // session channel. The compositor is blocked on

@@ -30,7 +30,7 @@
 
 extern crate libcapsule;
 
-use libcapsule::{kprintln, syscalls};
+use libcapsule::{log_info, log_error, syscalls};
 use shared::status::Status;
 
 const PIPE_BUF_SIZE: usize = 4096;
@@ -237,23 +237,23 @@ fn handle_close(session_chan: usize, buf: &[u8]) {
 
 #[no_mangle]
 pub fn main() -> i32 {
-    kprintln!("piped: init");
+    log_info!("PIPED", "piped: init");
 
     let raw = match syscalls::channel_create() {
         Ok(v) => v,
         Err(_) => {
-            kprintln!("piped: channel_create failed");
+            log_error!("PIPED", "channel_create failed");
             return -1;
         }
     };
     let server_chan = (raw >> 32) as u32 as usize;
-    kprintln!("piped: channel={}", server_chan);
+    log_info!("PIPED", "channel={}", server_chan);
 
     if let Err(e) = syscalls::channel_register("svc.pipe", server_chan) {
-        kprintln!("piped: channel_register failed: {:?}", e);
+        log_error!("PIPED", "channel_register failed: {:?}", e);
         return -2;
     }
-    kprintln!("piped: registered svc.pipe");
+    log_info!("PIPED", "registered svc.pipe");
     let _ = libcapsule::notify_init("piped");
 
     let mut conn_buf = [0u8; 64];

@@ -7,7 +7,7 @@ mod protocol;
 mod ramfs;
 mod vfs;
 
-use libcapsule::{kprintln, syscalls};
+use libcapsule::{log_info, log_error, syscalls};
 use protocol::*;
 use shared::status::Status;
 
@@ -172,32 +172,32 @@ fn handle_cmd(session_idx: usize, session_chan: usize, buf: &[u8], _handles: &[u
 
 #[no_mangle]
 pub fn main() -> i32 {
-    kprintln!("fileagent: init");
+    log_info!("VFS", "fileagent: init");
 
     ramfs::init();
 
     if ramfs::mkdir_path("/dev") < 0 {
-        kprintln!("fileagent: mkdir /dev failed");
+        log_error!("VFS", "fileagent: mkdir /dev failed");
         return -1;
     }
 
-    kprintln!("fileagent: creating channel");
+    log_info!("VFS", "fileagent: creating channel");
 
     let raw = match syscalls::channel_create() {
         Ok(v) => v,
         Err(_) => {
-            kprintln!("fileagent: channel_create failed");
+            log_error!("VFS", "fileagent: channel_create failed");
             return -1;
         }
     };
     let server_chan = (raw >> 32) as u32 as usize;
-    kprintln!("fileagent: channel_create ok, server_chan={}", server_chan);
+    log_info!("VFS", "fileagent: channel_create ok, server_chan={}", server_chan);
 
     if let Err(e) = syscalls::channel_register("svc.vfs", server_chan) {
-        kprintln!("fileagent: channel_register failed: {:?}", e);
+        log_error!("VFS", "fileagent: channel_register failed: {:?}", e);
         return -2;
     }
-    kprintln!("fileagent: registered svc.vfs");
+    log_info!("VFS", "fileagent: registered svc.vfs");
     let _ = libcapsule::notify_init("fileagent");
 
     let mut conn_buf = [0u8; 64];

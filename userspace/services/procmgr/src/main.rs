@@ -3,7 +3,7 @@
 
 extern crate libcapsule;
 
-use libcapsule::{kprintln, syscalls};
+use libcapsule::{log_info, log_error, syscalls};
 use libcapsule::syscalls::{PROC_MGMT_CREATE, PROC_MGMT_EXIT, PROC_MGMT_RELEASE_PT};
 use shared::status::Status;
 
@@ -67,22 +67,22 @@ fn remove_entry(pid: u64) {
 
 #[no_mangle]
 pub fn main() -> i32 {
-    kprintln!("procmgr: CapsuleOS process manager starting...");
+    log_info!("PROCMGR", "CapsuleOS process manager starting...");
 
     let server_chan = match syscalls::channel_create() {
         Ok(ch) => ch,
         Err(_) => {
-            kprintln!("procmgr: failed to create channel");
+            log_error!("PROCMGR", "failed to create channel");
             return -1;
         }
     };
 
     if let Err(_) = syscalls::channel_register("svc.procmgr", server_chan) {
-        kprintln!("procmgr: failed to register svc.procmgr");
+        log_error!("PROCMGR", "failed to register svc.procmgr");
         return -2;
     }
 
-    kprintln!("procmgr: registered svc.procmgr, entering event loop");
+    log_info!("PROCMGR", "registered svc.procmgr, entering event loop");
     let _ = libcapsule::notify_init("procmgr");
 
     let mut conn_buf = [0u8; 64];

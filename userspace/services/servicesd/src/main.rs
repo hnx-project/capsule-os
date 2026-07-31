@@ -6,7 +6,7 @@ extern crate libcapsule;
 mod config;
 
 use config::{ActiveService, parse_auto_toml, MAX_SERVICES, MAX_DEPS, CONFIG_BUFFERS};
-use libcapsule::{kprintln, syscalls};
+use libcapsule::{log_info, log_warn, log_error, syscalls};
 use shared::status::Status;
 
 /// BootFS VMO handle injected by the kernel to 1号进程 at slot 100
@@ -73,9 +73,7 @@ static SERVICES: &[ServiceDef] = &[
 
 #[no_mangle]
 pub fn main() -> i32 {
-    kprintln!("====================================================");
-    kprintln!("servicesd: Service Manager v1.0.0 (ServicesD) Active");
-    kprintln!("====================================================");
+    log_info!("SERVICESD", "Service Manager v1.0.0 (ServicesD) Active");
 
     // 1. Initialize loaders
     let bootstrap_service = libcapsule::ServiceLoader::new(BOOTFS_VMO_HANDLE);
@@ -85,18 +83,19 @@ pub fn main() -> i32 {
     let raw = match syscalls::channel_create() {
         Ok(v) => v,
         Err(_) => {
-            kprintln!("servicesd: [ERROR] channel_create failed");
+            log_error!("SERVICESD", "[ERROR] channel_create failed");
             return -1;
         }
     };
     let server_chan = (raw >> 32) as u32 as usize;
 
     if let Err(e) = syscalls::channel_register("svc.servicesd", server_chan) {
-        kprintln!("servicesd: [ERROR] channel_register failed: {:?}", e);
+        log_error!("SERVICESD", "[ERROR] channel_register failed: {:?}", e);
         return -2;
     }
-    kprintln!(
-        "servicesd: Registered global name 'svc.servicesd' on channel {}",
+    log_info!(
+        "SERVICESD",
+        "Registered global name 'svc.servicesd' on channel {}",
         server_chan
     );
 
@@ -149,7 +148,7 @@ pub fn main() -> i32 {
                                         &CONFIG_BUFFERS[service_count][..read_size],
                                     ) {
                                         if let Some(service) = parse_auto_toml(content_str) {
-                                            kprintln!("servicesd: Dynamically discovered service '{}' from BootFS", service.name);
+                                            log_info!("SERVICESD", "Dynamically discovered service '{}' from BootFS", service.name);
                                             services[service_count] = service;
                                             service_count += 1;
                                         }
@@ -164,8 +163,9 @@ pub fn main() -> i32 {
     }
 
     if service_count == 0 {
-        kprintln!(
-            "servicesd: No dynamic configurations found. Falling back to static hardcoded SERVICES."
+        log_info!(
+            "SERVICESD",
+            "No dynamic configurations found. Falling back to static hardcoded SERVICES."
         );
         for (i, s) in SERVICES.iter().enumerate() {
             if i >= MAX_SERVICES {
@@ -217,15 +217,17 @@ pub fn main() -> i32 {
                 }
 
                 if satisfied {
-                    kprintln!(
-                        "servicesd: Dependency satisfied. Spawning '{}'...",
+                    log_info!(
+                        "SERVICESD",
+                        "Dependency satisfied. Spawning '{}'...",
                         services[i].name
                     );
                     if services[i].is_program {
                         match bootstrap_program.spawn_program(services[i].path) {
                             Ok(pid) => {
-                                kprintln!(
-                                    "servicesd: [SPAWN] Program '{}' launched with PID {}",
+                                log_info!(
+                                    "SERVICESD",
+                                    "[SPAWN] Program '{}' launched with PID {}",
                                     services[i].name,
                                     pid
                                 );
@@ -234,8 +236,9 @@ pub fn main() -> i32 {
                                 progress = true;
                             }
                             Err(e) => {
-                                kprintln!(
-                                    "servicesd: [ERROR] Failed to spawn program '{}': {:?}",
+                                log_error!(
+                                    "SERVICESD",
+                                    "[ERROR] Failed to spawn program '{}': {:?}",
                                     services[i].name,
                                     e
                                 );
@@ -244,14 +247,15 @@ pub fn main() -> i32 {
                     } else {
                         match bootstrap_service.spawn_service(services[i].path) {
                             Ok(pid) => {
-                                kprintln!("servicesd: [SPAWN] Service '{}' launched, PID={}. Waiting for READY...", services[i].name, pid);
+                                log_info!("SERVICESD", "[SPAWN] Service '{}' launched, PID={}. Waiting for READY...", services[i].name, pid);
                                 pids[i] = pid as u64;
                                 states[i] = ServiceState::Spawning;
                                 progress = true;
                             }
                             Err(e) => {
-                                kprintln!(
-                                    "servicesd: [ERROR] Failed to spawn service '{}': {:?}",
+                                log_error!(
+                                    "SERVICESD",
+                                    "[ERROR] Failed to spawn service '{}': {:?}",
                                     services[i].name,
                                     e
                                 );
@@ -303,8 +307,9 @@ pub fn main() -> i32 {
                                     core::str::from_utf8(&cmd_buf[20..20 + len])
                                 {
                                     let name = service_name.trim();
-                                    kprintln!(
-                                        "servicesd: Received INIT_CMD_READY handshake from '{}'",
+                                    log_info!(
+                                        "SERVICESD",
+                                        "Received INIT_CMD_READY handshake from '{}'",
                                         name
                                     );
 
@@ -312,8 +317,9 @@ pub fn main() -> i32 {
                                     for i in 0..service_count {
                                         if services[i].name == name {
                                             states[i] = ServiceState::Running;
-                                            kprintln!(
-                                                "servicesd: Service '{}' promoted to RUNNING state",
+                                            log_info!(
+                                                "SERVICESD",
+                                                "Service '{}' promoted to RUNNING state",
                                                 name
                                             );
                                             break;
@@ -356,15 +362,16 @@ pub fn main() -> i32 {
             if let Some(idx) = found_idx {
                 let s_name = services[idx].name;
                 if services[idx].is_program {
-                    kprintln!(
-                        "servicesd: [INFO] Program '{}' (PID {}) has completed. Exit code: {}.",
+                    log_info!(
+                        "SERVICESD",
+                        "[INFO] Program '{}' (PID {}) has completed. Exit code: {}.",
                         s_name,
                         reaped_pid,
                         exit_status
                     );
                 } else {
-                    kprintln!("servicesd: [1;31m[CRASH] Service '{}' (PID {}) has terminated with exit code {}![0m", s_name, reaped_pid, exit_status);
-                    kprintln!("servicesd: [1;32m[AUTO-HEALING] Resetting dependency graph to restart '{}'...[0m", s_name);
+                    log_error!("SERVICESD", "[CRASH] Service '{}' (PID {}) has terminated with exit code {}!", s_name, reaped_pid, exit_status);
+                    log_warn!("SERVICESD", "[AUTO-HEALING] Resetting dependency graph to restart '{}'...", s_name);
 
                     // Reset service state and PID to trigger automatic DAG-based re-spawning
                     states[idx] = ServiceState::Pending;

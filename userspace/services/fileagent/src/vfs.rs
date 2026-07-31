@@ -1012,15 +1012,15 @@ pub fn init_fatfs() {
                     unsafe {
                         FAT_FS = Some(fs);
                     }
-                    libcapsule::kprintln!("VFS: FatFS successfully mounted on /boot!");
+                    libcapsule::log_info!("VFS", "FatFS successfully mounted on /boot!");
                 }
                 Err(e) => {
-                    libcapsule::kprintln!("VFS: Failed to initialize FatFS on stream: {:?}", e);
+                    libcapsule::log_error!("VFS", "Failed to initialize FatFS on stream: {:?}", e);
                 }
             }
         }
         Err(_e) => {
-            libcapsule::kprintln!("VFS: Failed to connect BlkDevStream to svc.blk");
+            libcapsule::log_error!("VFS", "Failed to connect BlkDevStream to svc.blk");
         }
     }
 }
