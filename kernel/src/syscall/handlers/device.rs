@@ -64,13 +64,11 @@ pub fn sys_device_info(dst_user_va: usize, buf_len: usize) -> Result<usize> {
         idx += 1;
     }
 
-    if idx < records_cap {
-        let width = unsafe { crate::drivers::virtio_gpu::SCREEN_WIDTH };
-        let height = unsafe { crate::drivers::virtio_gpu::SCREEN_HEIGHT };
-        let rec = DeviceInfoRecord::new(DEVICE_TYPE_DISPLAY, "display", width as u64, height as u64, 0xFFFFFFFF);
-        write_record(&mut local, idx, &rec);
-        idx += 1;
-    }
+    // Display resolution is owned by the userspace `gpud` service
+    // (`svc.gpu`).  Callers should connect to that channel directly.
+    // The kernel no longer reports DEVICE_TYPE_DISPLAY here, in line
+    // with the microkernel principle that display hardware does not
+    // belong in EL1.
 
     // Mouse driver is completely decoupled from kernel space and runs in EL0 userspace.
     // sys_device_info no longer exports DEVICE_TYPE_MOUSE.

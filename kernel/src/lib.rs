@@ -122,12 +122,12 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
                     drivers::gic::init(boot.gicd_base, boot.gicc_base);
                     drivers::timer::init();
                     crate::log_info!("IRQ", "GIC + generic timer enabled");
-                    
-                    // Initialize Virtio-Block MMIO Driver
-                    drivers::virtio_blk::init();
-                    
-                    // Initialize Virtio-Net MMIO Driver
-                    drivers::virtio_net::init();
+
+                    // virtio-mmio bus is probed lazily on the first
+                    // `SYSCALL_VIRTIO_PROBE` from EL0 — running the
+                    // scan at this point can race with the devices'
+                    // own power-on reset (we observed all slots
+                    // returning dev_id=0).  See virtio_bus.rs.
 
                     // Virtio-GPU MMIO Driver is decoupled and runs in user space (gpud)
                     // drivers::virtio_gpu::init();

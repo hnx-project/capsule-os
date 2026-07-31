@@ -791,7 +791,125 @@ pub fn net_recv(buf: &mut [u8]) -> Result<usize> {
     if (ret as isize) < 0 {
         Err(Status::from_raw(ret as i32))
     } else {
-        Ok(ret)
+        Ok(ret as usize)
+    }
+}
+
+// -------------------------------------------------------------------------
+// virtio-mmio bus primitives
+//
+// EL0 device drivers (`blkdev`, `netd`, ...) call into these to discover
+// virtio-mmio devices and allocate queue memory.  Once they have the
+// queue VMOs mapped, they drive the device's MMIO registers themselves
+// via the existing `mmio_read` / `mmio_write` syscalls.
+// -------------------------------------------------------------------------
+
+/// On-wire layout of `VirtioDeviceInfo`.  Kept in sync with the kernel.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct VirtioDeviceInfo {
+    pub slot: u32,
+    pub mmio_base: u64,
+    pub device_id: u32,
+    pub version: u32,
+    pub irq: u32,
+}
+
+/// On-wire layout of `VirtioQueueHandles`.  40 bytes.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct VirtioQueueHandles {
+    pub desc_vmo: u64,
+    pub avail_vmo: u64,
+    pub used_vmo: u64,
+    pub desc_bytes: u64,
+    pub avail_bytes: u64,
+    pub used_bytes: u64,
+    pub qsize: u32,
+    pub _pad: u32,
+}
+
+/// Probe the virtio-mmio bus.  Writes a u32 device count followed by
+/// `count` x 24-byte `VirtioDeviceInfo` records into `buf`.
+pub fn virtio_probe(buf: &mut [u8]) -> Result<usize> {
+    let ret = syscall!(
+        shared::syscall_nums::SYSCALL_VIRTIO_PROBE,
+        buf.as_mut_ptr() as usize,
+        buf.len(),
+        0,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret as usize)
+    }
+}
+
+/// Allocate three VMOs backing a virtqueue.  Returns the `VirtioQueueHandles`
+/// structure containing the VMO handles and per-ring byte counts.
+pub fn virtio_setup_queue(slot: u32, qsel: u16, qsize: u16) -> Result<VirtioQueueHandles> {
+    let mut handle = VirtioQueueHandles {
+        desc_vmo: 0,
+        avail_vmo: 0,
+        used_vmo: 0,
+        desc_bytes: 0,
+        avail_bytes: 0,
+        used_bytes: 0,
+        qsize: 0,
+        _pad: 0,
+    };
+    let ret = syscall!(
+        shared::syscall_nums::SYSCALL_VIRTIO_SETUP_QUEUE,
+        (&mut handle as *mut _) as usize,
+        slot as usize,
+        qsel as usize,
+        qsize as usize,
+        0,
+        0
+    );
+    if (ret as isize) < 0 || ret == 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(handle)
+    }
+}
+
+/// Write QueueNotify (offset 0x050) for `(slot, qsel)`.
+pub fn virtio_kick(slot: u32, qsel: u16) -> Result<()> {
+    let ret = syscall!(
+        shared::syscall_nums::SYSCALL_VIRTIO_KICK,
+        slot as usize,
+        qsel as usize,
+        0,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(())
+    }
+}
+
+/// Read ISR (offset 0x060) for `slot`.
+pub fn virtio_read_isr(slot: u32) -> Result<u32> {
+    let ret = syscall!(
+        shared::syscall_nums::SYSCALL_VIRTIO_READ_ISR,
+        slot as usize,
+        0,
+        0,
+        0,
+        0,
+        0
+    );
+    if (ret as isize) < 0 {
+        Err(Status::from_raw(ret as i32))
+    } else {
+        Ok(ret as u32)
     }
 }
 

@@ -376,6 +376,32 @@ pub const SYSCALL_PTY_WRITE: u32 = 157;
 pub const SYSCALL_PTY_READ: u32 = 158;
 
 /// One past the last valid syscall number.  Any `syscall_num >= SYSCALL_NR`
-/// is reserved by the ABI for future extensions and must not be accepted by
-/// the dispatcher — see `kernel/src/syscall/mod.rs`.
-pub const SYSCALL_NR: u32 = 163;
+/// is reserved by the ABI for future extensions and must not be accepted by the
+/// dispatcher — see `kernel/src/syscall/mod.rs`.
+pub const SYSCALL_NR: u32 = 168;
+
+// -------------------------------------------------------------------------
+// virtio-mmio bus primitives (microkernel principle: only the bus lives in
+// EL1; protocol-level drivers — blk, net, gpu, input — live in EL0 services
+// like `blkdev`, `netd`, `gpud`, `inputd`).
+//
+// EL0 services obtain the device list via SYSCALL_VIRTIO_PROBE, allocate
+// backing storage for a virtqueue via SYSCALL_VIRTIO_SETUP_QUEUE, then
+// drive the device's MMIO registers (QueueNotify / ISR / etc.) directly
+// through the existing SYSCALL_MMIO_READ / SYSCALL_MMIO_WRITE syscalls.
+// -------------------------------------------------------------------------
+
+/// Probe the 0x0a000000 virtio-mmio region.  Writes a u32 count followed
+/// by `count` x 24-byte `VirtioDeviceInfo` records into the user buffer.
+pub const SYSCALL_VIRTIO_PROBE: u32 = 164;
+
+/// Allocate three VMOs backing a single virtqueue.  EL0 services must
+/// `vmar_map_self` each VMO to obtain user-VA access to the descriptor
+/// table, available ring, and used ring.
+pub const SYSCALL_VIRTIO_SETUP_QUEUE: u32 = 165;
+
+/// Write QueueNotify (offset 0x050) for `(slot, qsel)`.
+pub const SYSCALL_VIRTIO_KICK: u32 = 166;
+
+/// Read ISR (offset 0x060) for `slot` and acknowledge queue interrupts.
+pub const SYSCALL_VIRTIO_READ_ISR: u32 = 167;

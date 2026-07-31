@@ -791,7 +791,8 @@ pub fn build_and_enable(ram_base: usize, ram_size: usize, uart_base: usize) -> R
 
 pub fn enable_inner(ram_base: usize, ram_size: usize, _uart_base: usize) -> Result<()> {
     unsafe {
-        // Allocate 3 pages: L0, L1_ID (identity), L1_HIGH (high-half mirror of RAM).
+        // Allocate 3 pages: L0, L1_ID (identity + low-half high-half mirror),
+        // L1_HIGH (high-half mirror of RAM region).
         let l0_pa = crate::arch::aarch64::phys::alloc_pt_page()?.as_usize();
         let l1_id_pa = crate::arch::aarch64::phys::alloc_pt_page()?.as_usize();
         let l1_high_pa = crate::arch::aarch64::phys::alloc_pt_page()?.as_usize();
@@ -801,14 +802,20 @@ pub fn enable_inner(ram_base: usize, ram_size: usize, _uart_base: usize) -> Resu
         write_l1_block(l1_id_pa, 1, 0x4000_0000, MemAttr::NormalCacheable);
         write_l1_block(l1_id_pa, 2, 0x8000_0000, MemAttr::NormalCacheable);
 
-        // High-half mirror: 2 GiB blocks starting @ 0x4000_0000 reachable from the high half.
+// High-half mirror: the L0 entry for `pa_to_kernel_va(ram_base)`
+        // (which is `[0xffff_8000_4000_0000, ...)` — entry 0x100 of L0)
+        // points at a single L1 table that owns BOTH the low-half
+        // mirror (entry 0 = Device, covering `0xffff_8000_0000_0000 +
+        // [0, 0x4000_0000)`) AND the RAM mirror (entries 1+2).
         let ram_va = pa_to_kernel_va(ram_base);
         let l0_idx_high = va_l0_index(ram_va);
         let l1_idx_high = va_l1_index(ram_va);
+        write_l1_block(l1_high_pa, 0, 0x0000_0000, MemAttr::Device);
         write_l1_block(l1_high_pa, l1_idx_high, 0x4000_0000, MemAttr::NormalCacheable);
         write_l1_block(l1_high_pa, l1_idx_high + 1, 0x8000_0000, MemAttr::NormalCacheable);
+        write_l0_table(l0_pa, l0_idx_high, l1_high_pa);
 
-        // L0[0] -> L1_ID, L0[l0_idx_high] -> L1_HIGH.
+        // L0[0] -> L1_ID (identity map, low half).
         write_l0_table(l0_pa, 0, l1_id_pa);
         write_l0_table(l0_pa, l0_idx_high, l1_high_pa);
 
