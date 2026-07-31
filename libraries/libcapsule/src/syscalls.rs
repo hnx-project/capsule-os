@@ -40,8 +40,7 @@ macro_rules! syscall {
                 in("x4") r4,
                 in("x5") r5,
                 in("x16") $num,
-                out("x30") _,             // Tell the compiler that the Link Register (x30) is clobbered!
-                options(nostack)          // Enforce that memory is completely clean
+                out("x30") _             // Tell the compiler that the Link Register (x30) is clobbered!
             );
         }
         #[cfg(target_arch = "riscv64")]
@@ -58,8 +57,7 @@ macro_rules! syscall {
                 in("a4") r4,
                 in("a5") r5,
                 in("a7") $num,
-                out("ra") _,
-                options(nostack)
+                out("ra") _
             );
         }
         ret_val
@@ -863,7 +861,7 @@ pub fn virtio_setup_queue(slot: u32, qsel: u16, qsize: u16) -> Result<VirtioQueu
     };
     let ret = syscall!(
         shared::syscall_nums::SYSCALL_VIRTIO_SETUP_QUEUE,
-        (&mut handle as *mut _) as usize,
+        (&mut handle as *mut VirtioQueueHandles) as usize,
         slot as usize,
         qsel as usize,
         qsize as usize,
@@ -873,7 +871,10 @@ pub fn virtio_setup_queue(slot: u32, qsel: u16, qsize: u16) -> Result<VirtioQueu
     if (ret as isize) < 0 || ret == 0 {
         Err(Status::from_raw(ret as i32))
     } else {
-        Ok(handle)
+        unsafe {
+            core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+            Ok(core::ptr::read_volatile(&handle as *const VirtioQueueHandles))
+        }
     }
 }
 

@@ -214,9 +214,15 @@ pub fn syscall_dispatch(
     }
     if syscall_num == SYSCALL_VIRTIO_SETUP_QUEUE {
         return match crate::drivers::bus::virtio_bus::sys_virtio_setup_queue(
-            arg0 as u32, arg1 as u16, arg2 as u16,
+            arg1 as u32, arg2 as u16, arg3 as u16,
         ) {
             Ok(handles) => {
+                crate::log_info!(
+                    "VIRTIO-BUS",
+                    "sys_virtio_setup_queue marshal: desc_vmo={}, avail_vmo={}, used_vmo={}, desc_bytes={}, avail_bytes={}, used_bytes={}",
+                    handles.desc_vmo, handles.avail_vmo, handles.used_vmo,
+                    handles.desc_bytes, handles.avail_bytes, handles.used_bytes
+                );
                 // Marshal the 40-byte `VirtioQueueHandles` back to the caller.
                 // We assume the user buffer is at least 40 bytes wide.
                 let caller_pid = match crate::task::process::current_process_id() {
@@ -233,10 +239,10 @@ pub fn syscall_dispatch(
                 let raw = unsafe {
                     let dst = arg0 as *mut u8;
                     let src = &handles as *const _ as *const u8;
-                    core::ptr::copy_nonoverlapping(src, dst, 40);
+                    core::ptr::copy_nonoverlapping(src, dst, 56);
                 };
                 let _ = raw;
-                40usize
+                56usize
             }
             Err(e) => e.to_raw(),
         };

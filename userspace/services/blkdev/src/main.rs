@@ -92,7 +92,7 @@ const VMO_TARGET_DESC: usize = 0x1000_0000;
 const VMO_TARGET_BUF: usize = 0x1010_0000;
 const VMO_TARGET_HEADER: usize = 0x1020_0000;
 const VMO_TARGET_DATA: usize = 0x1020_1000;
-const VMO_TARGET_STATUS: usize = 0x1020_1200;
+const VMO_TARGET_STATUS: usize = 0x1020_2000;
 
 /// Pre-allocated physical ranges for the queue backing memory and
 /// DMA buffers.  These are reserved by the kernel's virtio_bus setup
@@ -123,19 +123,19 @@ impl BlkDriver {
         syscalls::vmar_map_self(
             handles.desc_vmo as usize,
             VMO_TARGET_DESC,
-            handles.desc_bytes as usize,
+            (handles.desc_bytes as usize + 4095) & !4095,
             11,
         )?;
         syscalls::vmar_map_self(
             handles.avail_vmo as usize,
             VMO_TARGET_DESC + 4096,
-            handles.avail_bytes as usize,
+            (handles.avail_bytes as usize + 4095) & !4095,
             11,
         )?;
         syscalls::vmar_map_self(
             handles.used_vmo as usize,
             VMO_TARGET_DESC + 8192,
-            handles.used_bytes as usize,
+            (handles.used_bytes as usize + 4095) & !4095,
             11,
         )?;
 

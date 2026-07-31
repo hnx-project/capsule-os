@@ -156,7 +156,7 @@ impl Process {
     pub fn init_in_place(&mut self, name: &'static str) -> Result<()> {
         let vmar_base = 0x0usize; // 2.0 时代进程间独享 L0 隔离，基准地址全盘归零大一统！
 
-        let root_vmar = Vmar::create(vmar_base, 256 * 1024 * 1024)?;
+        let root_vmar = Vmar::create(vmar_base, 512 * 1024 * 1024)?;
 
         let handle_table = HandleTable::new();
         let mut cwd = [0u8; CWD_MAX];

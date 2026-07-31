@@ -243,11 +243,15 @@ pub fn sys_vmar_map_self(
 
     // Must include USER flag to prevent mapping kernel-only pages
     if !flags.user() {
+        crate::log_error!("MMU", "sys_vmar_map_self: USER flag is missing (flags_raw={})", flags_raw);
         return Err(Status::InvalidArgs);
     }
 
     table.with_vmo(vmo_hv, Rights::READ.bits(), |vmo| {
-        proc.root_vmar.reserve_mapping(vmo.id, 0, target_va, size, flags)?;
+        if let Err(e) = proc.root_vmar.reserve_mapping(vmo.id, 0, target_va, size, flags) {
+            crate::log_error!("MMU", "sys_vmar_map_self: reserve_mapping failed: {:?}", e);
+            return Err(e);
+        }
         let mut arch_flags = crate::arch::mmu::MapFlags::kernel_rw();
         arch_flags.readable = flags.readable() || flags.writable() || flags.executable();
         arch_flags.writable = flags.writable();
@@ -258,10 +262,16 @@ pub fn sys_vmar_map_self(
         for i in 0..page_count {
             let va = target_va + i * 4096;
             if !vmo.is_physical() {
-                vmo.commit_page(i * 4096)?;
+                if let Err(e) = vmo.commit_page(i * 4096) {
+                    crate::log_error!("MMU", "sys_vmar_map_self: commit_page failed (offset={}): {:?}", i * 4096, e);
+                    return Err(e);
+                }
             }
             let pa = vmo.get_page_phys(i * 4096).unwrap().as_usize();
-            proc.page_table.map_va_no_flush(va, pa, &arch_flags)?;
+            if let Err(e) = proc.page_table.map_va_no_flush(va, pa, &arch_flags) {
+                crate::log_error!("MMU", "sys_vmar_map_self: map_va_no_flush failed (va={:#x}, pa={:#x}): {:?}", va, pa, e);
+                return Err(e);
+            }
         }
         
         // Execute a single local TLB invalidation at the end of mapping instead of page-by-page (1200x speedup!)

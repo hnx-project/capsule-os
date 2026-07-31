@@ -67,7 +67,13 @@ const fn bytes_for_qsize(qsize: u16) -> (usize, usize, usize) {
 
 fn alloc_one_vmo(bytes: usize) -> Result<usize> {
     let rounded = (bytes + 4095) & !4095;
-    let table = unsafe { crate::syscall::GLOBAL_HANDLE_TABLE.as_ref() }.ok_or(Status::NotAllowed)?;
+    let thread_ptr = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() }
+        .ok_or(Status::NotFound)?;
+    let table = if unsafe { (*thread_ptr).handle_table.is_null() } {
+        return Err(Status::NotAllowed);
+    } else {
+        unsafe { &*(*thread_ptr).handle_table }
+    };
     let hv = crate::syscall::handlers::memory::sys_vmo_create(table, rounded)?;
     Ok(hv.get() as usize)
 }

@@ -125,9 +125,19 @@ impl Vmar {
     /// Actual hardware page table updates are decoupled and delegated to `Memory::map_vmo_segment()`.
     pub fn reserve_mapping(&mut self, vmo_id: u64, vmo_offset: usize, virt_addr: usize, size: usize, flags: VmarFlags) -> Result<()> {
         if size == 0 || virt_addr & (PAGE_SIZE - 1) != 0 || vmo_offset & (PAGE_SIZE - 1) != 0 {
+            crate::log_error!(
+                "VMAR",
+                "reserve_mapping check 1 failed: size={}, virt_addr={:#x}, vmo_offset={:#x}",
+                size, virt_addr, vmo_offset
+            );
             return Err(Status::InvalidArgs);
         }
         if virt_addr < self.base || virt_addr + size > self.base + self.size {
+            crate::log_error!(
+                "VMAR",
+                "reserve_mapping check 2 failed: virt_addr={:#x}, size={}, self.base={:#x}, self.size={:#x}",
+                virt_addr, size, self.base, self.size
+            );
             return Err(Status::InvalidArgs);
         }
         if self.mappings.len() >= MAX_MAPPINGS {
