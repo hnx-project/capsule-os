@@ -207,13 +207,13 @@ pub fn syscall_dispatch(
     // 3g. virtio-mmio bus primitives (microkernel principle: protocol
     // drivers live in EL0; the kernel only exposes the bus).
     if syscall_num == SYSCALL_VIRTIO_PROBE {
-        return match crate::drivers::virtio_bus::sys_virtio_probe(arg0, arg1) {
+        return match crate::drivers::bus::virtio_bus::sys_virtio_probe(arg0, arg1) {
             Ok(n) => n,
             Err(e) => e.to_raw(),
         };
     }
     if syscall_num == SYSCALL_VIRTIO_SETUP_QUEUE {
-        return match crate::drivers::virtio_bus::sys_virtio_setup_queue(
+        return match crate::drivers::bus::virtio_bus::sys_virtio_setup_queue(
             arg0 as u32, arg1 as u16, arg2 as u16,
         ) {
             Ok(handles) => {
@@ -242,13 +242,13 @@ pub fn syscall_dispatch(
         };
     }
     if syscall_num == SYSCALL_VIRTIO_KICK {
-        return match crate::drivers::virtio_bus::sys_virtio_kick(arg0 as u32, arg1 as u16) {
+        return match crate::drivers::bus::virtio_bus::sys_virtio_kick(arg0 as u32, arg1 as u16) {
             Ok(()) => 0,
             Err(e) => e.to_raw(),
         };
     }
     if syscall_num == SYSCALL_VIRTIO_READ_ISR {
-        return match crate::drivers::virtio_bus::sys_virtio_read_isr(arg0 as u32) {
+        return match crate::drivers::bus::virtio_bus::sys_virtio_read_isr(arg0 as u32) {
             Ok(v) => v as usize,
             Err(e) => e.to_raw(),
         };

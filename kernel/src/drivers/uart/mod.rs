@@ -4,14 +4,22 @@ pub mod ns16550;
 pub use pl011::Pl011;
 pub use ns16550::Ns16550;
 
-/// Hard-coded raw byte sink used by trap / panic paths that need
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+/// Dynamic raw byte sink used by trap / panic paths that need
 /// to emit a string *before* the FDT-driven UART has been
-/// initialised.  Always writes to the QEMU `virt` PL011 at
-/// 0x0900_0000 (AArch64 bring-up).
+/// initialised. Defaults to the QEMU `virt` PL011 base address,
+/// but can be dynamically updated at boot time.
+pub static EARLY_UART_BASE: AtomicUsize = AtomicUsize::new(0x0900_0000);
+
 pub fn putchar_pl011_raw(c: u8) {
     use core::ptr::{read_volatile, write_volatile};
+    let base_addr = EARLY_UART_BASE.load(Ordering::Relaxed);
+    if base_addr == 0 {
+        return;
+    }
     unsafe {
-        let base = 0x0900_0000usize as *mut u8;
+        let base = base_addr as *mut u8;
         // Wait for TX ready (PL011 FR[5] == TXFF bit, 0 == ready).
         while (read_volatile(base.add(0x18)) & (1 << 5)) != 0 {}
         write_volatile(base, c);

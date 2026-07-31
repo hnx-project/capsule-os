@@ -76,11 +76,16 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
 
     match fdt::parse(dtb_ptr) {
         Ok(boot) => {
+            // Dynamically update the early UART base address from FDT parsing.
+            drivers::uart::EARLY_UART_BASE.store(boot.uart_base, core::sync::atomic::Ordering::SeqCst);
+
             unsafe {
                 DEVICE_INFO_BOOT.write(boot);
                 DEVICE_INFO_VALID = true;
             }
+
             let boot = unsafe { &*DEVICE_INFO_BOOT.as_ptr() };
+
             if boot.uart_type.as_str() == "pl011" {
                 drivers::uart::init_pl011(boot.uart_base);
             } else if boot.uart_type.as_str() == "ns16550" {

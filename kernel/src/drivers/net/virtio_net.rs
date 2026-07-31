@@ -32,6 +32,8 @@ pub fn init() {
                             "Virtio-Net device at {:#x} initialized! MAC = {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                             base, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
                         );
+                        static DRIVER_INSTANCE: VirtioNetDriver = VirtioNetDriver;
+                        *super::ACTIVE_NET_DEVICE.lock() = Some(&DRIVER_INSTANCE);
                         break;
                     }
                     Err(e) => {
@@ -105,4 +107,16 @@ pub fn recv_packet(buf: &mut [u8]) -> Result<usize> {
     
     // Mock loopback: if there is no packet, return 0 (non-blocking)
     Ok(0)
+}
+
+pub struct VirtioNetDriver;
+
+impl super::NetDriver for VirtioNetDriver {
+    fn send_packet(&self, buf: &[u8]) -> Result<()> {
+        send_packet(buf)
+    }
+
+    fn recv_packet(&self, buf: &mut [u8]) -> Result<usize> {
+        recv_packet(buf)
+    }
 }

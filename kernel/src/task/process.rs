@@ -382,22 +382,35 @@ impl Process {
 
             proc.page_table.allocate_root()?;
 
-            // Map the UART device physical page (0x09000000) under the process L0.
-            let uart_flags = crate::arch::mmu::MapFlags::device_rw_user();
-            if let Err(e) = proc.page_table.map_va(0x09000000, 0x09000000, &uart_flags) {
-                crate::kprintln!("WARNING: Failed to map UART under user L0: {:?}", e);
+            let (uart_base, gicc_base) = unsafe {
+                if crate::DEVICE_INFO_VALID {
+                    let boot = &*crate::DEVICE_INFO_BOOT.as_ptr();
+                    (boot.uart_base, boot.gicc_base)
+                } else {
+                    (0x09000000, 0x08010000) // Fallbacks to QEMU virt
+                }
+            };
+
+            // Map the UART device physical page under the process L0.
+            if uart_base != 0 {
+                let uart_flags = crate::arch::mmu::MapFlags::device_rw_user();
+                if let Err(e) = proc.page_table.map_va(uart_base, uart_base, &uart_flags) {
+                    crate::kprintln!("WARNING: Failed to map UART under user L0: {:?}", e);
+                }
             }
 
             // Map GIC CPU Interface page under user L0.
-            let gic_flags = crate::arch::mmu::MapFlags::device_rw_user();
-            if let Err(e) = proc.page_table.map_va(0x08010000, 0x08010000, &gic_flags) {
-                crate::kprintln!("WARNING: Failed to map GIC under user L0: {:?}", e);
+            if gicc_base != 0 {
+                let gic_flags = crate::arch::mmu::MapFlags::device_rw_user();
+                if let Err(e) = proc.page_table.map_va(gicc_base, gicc_base, &gic_flags) {
+                    crate::kprintln!("WARNING: Failed to map GIC under user L0: {:?}", e);
+                }
             }
 
-            // Map Virtio-Blk device physical page (0x0a003000) under user L0.
+            // Map Virtio Peripheral page (0x0a003000) containing GPU (slot 30), Input (slot 29) and Blk (slot 31) under user L0.
             let virtio_flags = crate::arch::mmu::MapFlags::device_rw_user();
             if let Err(e) = proc.page_table.map_va(0x0a003000, 0x0a003000, &virtio_flags) {
-                crate::kprintln!("WARNING: Failed to map Virtio-Blk under user L0: {:?}", e);
+                crate::kprintln!("WARNING: Failed to map Virtio Peripheral page under user L0: {:?}", e);
             }
 
             // Copy the high-half kernel entries (L0[256..512]) and identity

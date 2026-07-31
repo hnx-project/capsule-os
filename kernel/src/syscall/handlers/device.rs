@@ -106,7 +106,11 @@ pub fn sys_block_read(sector: u64, dst_user_va: usize) -> Result<()> {
         <crate::arch::CurrentArch as crate::arch::ArchHardware>::clean_and_invalidate_cache_range(dst_user_va, 512);
     }
 
-    crate::drivers::virtio_blk::read_sector(sector, dst_pa)?;
+    {
+        let drv = crate::drivers::block::ACTIVE_BLOCK_DEVICE.lock();
+        let block_dev = drv.as_ref().ok_or(Status::NotFound)?;
+        block_dev.read_sectors(sector, dst_pa)?;
+    }
 
     // Invalidate user space cache after read so CPU fetches the DMA'd data from RAM
     unsafe {
@@ -130,12 +134,16 @@ pub fn sys_block_write(sector: u64, src_user_va: usize) -> Result<()> {
         <crate::arch::CurrentArch as crate::arch::ArchHardware>::clean_and_invalidate_cache_range(src_user_va, 512);
     }
 
-    crate::drivers::virtio_blk::write_sector(sector, src_pa)
+    let drv = crate::drivers::block::ACTIVE_BLOCK_DEVICE.lock();
+    let block_dev = drv.as_ref().ok_or(Status::NotFound)?;
+    block_dev.write_sectors(sector, src_pa)
 }
 
 /// SYSCALL_BLOCK_SIZE: read the total number of sectors on the block device.
 pub fn sys_block_size() -> Result<u64> {
-    Ok(crate::drivers::virtio_blk::get_capacity())
+    let drv = crate::drivers::block::ACTIVE_BLOCK_DEVICE.lock();
+    let block_dev = drv.as_ref().ok_or(Status::NotFound)?;
+    Ok(block_dev.get_capacity())
 }
 
 /// SYSCALL_NET_SEND: send a raw network packet from user space through Virtio-Net.
@@ -148,7 +156,9 @@ pub fn sys_net_send(buf_user_va: usize, len: usize) -> Result<()> {
     let mut temp_buf = [0u8; 1518];
     super::ipc::safe_copy_from_user(l0_pa, buf_user_va, len, &mut temp_buf[..len])?;
     
-    crate::drivers::virtio_net::send_packet(&temp_buf[..len])
+    let drv = crate::drivers::net::ACTIVE_NET_DEVICE.lock();
+    let net_dev = drv.as_ref().ok_or(Status::NotFound)?;
+    net_dev.send_packet(&temp_buf[..len])
 }
 
 /// SYSCALL_NET_RECV: receive a raw network packet from Virtio-Net into user space.
@@ -159,7 +169,11 @@ pub fn sys_net_recv(buf_user_va: usize, max_len: usize) -> Result<usize> {
     let l0_pa = current_l0_pa().ok_or(Status::InvalidArgs)?;
     
     let mut temp_buf = [0u8; 1518];
-    let actual_len = crate::drivers::virtio_net::recv_packet(&mut temp_buf[..max_len.min(1518)])?;
+    let actual_len = {
+        let drv = crate::drivers::net::ACTIVE_NET_DEVICE.lock();
+        let net_dev = drv.as_ref().ok_or(Status::NotFound)?;
+        net_dev.recv_packet(&mut temp_buf[..max_len.min(1518)])?
+    };
     
     if actual_len > 0 {
         super::ipc::safe_copy_to_user(l0_pa, &temp_buf[..actual_len], buf_user_va, actual_len)?;

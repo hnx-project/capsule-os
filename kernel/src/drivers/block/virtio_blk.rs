@@ -12,6 +12,11 @@ use crate::arch::mmu_facade::pa_to_kernel_va;
 /// The selected Virtio MMIO block device base address. 0 means not found/uninitialized.
 static VIRTIO_BLK_BASE: AtomicUsize = AtomicUsize::new(0);
 
+/// Get the discovered Virtio Block MMIO device physical base address.
+pub fn get_virtio_blk_base() -> usize {
+    VIRTIO_BLK_BASE.load(Ordering::Relaxed)
+}
+
 /// Helper to flush and invalidate CPU caches on AArch64.
 unsafe fn flush_cache(va: usize, len: usize) {
     #[cfg(target_arch = "aarch64")]
@@ -75,6 +80,8 @@ pub fn init() {
                     Ok(()) => {
                         VIRTIO_BLK_BASE.store(base, Ordering::SeqCst);
                         crate::log_info!("VIRTIO", "Virtio-Blk device at {:#x} successfully initialized!", base);
+                        static DRIVER_INSTANCE: VirtioBlockDriver = VirtioBlockDriver;
+                        *super::ACTIVE_BLOCK_DEVICE.lock() = Some(&DRIVER_INSTANCE);
                         break;
                     }
                     Err(e) => {
@@ -352,5 +359,21 @@ pub fn get_capacity() -> u64 {
         let cap_low = core::ptr::read_volatile((base + 0x100) as *const u32) as u64;
         let cap_high = core::ptr::read_volatile((base + 0x104) as *const u32) as u64;
         cap_low | (cap_high << 32)
+    }
+}
+
+pub struct VirtioBlockDriver;
+
+impl super::BlockDriver for VirtioBlockDriver {
+    fn read_sectors(&self, sector: u64, dst_pa: usize) -> Result<()> {
+        read_sector(sector, dst_pa)
+    }
+
+    fn write_sectors(&self, sector: u64, src_pa: usize) -> Result<()> {
+        write_sector(sector, src_pa)
+    }
+
+    fn get_capacity(&self) -> u64 {
+        get_capacity()
     }
 }
