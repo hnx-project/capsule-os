@@ -44,15 +44,15 @@ impl ServiceLauncher {
                 let services_vmo = unsafe {
                     Vmo::create_physical(crate::SERVICES_PHYS_ADDR, crate::SERVICES_PHYS_SIZE)?
                 };
-                let _ = proc.handle_table.add_raw_handle(100, KernelObject::Vmo(loader_vmo), rights);
-                let _ = proc.handle_table.add_raw_handle(101, KernelObject::Vmo(services_vmo), rights);
+                let _ = proc.handle_table.add_raw_handle(100, KernelObject::Vmo(alloc::sync::Arc::new(spin::Mutex::new(loader_vmo))), rights);
+                let _ = proc.handle_table.add_raw_handle(101, KernelObject::Vmo(alloc::sync::Arc::new(spin::Mutex::new(services_vmo))), rights);
                 crate::log_info!("BOOT", "Dual VMO injection completed for loader (100 -> loader.img, 101 -> rootfs.img)");
             } else {
                 // Normal early service injection (Slot 100 -> services image)
                 let rootfs_vmo = unsafe {
                     Vmo::create_physical(crate::SERVICES_PHYS_ADDR, crate::SERVICES_PHYS_SIZE)?
                 };
-                let _ = proc.handle_table.add_raw_handle(handle_idx, KernelObject::Vmo(rootfs_vmo), rights);
+                let _ = proc.handle_table.add_raw_handle(handle_idx, KernelObject::Vmo(alloc::sync::Arc::new(spin::Mutex::new(rootfs_vmo))), rights);
             }
         }
 

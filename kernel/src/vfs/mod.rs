@@ -175,39 +175,39 @@ impl FileDescriptorTable {
     }
 }
 
-static mut VNODE_TABLE: VnodeTable = VnodeTable::new();
-static mut FD_TABLE: FileDescriptorTable = FileDescriptorTable::new();
+static VNODE_TABLE: spin::Mutex<VnodeTable> = spin::Mutex::new(VnodeTable::new());
+static FD_TABLE: spin::Mutex<FileDescriptorTable> = spin::Mutex::new(FileDescriptorTable::new());
 
 pub fn alloc_vnode(vtype: VnodeType) -> Result<u64> {
-    unsafe { VNODE_TABLE.alloc_vnode(vtype) }
+    VNODE_TABLE.lock().alloc_vnode(vtype)
 }
 
 pub fn get_vnode(id: u64) -> Option<u64> {
-    unsafe { VNODE_TABLE.get_vnode(id).map(|v| v.id) }
+    VNODE_TABLE.lock().get_vnode(id).map(|v| v.id)
 }
 
 pub fn release_vnode(id: u64) -> bool {
-    unsafe { VNODE_TABLE.release_vnode(id) }
+    VNODE_TABLE.lock().release_vnode(id)
 }
 
 pub fn alloc_fd(vnode_id: u64, rights: u32) -> Result<u32> {
-    unsafe { FD_TABLE.alloc_fd(vnode_id, rights) }
+    FD_TABLE.lock().alloc_fd(vnode_id, rights)
 }
 
 pub fn get_fd(fd: u32) -> Option<u64> {
-    unsafe { FD_TABLE.get_fd(fd).map(|f| f.vnode_id) }
+    FD_TABLE.lock().get_fd(fd).map(|f| f.vnode_id)
 }
 
 pub fn close_fd(fd: u32) -> bool {
-    unsafe { FD_TABLE.close_fd(fd) }
+    FD_TABLE.lock().close_fd(fd)
 }
 
 pub fn read_fd_offset(fd: u32) -> Option<u64> {
-    unsafe { FD_TABLE.get_fd(fd).map(|f| f.offset) }
+    FD_TABLE.lock().get_fd(fd).map(|f| f.offset)
 }
 
 pub fn write_fd_offset(fd: u32, offset: u64) -> bool {
-    if let Some(f) = unsafe { FD_TABLE.get_fd_mut(fd) } {
+    if let Some(f) = FD_TABLE.lock().get_fd_mut(fd) {
         f.offset = offset;
         true
     } else {

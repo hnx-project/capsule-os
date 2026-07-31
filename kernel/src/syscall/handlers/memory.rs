@@ -7,7 +7,7 @@ use crate::object::rights::Rights;
 pub fn sys_vmo_create(table: &HandleTable, size: usize) -> Result<HandleValue> {
     let vmo = Vmo::create_with_size(size)?;
     let rights = Rights::READ.bits() | Rights::WRITE.bits();
-    table.add(KernelObject::Vmo(vmo), rights)
+    table.add(KernelObject::Vmo(alloc::sync::Arc::new(spin::Mutex::new(vmo))), rights)
 }
 
 pub fn sys_vmo_create_child(
@@ -28,7 +28,7 @@ pub fn sys_vmo_create_child(
     };
 
     let rights = Rights::READ.bits() | Rights::WRITE.bits();
-    let res = table.add(KernelObject::Vmo(child_vmo), rights);
+    let res = table.add(KernelObject::Vmo(alloc::sync::Arc::new(spin::Mutex::new(child_vmo))), rights);
 
 
 
@@ -308,7 +308,7 @@ pub fn sys_vmo_create_physical(
     let vmo = unsafe { Vmo::create_physical(phys_addr, size)? };
     // Grant 100% of rights (0xFFFFFFFF) to physical/hardware VMOs so userspace drivers can duplicate/map/transfer them fully
     let rights = 0xFFFFFFFFu32;
-    table.add(KernelObject::Vmo(vmo), rights)
+    table.add(KernelObject::Vmo(alloc::sync::Arc::new(spin::Mutex::new(vmo))), rights)
 }
 
 pub fn sys_vmo_get_phys(

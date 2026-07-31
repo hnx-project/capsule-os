@@ -13,7 +13,7 @@ const PAGE_SIZE: usize = 4096;
 
 #[derive(Debug)]
 pub enum KernelObject {
-    Vmo(Vmo),
+    Vmo(alloc::sync::Arc<spin::Mutex<Vmo>>),
     Vmar(Vmar),
     Channel(alloc::boxed::Box<Channel>),
     Port(Port),
@@ -198,7 +198,7 @@ impl HandleTable {
                        f: impl FnOnce(&mut Vmo) -> R) -> Result<R> {
         self.with(hv, required_rights, |obj| {
             match obj {
-                KernelObject::Vmo(vmo) => Ok(f(vmo)),
+                KernelObject::Vmo(vmo) => Ok(f(&mut *vmo.lock())),
                 _ => Err(Status::WrongType),
             }
         })

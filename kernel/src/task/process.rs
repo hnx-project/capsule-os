@@ -117,7 +117,7 @@ pub struct Process {
     /// List of VMOs owned by this process. This guarantees that all physical memory
     /// pages allocated for the process's stack, code, and data segments remain
     /// permanently reserved under explicit object ownership.
-    pub vmos: alloc::vec::Vec<crate::memory::vmo::Vmo>,
+    pub vmos: alloc::vec::Vec<alloc::sync::Arc<spin::Mutex<crate::memory::vmo::Vmo>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -520,6 +520,7 @@ impl Process {
                     }
                 }
             }
+            proc.vmos.push(alloc::sync::Arc::new(spin::Mutex::new(vmo)));
         }
 
         if !pt.validate() {
@@ -556,6 +557,7 @@ impl Process {
             s_flags.writable = true;
             pt.map_va(va, pa, &s_flags)?;
         }
+        proc.vmos.push(alloc::sync::Arc::new(spin::Mutex::new(stack_vmo)));
 
         if !pt.validate() {
             crate::log_error!("LAUNCHER", "PT-VALIDATE FAILED after stack mapping pid={}", proc.id);

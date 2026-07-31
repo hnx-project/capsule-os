@@ -1033,7 +1033,7 @@ pub fn sys_load_binary(
             | crate::object::rights::Rights::WRITE.bits();
         let _ = proc.handle_table.add_raw_handle(
             crate::loader::DEFAULT_BOOTFS_HANDLE_SLOT,
-            crate::object::handle_table::KernelObject::Vmo(rootfs_vmo),
+            crate::object::handle_table::KernelObject::Vmo(alloc::sync::Arc::new(spin::Mutex::new(rootfs_vmo))),
             rights,
         );
     }
@@ -1853,6 +1853,7 @@ pub fn sys_fork() -> Result<u64> {
         child_proc.cwd[..len].copy_from_slice(&parent.cwd[..len]);
         child_proc.cwd_len = len;
         child_proc.next_fd = parent.next_fd;
+        child_proc.vmos = parent.vmos.clone();
     }
 
     // ---- 3. Deep-clone the page tables.
