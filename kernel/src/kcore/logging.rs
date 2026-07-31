@@ -60,14 +60,25 @@ pub const LEVEL_PAD_WARN:  &str = "WARN \x1b[0m | ";
 pub const LEVEL_PAD_ERROR: &str = "ERROR\x1b[0m | ";
 pub const LEVEL_PAD_DEBUG: &str = "DEBUG\x1b[0m | ";
 
+/// Truncates a string to at most 8 characters. Since all tag targets are compiled
+/// ASCII literals, we can safely slice at 8 bytes without boundary issues.
+#[inline(always)]
+pub fn truncate_to_8(s: &str) -> &str {
+    if s.len() <= 8 {
+        s
+    } else {
+        &s[..8]
+    }
+}
+
 #[macro_export]
 macro_rules! log_info {
     ($target:expr, $($arg:tt)*) => {
         if $crate::kcore::logging::get_log_level() >= 2 {
             $crate::kprint!(
-                "\x1b[1;32m{}\x1b[36m{:<14}\x1b[0m | ",
+                "\x1b[1;32m{}\x1b[36m{:<8}\x1b[0m | ",
                 $crate::kcore::logging::LEVEL_PAD_INFO,
-                $target
+                $crate::kcore::logging::truncate_to_8(concat!("K-", $target))
             );
             $crate::kprintln!($($arg)*);
         }
@@ -79,9 +90,9 @@ macro_rules! log_warn {
     ($target:expr, $($arg:tt)*) => {
         if $crate::kcore::logging::get_log_level() >= 1 {
             $crate::kprint!(
-                "\x1b[1;33m{}\x1b[36m{:<14}\x1b[0m | ",
+                "\x1b[1;33m{}\x1b[36m{:<8}\x1b[0m | ",
                 $crate::kcore::logging::LEVEL_PAD_WARN,
-                $target
+                $crate::kcore::logging::truncate_to_8(concat!("K-", $target))
             );
             $crate::kprintln!($($arg)*);
         }
@@ -93,9 +104,9 @@ macro_rules! log_error {
     ($target:expr, $($arg:tt)*) => {
         if $crate::kcore::logging::get_log_level() >= 0 {
             $crate::kprint!(
-                "\x1b[1;31m{}\x1b[36m{:<14}\x1b[0m | ",
+                "\x1b[1;31m{}\x1b[36m{:<8}\x1b[0m | ",
                 $crate::kcore::logging::LEVEL_PAD_ERROR,
-                $target
+                $crate::kcore::logging::truncate_to_8(concat!("K-", $target))
             );
             $crate::kprintln!($($arg)*);
         }
@@ -109,9 +120,9 @@ macro_rules! log_debug {
         {
             if $crate::kcore::logging::get_log_level() >= 3 {
                 $crate::kprint!(
-                    "\x1b[90m{}\x1b[36m{:<14}\x1b[0m | ",
+                    "\x1b[90m{}\x1b[36m{:<8}\x1b[0m | ",
                     $crate::kcore::logging::LEVEL_PAD_DEBUG,
-                    $target
+                    $crate::kcore::logging::truncate_to_8(concat!("K-", $target))
                 );
                 $crate::kprintln!($($arg)*);
             }
