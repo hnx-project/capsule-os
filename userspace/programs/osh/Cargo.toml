@@ -16,3 +16,4 @@ path = "src/main.rs"
 libc = { path = "../../../libraries/libc", package = "libc" }
 libstd = { path = "../../../libraries/libstd", package = "libstd", optional = true }
 libcapsule = { path = "../../../libraries/libcapsule", package = "libcapsule" }
+libtty = { path = "../../../libraries/libtty", package = "libtty" }

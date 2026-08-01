@@ -35,56 +35,49 @@ pub fn sys_read(fd: u32, buf_ptr: usize, buf_len: usize) -> Result<usize> {
     let slice = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
 
     if fd == 0 {
+        // Raw-mode stdin read.  Mirrors Linux's `read(fd, buf, n)` on a
+        // tty in `ICANON | ECHO` OFF mode: the kernel copies bytes
+        // verbatim from the UART RX FIFO into the user buffer, with
+        // only two canonical transformations:
+        //
+        //   * CR (`\r`) → LF (`\n`)  (matches Linux IGNCR/ICRNL/INLCR)
+        //   * NUL byte  → dropped    (matches Linux IGNBRK stripping)
+        //
+        // Line editing (BACKSPACE erasure, Ctrl-U kill, Ctrl-C signal,
+        // echo, etc.) is *not* performed here — the commercial-OS
+        // model is to expose the bare primitive and let userspace
+        // (libtty in EL0) implement the line discipline.  This is
+        // what Linux does via `n_tty`, just split across the EL1/EL0
+        // boundary.
         let mut total = 0usize;
         while total < buf_len {
-            // `getchar` is a blocking RX-FIFO spin on PL011 / NS16550; if
-            // it ever returns `None` we leave the line as-is and let the
-            // caller decide (the UART driver has no real EOF concept in
-            // QEMU, so in practice this only happens on hardware fault).
             let mut byte = match crate::drivers::uart::getchar() {
                 Some(b) => b,
                 None => return if total == 0 { Ok(0) } else { Ok(total) },
             };
 
-            // 1. Handle Backspace / Delete keys (DEL = 0x7f, BS = 0x08)
-            if byte == 0x7f || byte == 0x08 {
-                if total > 0 {
-                    total -= 1;
-                    // Visual terminal backspace erase sequence
-                    crate::drivers::uart::putchar(0x08);
-                    crate::drivers::uart::putchar(b' ');
-                    crate::drivers::uart::putchar(0x08);
-                }
-                continue;
-            }
-
-            // 2. Handle Ctrl+C (0x03) keypress to terminate the blocked caller thread
-            if byte == 0x03 {
-                crate::drivers::uart::putchar(b'^');
-                crate::drivers::uart::putchar(b'C');
-                crate::drivers::uart::putchar(b'\n');
-                if let Ok(caller_pid) = crate::task::process::current_process_id() {
-                    if caller_pid > 6 {
-                        let _ = crate::task::signals::signal_send(caller_pid, 2);
-                    }
-                }
-                return Ok(total);
-            }
-
-            // 3. Filter garbage/null control characters
-            if byte == 0 {
-                continue;
-            }
-
+            // CR → LF so callers can match against '\n' regardless of
+            // whether the terminal sent the legacy Mac (`\r`) or
+            // Unix (`\n`) line terminator.  Linux does the same.
             if byte == b'\r' {
                 byte = b'\n';
             }
 
-            // 3. Kernel-level Auto Echo: Make typed characters immediately visible
-            crate::drivers::uart::putchar(byte);
+            // Drop NUL (some serial break conditions emit a NUL).
+            if byte == 0 {
+                continue;
+            }
 
+            // No echo, no visual BS, no signal-on-Ctrl-C.  libtty
+            // handles all of these in EL0.
             slice[total] = byte;
             total += 1;
+
+            // Stop as soon as the user submits a line so cooked-mode
+            // callers (`libtty::TtyLine::read_line`) get a clean
+            // record terminator.  Raw callers (`read(fd, buf, n)`)
+            // get exactly `n` bytes — or whatever arrived before the
+            // FIFO ran dry.
             if byte == b'\n' {
                 break;
             }

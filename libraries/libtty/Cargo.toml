@@ -1,0 +1,18 @@
+[package]
+name = "libtty"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+host = []
+capsule = []
+
+[lib]
+name = "libtty"
+path = "src/lib.rs"
+
+[dependencies]
+libc = { path = "../libc", package = "libc" }
+libcapsule = { path = "../libcapsule", package = "libcapsule" }
+shared = { path = "../../kernel/shared" }

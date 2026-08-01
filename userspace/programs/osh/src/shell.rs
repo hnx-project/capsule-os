@@ -243,8 +243,11 @@ pub fn execute_single_line<E: Environment>(env: &E, line: &str) {
 pub fn run_shell<E: Environment>(env: &E) {
     let mut rl = crate::readline::Readline::new();
     loop {
-        env.write_stdout(b"osh$ ");
-        match rl.read_line(env) {
+        // `rl.read_line` is responsible for emitting `osh$ ` as
+        // part of the line discipline call.  The shell never
+        // writes a prompt on its own — that keeps the two code
+        // paths (kernel raw + libtty cooked) in lockstep.
+        match rl.read_line() {
             Ok(n) if n > 0 => {
                 let line_str = match core::str::from_utf8(rl.line()) {
                     Ok(s) => s,
@@ -255,9 +258,9 @@ pub fn run_shell<E: Environment>(env: &E) {
                 };
                 execute_pipeline(env, line_str);
             }
-            // Empty line / EOF: just continue to the next iteration
-            // which will draw a fresh prompt.  The previous enter
-            // already moved the cursor to a new line.
+            // Empty line / EOF / Ctrl-C: just continue to the next
+            // iteration which will draw a fresh prompt.  The previous
+            // enter already moved the cursor to a new line.
             _ => continue,
         }
     }
