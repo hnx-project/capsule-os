@@ -116,9 +116,20 @@ impl Environment for CapsuleEnv {
         }
     }
 
-    fn getcwd(&self, _buf: &mut [u8]) -> Result<usize, ShellError> {
+    fn getcwd(&self, buf: &mut [u8]) -> Result<usize, ShellError> {
+        // `libstd::env::current_dir` returns a heap-allocated String
+        // that has already been read from the kernel into an internal
+        // buffer.  Copy that String into the caller's slice so the
+        // builtin can hand it straight to `write_stdout`.  Returning
+        // just `s.len()` here would leave `buf` untouched and the
+        // builtin would print zero bytes.
         match libstd::env::current_dir() {
-            Ok(s) => Ok(s.len()),
+            Ok(s) => {
+                let bytes = s.as_bytes();
+                let len = bytes.len().min(buf.len());
+                buf[..len].copy_from_slice(&bytes[..len]);
+                Ok(len)
+            }
             Err(_) => Err(ShellError::IoError),
         }
     }

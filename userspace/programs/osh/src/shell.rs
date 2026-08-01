@@ -258,10 +258,14 @@ pub fn run_shell<E: Environment>(env: &E) {
                 };
                 execute_pipeline(env, line_str);
             }
-            // Empty line / EOF / Ctrl-C: just continue to the next
-            // iteration which will draw a fresh prompt.  The previous
-            // enter already moved the cursor to a new line.
-            _ => continue,
+            // Empty / Ctrl-C / EOF — the readline callback already
+            // emitted `\r\n` so the cursor is on a new line.  The
+            // next call to `read_line` will draw the next prompt.
+            // Distinguishing these from `Err(())` (a real hardware
+            // failure) avoids the cascading `osh$ osh$` row that
+            // appeared when we treated them as the same case.
+            Ok(_) => continue,
+            Err(_) => break,
         }
     }
 }

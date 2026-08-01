@@ -6,7 +6,7 @@ pub fn run<E: Environment>(env: &E, _cmd: &Command) {
     match env.getcwd(&mut buf) {
         Ok(len) => {
             env.write_stdout(&buf[..len]);
-            env.write_stdout(b"\n");
+            env.write_stdout(b"\r\n");
         }
         Err(_) => {
             env.write_stderr(b"Error: Failed to get current directory\n");
