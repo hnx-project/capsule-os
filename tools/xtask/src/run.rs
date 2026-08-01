@@ -1,4 +1,6 @@
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::fs::File;
+use std::io::Write;
 
 use crate::config::Resolved;
 use crate::output::run_silent;
@@ -16,14 +18,41 @@ pub fn run(resolved: &Resolved, plat: &Platform, gdb: bool) -> Result<(), String
     );
     let _ = Command::new("killall").arg(&plat.qemu_bin).status();
 
-    // 1. Resolve dynamic compiled artifact paths from subprojects configuration
+    // Resolve dynamic compiled artifact paths from subprojects configuration.
     let (boot_bin, boot_bin_raw, kern_bin, loader_img, services_img) = resolve_artifact_paths(&resolved.build, plat)?;
 
-    // 2. Generate Device Tree Blob
-    generate_qemu_dtb(resolved, plat, &boot_bin, &boot_bin_raw, &kern_bin, &loader_img, &services_img)?;
+    // Generate Device Tree Blob
+    let _ = std::fs::create_dir_all(resolved.root.project.dist_dir());
 
-    // 3. Launch QEMU with fully rendered dynamic arguments
-    launch_qemu(resolved, plat, gdb, &boot_bin, &boot_bin_raw, &kern_bin, &loader_img, &services_img);
+    // Materialise the virtio block image that QEMU's `-drive file=...`
+    // points at.  We synthesise a 1.44 MB FAT12 image (the historical
+    // CapsuleOS block format) on disk so the run is no longer dependent
+    // on a stale `disk.img` file living in the repository root.
+    let disk_img_path = ensure_disk_image(&plat.qemu_disk_img)?;
+
+    generate_qemu_dtb(
+        resolved,
+        plat,
+        &boot_bin,
+        &boot_bin_raw,
+        &kern_bin,
+        &loader_img,
+        &services_img,
+        &disk_img_path,
+    )?;
+
+    // Launch QEMU with fully rendered dynamic arguments
+    launch_qemu(
+        resolved,
+        plat,
+        gdb,
+        &boot_bin,
+        &boot_bin_raw,
+        &kern_bin,
+        &loader_img,
+        &services_img,
+        &disk_img_path,
+    );
     Ok(())
 }
 
@@ -86,6 +115,7 @@ pub fn generate_qemu_dtb(
     kernel_bin: &str,
     loader_img: &str,
     services_img: &str,
+    disk_img: &str,
 ) -> Result<(), String> {
     println!(
         "{}  Generate{} QEMU Device Tree Blob (DTB)...",
@@ -104,6 +134,7 @@ pub fn generate_qemu_dtb(
             kernel_bin,
             loader_img,
             services_img,
+            disk_img,
         );
         dump_cmd.arg(rendered_arg);
     }
@@ -160,11 +191,15 @@ fn launch_qemu(
     kernel_bin: &str,
     loader_img: &str,
     services_img: &str,
+    disk_img: &str,
 ) {
     println!(
         "{}  Running{} QEMU virtual machine. {}[Ctrl+A, X to exit]{}",
         BOLD_GREEN, RESET, GRAY, RESET
     );
+
+    // Ensure dist directory exists so subsequent steps can write artifacts.
+    let _ = std::fs::create_dir_all(resolved.root.project.dist_dir());
 
     let mut qemu = Command::new(&plat.qemu_bin);
     for arg in &plat.qemu_args {
@@ -177,17 +212,22 @@ fn launch_qemu(
             kernel_bin,
             loader_img,
             services_img,
+            disk_img,
         );
         qemu.arg(rendered_arg);
     }
 
-    if gdb {
+if gdb {
         qemu.args(["-s", "-S"]);
         println!(
             "{}  GDB Server Enabled{} Listening on TCP port 1234. QEMU CPU suspended. Waiting for GDB...",
             BOLD_BLUE, RESET
         );
     }
+
+    qemu.stdout(Stdio::inherit());
+    qemu.stderr(Stdio::inherit());
+
     let _ = qemu.status();
 }
 
@@ -200,6 +240,7 @@ fn render_variables(
     kernel_bin: &str,
     loader_img: &str,
     services_img: &str,
+    disk_img: &str,
 ) -> String {
     let dtb_output = format!("{}/qemu.dtb", resolved.root.project.dist_dir());
     template
@@ -215,7 +256,71 @@ fn render_variables(
         .replace("{loader_img}", loader_img)
         .replace("{rootfs_img}", services_img)
         .replace("{qemu_dtb}", &dtb_output)
+        .replace("{disk_img}", disk_img)
         .replace("{smp}", &plat.qemu_smp.to_string())
+}
+
+/// Ensure the virtio block image referenced by `xtask.qemu.toml`
+/// exists on disk.  If the file is missing we synthesise a 1.44 MB
+/// FAT12 stub (the historical CapsuleOS block format) so QEMU's
+/// `-drive file=...` never fails with "No such file or directory".
+///
+/// Returns the absolute path to the image so the caller can pass it
+/// to QEMU regardless of the current working directory.
+pub fn ensure_disk_image(path: &str) -> Result<String, String> {
+    let p = std::path::Path::new(path);
+    if p.exists() {
+        return std::fs::canonicalize(p)
+            .map(|c| c.to_string_lossy().into_owned())
+            .map_err(|e| format!("failed to canonicalize {}: {}", path, e));
+    }
+
+    if let Some(parent) = p.parent() {
+        if !parent.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+
+    let sector_size: usize = 512;
+    let total_sectors: usize = 2880;
+    let image_size = sector_size * total_sectors;
+    let mut image = vec![0u8; image_size];
+
+    // Boot sector signature (FAT12).
+    image[0..3].copy_from_slice(&[0xEB, 0x3C, 0x90]);
+    image[3..11].copy_from_slice(b"MSDOS5.0");
+    image[11..13].copy_from_slice(&(sector_size as u16).to_le_bytes());
+    image[13] = 1;
+    image[14..16].copy_from_slice(&1u16.to_le_bytes());
+    image[16] = 2;
+    image[17..19].copy_from_slice(&224u16.to_le_bytes());
+    image[19..21].copy_from_slice(&(total_sectors as u16).to_le_bytes());
+    image[21] = 0xF8;
+    image[22..24].copy_from_slice(&9u16.to_le_bytes());
+    image[24..26].copy_from_slice(&18u16.to_le_bytes());
+    image[26..28].copy_from_slice(&2u16.to_le_bytes());
+    image[28..32].copy_from_slice(&0u32.to_le_bytes());
+    image[32..36].copy_from_slice(&0u32.to_le_bytes());
+    image[36] = 0;
+    image[37] = 0;
+    image[38] = 0x29;
+    image[39..43].copy_from_slice(&[0x12, 0x34, 0x56, 0x78]);
+    image[43..54].copy_from_slice(b"BOOTFS     ");
+    image[54..62].copy_from_slice(b"FAT12   ");
+    image[510..512].copy_from_slice(&[0x55, 0xAA]);
+
+    // FAT12 requires first two entries to be F8 FF FF.
+    image[512..515].copy_from_slice(&[0xF8, 0xFF, 0xFF]);
+    image[5120..5123].copy_from_slice(&[0xF8, 0xFF, 0xFF]);
+
+    let mut f = File::create(p)
+        .map_err(|e| format!("failed to create {}: {}", p.display(), e))?;
+    f.write_all(&image)
+        .map_err(|e| format!("failed to write {}: {}", p.display(), e))?;
+
+    std::fs::canonicalize(p)
+        .map(|c| c.to_string_lossy().into_owned())
+        .map_err(|e| format!("failed to canonicalize {}: {}", path, e))
 }
 
 /// Public entry point used by `xtask code build` to regenerate
@@ -231,5 +336,17 @@ pub fn generate_qemu_dtb_artifact_paths(resolved: &Resolved, plat: &Platform) ->
         &plat.arch, "virt", &resolved.build, &resolved.runtime,
     )
     .ok_or_else(|| "virt profile missing for dtb generation".to_string())?;
-    generate_qemu_dtb(resolved, &virt, &boot_bin, &boot_bin_raw, &kern_bin, &loader_img, &services_img)
+    // Ensure the dist directory exists so dtc can write the DTB into it.
+    let _ = std::fs::create_dir_all(resolved.root.project.dist_dir());
+    let disk_img = ensure_disk_image(&virt.qemu_disk_img)?;
+    generate_qemu_dtb(
+        resolved,
+        &virt,
+        &boot_bin,
+        &boot_bin_raw,
+        &kern_bin,
+        &loader_img,
+        &services_img,
+        &disk_img,
+    )
 }

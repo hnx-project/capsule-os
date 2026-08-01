@@ -41,16 +41,23 @@ pub fn test(resolved: &Resolved, plat: &Platform, timeout_secs: u64) -> Result<(
     let kernel_bin = std::path::Path::new(&kernel_bin_owned);
 
     let rootfs_img_owned = resolved.build.subprojects.iter()
-        .find(|sub| sub.subproject_type == "userspace")
+        .find(|sub| sub.subproject_type == "userspace" && sub.name == "userspace-apps")
         .and_then(|sub| sub.rootfs_output.as_ref())
         .cloned()
         .unwrap_or_else(|| "kernel/files/rootfs.img".to_string());
     let rootfs_img = std::path::Path::new(&rootfs_img_owned);
 
+    let loader_img_owned = resolved.build.subprojects.iter()
+        .find(|sub| sub.subproject_type == "userspace" && sub.name == "userspace-loader")
+        .and_then(|sub| sub.rootfs_output.as_ref())
+        .cloned()
+        .unwrap_or_else(|| "kernel/files/loader.img".to_string());
+    let loader_img = std::path::Path::new(&loader_img_owned);
+
     let dtb_img_owned = format!("{}/qemu.dtb", resolved.root.project.dist_dir());
     let dtb_img = std::path::Path::new(&dtb_img_owned);
 
-    for p in [boot_bin, kernel_bin, rootfs_img, dtb_img] {
+    for p in [boot_bin, kernel_bin, rootfs_img, loader_img, dtb_img] {
         if !p.exists() {
             return Err(format!(
                 "missing required artifact: {} (run `xtask code build` first)",
@@ -60,6 +67,7 @@ pub fn test(resolved: &Resolved, plat: &Platform, timeout_secs: u64) -> Result<(
     }
 
     println!("[xtask test] Booting CapsuleOS for ~{}s…", timeout_secs);
+    let disk_img_str = crate::run::ensure_disk_image(&plat.qemu_disk_img)?;
     let mut cmd = Command::new(&plat.qemu_bin);
     for arg in &plat.qemu_args {
         let rendered = render_template_for_test(
@@ -68,7 +76,9 @@ pub fn test(resolved: &Resolved, plat: &Platform, timeout_secs: u64) -> Result<(
             boot_bin.to_str().unwrap(),
             kernel_bin.to_str().unwrap(),
             rootfs_img.to_str().unwrap(),
+            loader_img.to_str().unwrap(),
             dtb_img.to_str().unwrap(),
+            &disk_img_str,
         );
         cmd.arg(rendered);
     }
@@ -247,7 +257,9 @@ pub fn render_template_for_test(
     bootloader_bin: &str,
     kernel_bin: &str,
     rootfs_img: &str,
+    loader_img: &str,
     dtb_img: &str,
+    disk_img: &str,
 ) -> String {
     template
         .replace("{rust_target}", &plat.rust_target)
@@ -255,6 +267,7 @@ pub fn render_template_for_test(
         .replace("{ohc_addr}", &plat.ohc_addr)
         .replace("{dtb_addr}", &plat.dtb_addr)
         .replace("{rootfs_addr}", &plat.rootfs_addr)
+        .replace("{services_addr}", "0x48000000")
         .replace("{bootloader_bin}", bootloader_bin)
         .replace(
             "{bootloader_bin_raw}",
@@ -262,7 +275,9 @@ pub fn render_template_for_test(
         )
         .replace("{kernel_bin}", kernel_bin)
         .replace("{rootfs_img}", rootfs_img)
+        .replace("{loader_img}", loader_img)
         .replace("{qemu_dtb}", dtb_img)
+        .replace("{disk_img}", disk_img)
         .replace("{smp}", &plat.qemu_smp.to_string())
 }
 
@@ -309,6 +324,7 @@ mod tests {
                 "{smp}".into(),
             ],
             qemu_smp: smp,
+            qemu_disk_img: "build/disk.img".to_string(),
         }
     }
 
@@ -316,7 +332,7 @@ mod tests {
     fn smp_placeholder_substitution() {
         let p = fake_platform(4);
         let rendered = render_template_for_test(
-            "{smp}", &p, "/b", "/k", "/r", "/d",
+            "{smp}", &p, "/b", "/k", "/r", "/l", "/d", "/disk",
         );
         assert_eq!(rendered, "4");
     }
@@ -326,7 +342,7 @@ mod tests {
         let p = fake_platform(2);
         let s = render_template_for_test(
             "-smp {smp} -kernel {kernel_bin}",
-            &p, "/b", "/tmp/hnxcore", "/r", "/d",
+            &p, "/b", "/tmp/hnxcore", "/r", "/l", "/d", "/disk",
         );
         assert!(s.contains("-smp 2"));
         assert!(s.contains("-kernel /tmp/hnxcore"));
@@ -335,7 +351,7 @@ mod tests {
     #[test]
     fn zero_smp_replaces_with_zero() {
         let p = fake_platform(0);
-        let rendered = render_template_for_test("{smp}", &p, "/b", "/k", "/r", "/d");
+        let rendered = render_template_for_test("{smp}", &p, "/b", "/k", "/r", "/l", "/d", "/disk");
         assert_eq!(rendered, "0");
     }
 
@@ -343,8 +359,23 @@ mod tests {
     fn unknown_placeholder_passes_through() {
         let p = fake_platform(1);
         let s = render_template_for_test(
-            "--fake={nope}", &p, "/b", "/k", "/r", "/d",
+            "--fake={nope}", &p, "/b", "/k", "/r", "/l", "/d", "/disk",
         );
         assert_eq!(s, "--fake={nope}");
+    }
+
+    #[test]
+    fn loader_and_rootfs_substituted_independently() {
+        let p = fake_platform(1);
+        let s = render_template_for_test(
+            "-device loader,file={loader_img},addr={rootfs_addr} -device loader,file={rootfs_img},addr={services_addr}",
+            &p, "/b", "/k", "/rootfs", "/loader", "/d", "/disk",
+        );
+        assert!(s.contains("file=/loader"));
+        assert!(s.contains("file=/rootfs"));
+        assert!(s.contains("addr=0x46000000"));
+        assert!(s.contains("addr=0x48000000"));
+        assert!(!s.contains("{loader_img}"));
+        assert!(!s.contains("{rootfs_img}"));
     }
 }

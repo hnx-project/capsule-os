@@ -425,6 +425,7 @@ impl Scheduler {
 
     pub fn wake_thread(&mut self, thread_id: usize) {
         let flags = self.lock();
+        let mut woke = false;
         for i in 0..MAX_THREADS {
             if let Some(ref mut t) = self.threads[i] {
                 if t.id == thread_id
@@ -439,11 +440,32 @@ impl Scheduler {
                     }
                     t.state = ThreadState::Ready;
                     self.requeue_current(i);
+                    woke = true;
                     break;
                 }
             }
         }
         self.unlock(flags);
+        if woke {
+            // SEV wakes any CPU parked in WFE so the scheduler's
+            // next iteration will observe the newly-Ready thread.
+            // Without this, single-core builds deadlock because
+            // wake_thread just sets state=Ready but the running
+            // core keeps spinning in WFE waiting for an event that
+            // never arrives.
+            crate::smp::idle_flags_signal(crate::smp::current_core_id());
+            // Force an immediate reschedule so the newly-Ready
+            // thread actually gets a chance to run. The current
+            // thread is whatever CPU was executing the wake path
+            // (typically the *sender's* syscall handler) and we
+            // want to yield it in favour of the receiver that was
+            // just woken — otherwise single-core rendezvous calls
+            // hang forever because the running thread never yields.
+            // SAFETY: this is a no-op on multi-core systems where
+            // another core can pick up the work; on single-core the
+            // switch_to is what actually unblocks the rendezvous.
+            unsafe { self.schedule(); }
+        }
     }
 
     /// Scan all threads in the system. Any thread in `ThreadState::Sleeping` state whose

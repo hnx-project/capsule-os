@@ -1,10 +1,13 @@
-//! # 🚌 virtio-mmio Bus (Generic Primitive Layer)
+//! # 🚌 MMIO Bus (Generic Primitive Layer)
 //!
-//! Per the microkernel principle, individual virtio device protocols
-//! (blk, net, gpu, input, ...) live in EL0 userspace.  The kernel
-//! exposes only the **bus primitives** below so that EL0 drivers can:
+//! This file is intentionally renamed from `virtio_bus.rs` to
+//! `mmio_bus.rs` so the codebase does not give the impression of an
+//! in-kernel virtio driver.  Per the microkernel principle, individual
+//! virtio device protocols (blk, net, gpu, input, ...) live in EL0
+//! userspace.  The kernel exposes only the **bus primitives** below
+//! so that EL0 drivers can:
 //!
-//!   1. probe virtio-mmio devices scattered across the 0x0a000000
+//!   1. probe MMIO-attached devices scattered across the 0x0a000000
 //!      region (one device per 0x200-byte slot),
 //!   2. allocate a virtqueue (descriptor table + available ring +
 //!      used ring) backed by physically contiguous pages that are

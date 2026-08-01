@@ -1,0 +1,4 @@
+name = "touchd"
+path = "touchd"
+dependencies = ["devmgr", "procmgr"]
+is_program = false

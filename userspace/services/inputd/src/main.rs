@@ -64,10 +64,135 @@ pub fn main() -> i32 {
                 let magic = unsafe { core::ptr::read_volatile(slot_va as *const u32) };
                 let dev_id = unsafe { core::ptr::read_volatile((slot_va + 0x008) as *const u32) };
                 if magic == 0x74726976 && dev_id == 18 {
-                    log_info!("INPUTD", "Discovered Virtio-Input device at slot {} MMIO {:#x}", slot, 0x0a000000 + slot * 0x200);
-                    input_base = slot_va;
-                    break;
+                    // Per virtio 1.3 §5.8 + §4.2.2:
+                    //   - cfg_select at base + 0x100 (8-bit write)
+                    //   - cfg_subsel at base + 0x101 (8-bit write)
+                    //   - cfg_size   at base + 0x102 (8-bit read)
+                    //   - payload    at base + 0x108+ (8-bit reads)
+                    //   - status     at base + 0x070 (32-bit)
+                    // Spec §4.2.2.2 requires 8-bit MMIO accesses for 8-bit fields.
+                    //
+                    // We probe VIRTIO_INPUT_CFG_EV_BITS (select=0x11) twice,
+                    // once with subsel=EV_REL (0x02) and once with subsel=EV_ABS
+                    // (0x03). A non-zero size field tells us the device supports
+                    // that event type. Mouse => EV_REL only. Touch => EV_ABS only.
+                    unsafe {
+                        let status_before = core::ptr::read_volatile((slot_va + 0x070) as *const u32);
+                        if (status_before & 1) == 0 {
+                            core::ptr::write_volatile((slot_va + 0x070) as *mut u32, 1);
+                        }
+                        // Probe EV_REL sub-capability (which REL_* codes exist)
+                        core::ptr::write_volatile((slot_va + 0x100) as *mut u8, 0x11); // CFG_EV_BITS
+                        core::ptr::write_volatile((slot_va + 0x101) as *mut u8, 0x02); // EV_REL
+                        let size_rel = core::ptr::read_volatile((slot_va + 0x102) as *const u8);
+                        let r0 = core::ptr::read_volatile((slot_va + 0x108) as *const u8);
+                        let r1 = core::ptr::read_volatile((slot_va + 0x109) as *const u8);
+                        let r2 = core::ptr::read_volatile((slot_va + 0x10a) as *const u8);
+                        let r3 = core::ptr::read_volatile((slot_va + 0x10b) as *const u8);
+                        let ev_rel_size = size_rel;
+                        // Probe EV_ABS sub-capability (which ABS_* codes exist)
+                        core::ptr::write_volatile((slot_va + 0x100) as *mut u8, 0x11); // CFG_EV_BITS
+                        core::ptr::write_volatile((slot_va + 0x101) as *mut u8, 0x03); // EV_ABS
+                        let size_abs = core::ptr::read_volatile((slot_va + 0x102) as *const u8);
+                        let a0 = core::ptr::read_volatile((slot_va + 0x108) as *const u8);
+                        let a1 = core::ptr::read_volatile((slot_va + 0x109) as *const u8);
+                        let a2 = core::ptr::read_volatile((slot_va + 0x10a) as *const u8);
+                        let a3 = core::ptr::read_volatile((slot_va + 0x10b) as *const u8);
+                        let ev_abs_size = size_abs;
+
+                        let slot_owned = (status_before & 1) != 0;
+
+                        log_info!(
+                            "INPUTD",
+                            "Slot {} probe: size_rel={} (rel_bytes={:02x}{:02x}{:02x}{:02x}), size_abs={} (abs_bytes={:02x}{:02x}{:02x}{:02x})",
+                            slot, ev_rel_size, r0, r1, r2, r3, ev_abs_size, a0, a1, a2, a3
+                        );
+
+                        // Pure mouse: EV_REL has non-zero size, EV_ABS is zero.
+                        // Mixed (tablet with REL+ABS in cfg) is left for touchd
+                        // because a mixed slot is more likely a QEMU tablet
+                        // that emits ABS_MT_* events, which only touchd parses.
+                        if (ev_rel_size > 0) && (ev_abs_size == 0) {
+                            log_info!(
+                                "INPUTD",
+                                "Discovered Virtio-Input pure-mouse at slot {} MMIO {:#x}",
+                                slot, 0x0a000000 + slot * 0x200
+                            );
+                            input_base = slot_va;
+                            break;
+                        } else if (ev_abs_size > 0) && (ev_rel_size == 0) {
+                            log_info!(
+                                "INPUTD",
+                                "Slot {} is a touch-only sub-device; leaving for touchd",
+                                slot
+                            );
+                            if !slot_owned {
+                                core::ptr::write_volatile((slot_va + 0x070) as *mut u32, 0);
+                            }
+                            continue;
+                        } else if (ev_rel_size > 0) && (ev_abs_size > 0) {
+                            // Mixed slot — likely a QEMU tablet reporting both
+                            // event types. Leave it for touchd to handle the
+                            // multi-touch stream; inputd's REL-only parser
+                            // would silently miss every ABS_MT_* event.
+                            log_info!(
+                                "INPUTD",
+                                "Slot {} is a mixed (REL+ABS) sub-device; leaving for touchd",
+                                slot
+                            );
+                            if !slot_owned {
+                                core::ptr::write_volatile((slot_va + 0x070) as *mut u32, 0);
+                            }
+                            continue;
+                        } else {
+                            log_warn!(
+                                "INPUTD",
+                                "Slot {} has unrecognized input sub-type (size_rel={}, size_abs={}); skipping",
+                                slot, ev_rel_size, ev_abs_size
+                            );
+                            if !slot_owned {
+                                core::ptr::write_volatile((slot_va + 0x070) as *mut u32, 0);
+                            }
+                            continue;
+                        }
+                    }
                 }
+            }
+        }
+    }
+
+    if input_base == 0 {
+        // Fallback: precise cfg probe failed to find a mouse. Try to claim
+        // the first dev_id==18 slot that nobody else has ACKNOWLEDGEd.
+        // This protects us against QEMU versions where the cfg bitmap
+        // differs from what the device actually emits on the eventq
+        // (e.g. a virtio-mouse-device that doesn't advertise EV_REL in cfg
+        // but still emits relative mouse events).
+        log_warn!(
+            "INPUTD",
+            "No mouse found via cfg probe; entering fallback scan"
+        );
+        for slot in 0..32usize {
+            let slot_va = 0x5000000usize + slot * 0x200;
+            let magic = unsafe { core::ptr::read_volatile(slot_va as *const u32) };
+            let dev_id = unsafe { core::ptr::read_volatile((slot_va + 0x008) as *const u32) };
+            if magic != 0x74726976 || dev_id != 18 {
+                continue;
+            }
+            unsafe {
+                let status = core::ptr::read_volatile((slot_va + 0x070) as *const u32);
+                if (status & 1) != 0 {
+                    // Owned by touchd or another driver — skip without reset.
+                    continue;
+                }
+                core::ptr::write_volatile((slot_va + 0x070) as *mut u32, 1);
+                log_warn!(
+                    "INPUTD",
+                    "Fallback: claiming slot {} MMIO {:#x} as mouse (cfg probe failed)",
+                    slot, 0x0a000000 + slot * 0x200
+                );
+                input_base = slot_va;
+                break;
             }
         }
     }
@@ -169,6 +294,12 @@ pub fn main() -> i32 {
     let mut screen_w = 1280;
     let mut screen_h = 960;
 
+    // Heartbeat counter: every N idle polling cycles we re-broadcast the
+    // current mouse state so the compositor can recover from a lost release
+    // event (e.g. if QEMU coalesced up events into a single down-only burst).
+    let mut heartbeat_counter: u32 = 0;
+    const HEARTBEAT_PERIOD: u32 = 200; // ~200 yields ≈ 200ms
+
     loop {
         // A. Listen for new client connections (non-blocking style)
         let mut conn_buf = [0u8; 16];
@@ -232,6 +363,8 @@ pub fn main() -> i32 {
                             }
                         }
                         3 => { // EV_ABS (Absolute)
+                            // inputd only owns pure-mouse slots. EV_ABS
+                            // events from those devices use codes 0/1 (ABS_X/Y).
                             if ev.code == 0 { // ABS_X
                                 current_mouse.x = ((ev.value as i32 * screen_w) / 32768).clamp(0, screen_w - 1);
                                 mouse_changed = true;
@@ -273,6 +406,31 @@ pub fn main() -> i32 {
                             i += 1;
                         }
                     }
+                }
+            }
+        }
+
+        // Heartbeat: re-broadcast the current mouse state periodically so the
+        // compositor can recover from a missed release event. This guards
+        // against a stuck-down drag if QEMU coalesced the up event into a
+        // burst that our polling missed.
+        heartbeat_counter = heartbeat_counter.wrapping_add(1);
+        if heartbeat_counter >= HEARTBEAT_PERIOD && session_count > 0 {
+            heartbeat_counter = 0;
+            let mut packet_buf = [0u8; 12];
+            packet_buf[0..4].copy_from_slice(&current_mouse.x.to_le_bytes());
+            packet_buf[4..8].copy_from_slice(&current_mouse.y.to_le_bytes());
+            packet_buf[8] = if current_mouse.down { 1 } else { 0 };
+
+            let mut i = 0;
+            while i < session_count {
+                let client_chan = active_sessions[i];
+                if let Err(Status::PeerClosed) = syscalls::channel_write(client_chan, &packet_buf, &[]) {
+                    let _ = syscalls::close(client_chan);
+                    active_sessions[i] = active_sessions[session_count - 1];
+                    session_count -= 1;
+                } else {
+                    i += 1;
                 }
             }
         }

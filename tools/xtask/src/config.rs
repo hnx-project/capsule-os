@@ -229,6 +229,17 @@ pub struct QemuRuntime {
     /// the `dumpdtb` machinery.  Defaults to 1 if omitted.
     #[serde(default = "default_smp")]
     pub smp: u32,
+    /// Path to the raw virtio block image that QEMU's `-drive file=…`
+    /// points at.  xtask generates a fresh FAT12 image at this path
+    /// before launching QEMU if the file is missing, so the build/run
+    /// pipeline no longer depends on a stale `disk.img` sitting in the
+    /// repository root.  Templated into `args` as `{disk_img}`.
+    #[serde(default = "default_disk_img")]
+    pub disk_img: String,
+}
+
+pub fn default_disk_img() -> String {
+    "build/disk.img".to_string()
 }
 
 fn default_smp() -> u32 {

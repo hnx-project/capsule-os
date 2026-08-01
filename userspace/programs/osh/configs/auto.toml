@@ -1,0 +1,4 @@
+name = "osh"
+path = "osh"
+dependencies = ["tty", "fileagent"]
+is_program = true

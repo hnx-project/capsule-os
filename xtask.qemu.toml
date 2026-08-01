@@ -13,6 +13,10 @@
 [platform.aarch64.profiles.virt.qemu]
 bin = "qemu-system-aarch64"
 smp = 4
+# Path to the virtio block image. xtask synthesises a 1.44 MB FAT12
+# stub at this path if it doesn't exist, so the run no longer relies on
+# a stale `disk.img` in the repo root.
+disk_img = "build/disk.img"
 args = [
     "-M", "virt,secure=off",
     "-cpu", "cortex-a72",
@@ -23,11 +27,9 @@ args = [
     "-device", "loader,file={qemu_dtb},addr={dtb_addr},force-raw=on",
     "-device", "loader,file={loader_img},addr={rootfs_addr},force-raw=on",
     "-device", "loader,file={rootfs_img},addr=0x48000000,force-raw=on",
-    "-drive", "if=none,format=raw,id=hd0,file=disk.img",
+    "-drive", "if=none,format=raw,id=hd0,file={disk_img}",
     "-device", "virtio-blk-device,drive=hd0",
-    "-device", "virtio-gpu-device,xres=1280,yres=960",
-    "-device", "virtio-tablet-device",
-    "-serial", "stdio",
+    "-nographic",
     "-semihosting"
   ]
 dtb_dump_args = [

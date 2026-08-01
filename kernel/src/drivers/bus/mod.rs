@@ -1,1 +1,1 @@
-pub mod virtio_bus;
+pub mod mmio_bus;

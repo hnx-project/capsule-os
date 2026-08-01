@@ -42,7 +42,7 @@ pub fn register_service(name_bytes: &[u8], channel_ptr: *mut Channel) -> Result<
     }
     acquire_lock();
     let registry = unsafe { &mut REGISTRY };
-    
+
     // Check if already exists
     for entry in registry.services.iter() {
         if let Some(e) = entry {

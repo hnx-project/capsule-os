@@ -167,8 +167,8 @@ pub fn main() -> i32 {
             "SERVICESD",
             "No dynamic configurations found. Falling back to static hardcoded SERVICES."
         );
-        for (i, s) in SERVICES.iter().enumerate() {
-            if i >= MAX_SERVICES {
+        for s in SERVICES.iter() {
+            if service_count >= MAX_SERVICES {
                 break;
             }
             let mut deps = [""; MAX_DEPS];
@@ -176,7 +176,45 @@ pub fn main() -> i32 {
             for d in 0..dep_count {
                 deps[d] = s.dependencies[d];
             }
-            services[i] = ActiveService {
+            services[service_count] = ActiveService {
+                name: s.name,
+                path: s.path,
+                dependencies: deps,
+                dep_count,
+                is_program: s.is_program,
+            };
+            service_count += 1;
+        }
+    } else {
+        // Dynamic auto.toml entries were discovered in BootFS. Merge in
+        // the static hardcoded SERVICES so anything that hasn't shipped
+        // an auto.toml (e.g. legacy programs) still gets spawned after
+        // its declared dependencies come up.  We dedupe by `name` so
+        // dynamic + static don't double-spawn the same service.
+        log_info!(
+            "SERVICESD",
+            "Merging static hardcoded SERVICES with dynamic auto.toml entries."
+        );
+        for s in SERVICES.iter() {
+            if service_count >= MAX_SERVICES {
+                break;
+            }
+            let mut already_present = false;
+            for j in 0..service_count {
+                if services[j].name == s.name {
+                    already_present = true;
+                    break;
+                }
+            }
+            if already_present {
+                continue;
+            }
+            let mut deps = [""; MAX_DEPS];
+            let dep_count = s.dependencies.len().min(MAX_DEPS);
+            for d in 0..dep_count {
+                deps[d] = s.dependencies[d];
+            }
+            services[service_count] = ActiveService {
                 name: s.name,
                 path: s.path,
                 dependencies: deps,

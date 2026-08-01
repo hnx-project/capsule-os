@@ -25,6 +25,7 @@ pub struct Platform {
     pub qemu_args: Vec<String>,
     pub qemu_dtb_dump_args: Vec<String>,
     pub qemu_smp: u32,
+    pub qemu_disk_img: String,
 }
 
 impl Platform {
@@ -41,13 +42,35 @@ impl Platform {
         let arch_cfg = build.platform.get(arch)?;
         let p_cfg = arch_cfg.profiles.get(profile_name)?;
 
-        let (qemu_bin, qemu_args, qemu_dtb_dump_args, qemu_smp) = runtime
+        let (
+            qemu_bin,
+            qemu_args,
+            qemu_dtb_dump_args,
+            qemu_smp,
+            qemu_disk_img,
+        ) = runtime
             .platform
             .get(arch)
             .and_then(|a| a.profiles.get(profile_name))
             .and_then(|p| p.qemu.as_ref())
-            .map(|q| (q.bin.clone(), q.args.clone(), q.dtb_dump_args.clone(), q.smp))
-            .unwrap_or_else(|| (String::new(), Vec::new(), Vec::new(), 1));
+            .map(|q| {
+                (
+                    q.bin.clone(),
+                    q.args.clone(),
+                    q.dtb_dump_args.clone(),
+                    q.smp,
+                    q.disk_img.clone(),
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    String::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    1,
+                    crate::config::default_disk_img(),
+                )
+            });
 
         Some(Platform {
             arch: arch.to_string(),
@@ -65,6 +88,7 @@ impl Platform {
             qemu_args,
             qemu_dtb_dump_args,
             qemu_smp,
+            qemu_disk_img,
         })
     }
 }

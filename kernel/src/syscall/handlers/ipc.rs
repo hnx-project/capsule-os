@@ -298,11 +298,26 @@ pub fn sys_channel_lookup(table: &HandleTable, name_ptr: usize, name_len: usize)
 
     // Write to the PEER of the server channel so the write() rendezvous
     // finds the server's blocked reader on server_service_chan_ptr.recv_waiters.
+    // If we took the case-1 fast path, the receiver (server) thread
+    // is now Ready but we are *still* running. The fast path is fast
+    // precisely because we didn't yield, so without an explicit
+    // schedule() here the server thread will sit Ready forever and
+    // never service the request. Force a reschedule before returning.
+    let mut needs_reschedule = false;
     unsafe {
         if let Some(peer_ptr) = (*server_service_chan_ptr).peer {
-            (*peer_ptr).write(&[], &[h_server])?;
+            // Channel::write() returns Ok(()) if data was delivered via
+            // the case-1 fast path. Case-2 path returns Ok(copy_len)
+            // where copy_len may be 0; we treat both as "delivered".
+            needs_reschedule = (*peer_ptr).write(&[], &[h_server]).is_ok();
         } else {
             return Err(Status::PeerClosed);
+        }
+    }
+
+    if needs_reschedule {
+        unsafe {
+            crate::task::scheduler::SCHEDULER.schedule();
         }
     }
 
