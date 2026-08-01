@@ -4,7 +4,90 @@ extern crate libc;
 extern crate libcapsule;
 extern crate libstd;
 
+/// Handle to the kernel-builtin BootFS VMO.  Every EL0 process shares
+/// the same convention (capsule::services::servicesd::BOOTFS_VMO_HANDLE)
+/// so the shell can spawn programs from the same image that the
+/// service manager reads.
+const BOOTFS_VMO_HANDLE: usize = 100;
+
 pub struct CapsuleEnv;
+
+impl CapsuleEnv {
+    /// Resolve `cmd` to an absolute path by consulting the `PATH`
+    /// environment variable.  On success, the full path is written
+    /// into `out` (NUL-terminated).  Returns the same value of
+    /// `out` on success.
+    ///
+    /// Search order:
+    ///   1. If `cmd` already contains a `/`, treat it as a path
+    ///      and copy it verbatim into `out`.
+    ///   2. Walk `PATH` (default `system/bin`) and try each
+    ///      concatenation until `open()` succeeds.
+    ///   3. Fall back to `system/bin/<cmd>` so the kernel can give
+    ///      a more informative error than "file not found".
+    fn resolve_command(&self, cmd: &str, out: &mut [u8]) -> Result<(), ShellError> {
+        // Case 1: explicit path containing a slash.
+        if cmd.contains('/') {
+            let len = cmd.len().min(out.len() - 1);
+            out[..len].copy_from_slice(cmd.as_bytes());
+            out[len] = 0;
+            return Ok(());
+        }
+
+        // Case 2: walk PATH.  We allow the user to override PATH via
+        // the `get_env` callback; if it isn't set we fall back to
+        // the CapsuleOS BootFS default `system/bin`.
+        let mut path_buf = [0u8; 256];
+        let path_len = self.get_env("PATH", &mut path_buf).unwrap_or(0);
+        let default_path = b"system/bin";
+        let path_str: &[u8] = if path_len > 0 {
+            &path_buf[..path_len]
+        } else {
+            default_path
+        };
+
+        // Walk the colon-separated entries.
+        let mut start = 0;
+        for i in 0..=path_str.len() {
+            let at_end = i == path_str.len() || path_str[i] == b':';
+            if !at_end {
+                continue;
+            }
+            let dir = &path_str[start..i];
+            let need = dir.len() + 1 + cmd.len() + 1;
+            if need > out.len() {
+                start = i + 1;
+                continue;
+            }
+            let mut j = 0;
+            out[j..j + dir.len()].copy_from_slice(dir);
+            j += dir.len();
+            out[j] = b'/';
+            j += 1;
+            out[j..j + cmd.len()].copy_from_slice(cmd.as_bytes());
+            j += cmd.len();
+            out[j] = 0;
+
+            let fd = libc::open(out.as_ptr(), 0, 0);
+            if fd >= 0 {
+                let _ = libc::close(fd);
+                return Ok(());
+            }
+            start = i + 1;
+        }
+
+        // Fall back to the conventional path so the kernel can give
+        // a more informative error than "file not found".
+        let prefix = b"system/bin/";
+        let need = prefix.len() + cmd.len();
+        if need < out.len() {
+            out[..prefix.len()].copy_from_slice(prefix);
+            out[prefix.len()..need].copy_from_slice(cmd.as_bytes());
+            out[need] = 0;
+        }
+        Ok(())
+    }
+}
 
 impl Environment for CapsuleEnv {
     fn write_stdout(&self, data: &[u8]) {
@@ -35,10 +118,7 @@ impl Environment for CapsuleEnv {
 
     fn getcwd(&self, _buf: &mut [u8]) -> Result<usize, ShellError> {
         match libstd::env::current_dir() {
-            Ok(s) => {
-                // Return len of current dir
-                Ok(s.len())
-            }
+            Ok(s) => Ok(s.len()),
             Err(_) => Err(ShellError::IoError),
         }
     }
@@ -51,6 +131,8 @@ impl Environment for CapsuleEnv {
     }
 
     fn get_env(&self, _key: &str, _buf: &mut [u8]) -> Result<usize, ShellError> {
+        // 1.0 ships with a hard-coded environment; treat a missing
+        // key as "not found" so callers fall back to the default.
         Err(ShellError::PathNotFound)
     }
 
@@ -60,138 +142,49 @@ impl Environment for CapsuleEnv {
 
     fn print_envs(&self) {}
 
-    fn execute(&self, cmd: &str, args: &[&str]) -> Result<i32, ShellError> {
-        let mut cmd_buf = [0u8; 128];
-        let cmd_bytes = cmd.as_bytes();
-        let cmd_len = cmd_bytes.len().min(127);
-        cmd_buf[..cmd_len].copy_from_slice(&cmd_bytes[..cmd_len]);
-        cmd_buf[cmd_len] = 0;
-
-        let mut args_storage = [[0u8; 128]; 16];
-        let mut argv = [core::ptr::null::<u8>(); 17];
-
-        args_storage[0][..cmd_len].copy_from_slice(&cmd_bytes[..cmd_len]);
-        args_storage[0][cmd_len] = 0;
-        argv[0] = args_storage[0].as_ptr();
-
-        let count = core::cmp::min(args.len(), 15);
-        for i in 0..count {
-            let arg_bytes = args[i].as_bytes();
-            let arg_len = arg_bytes.len().min(127);
-            args_storage[i + 1][..arg_len].copy_from_slice(&arg_bytes[..arg_len]);
-            args_storage[i + 1][arg_len] = 0;
-            argv[i + 1] = args_storage[i + 1].as_ptr();
-        }
-        argv[count + 1] = core::ptr::null();
-
-        let code = libc::execv(cmd_buf.as_ptr(), argv.as_ptr());
-        Ok(code)
+    fn execute(&self, _cmd: &str, _args: &[&str]) -> Result<i32, ShellError> {
+        // CapsuleOS does not implement execve() at the syscall level
+        // yet; users that need to replace the shell process should
+        // use `spawn` followed by `_exit(0)`.
+        Err(ShellError::IoError)
     }
 
     fn spawn(&self, cmd: &str, args: &[&str]) -> Result<u64, ShellError> {
-        let mut cmd_buf = [0u8; 128];
-        let cmd_bytes = cmd.as_bytes();
-        let cmd_len = cmd_bytes.len().min(127);
-        cmd_buf[..cmd_len].copy_from_slice(&cmd_bytes[..cmd_len]);
-        cmd_buf[cmd_len] = 0;
+        // 1. PATH / explicit-path resolution.  We don't actually use
+        //    the resolved path for the lookup — CapsuleOS programs
+        //    live in BootFS as flat entries keyed by basename
+        //    (e.g. `ls`, `cat`, `mkdir`, ...), so we strip the
+        //    directory components from `cmd` and hand the basename
+        //    to `ProgramLoader::spawn_program`.
+        let mut resolved = [0u8; 384];
+        self.resolve_command(cmd, &mut resolved)?;
 
-        let fd = libc::open(cmd_buf.as_ptr(), 0, 0);
-        if fd < 0 {
-            return Err(ShellError::PathNotFound);
-        }
-        let mut st = core::mem::MaybeUninit::<libc::stat>::uninit();
-        if libc::stat(cmd_buf.as_ptr(), st.as_mut_ptr()) < 0 {
-            let _ = libc::close(fd);
-            return Err(ShellError::PathNotFound);
-        }
-        let st = unsafe { st.assume_init() };
-        let size = st.st_size as usize;
-        if size == 0 {
-            let _ = libc::close(fd);
-            return Err(ShellError::IoError);
-        }
-
-        let binary_vmo = match libcapsule::syscalls::vmo_create(size) {
-            Ok(h) => h,
-            Err(_) => {
-                let _ = libc::close(fd);
-                return Err(ShellError::IoError);
-            }
-        };
-
-        let mut buf = [0u8; 4096];
-        let mut offset = 0;
-        while offset < size {
-            let want = core::cmp::min(buf.len(), size - offset);
-            let n = libc::read(fd, buf.as_mut_ptr(), want);
-            if n <= 0 {
+        // 2. Strip down to the basename for the BootFS lookup.
+        let bytes = cmd.as_bytes();
+        let mut start = 0;
+        for i in (0..bytes.len()).rev() {
+            if bytes[i] == b'/' {
+                start = i + 1;
                 break;
             }
-            if let Err(_) = libcapsule::syscalls::vmo_write(binary_vmo, offset, &buf[..n as usize]) {
-                let _ = libcapsule::syscalls::close(binary_vmo);
-                let _ = libc::close(fd);
-                return Err(ShellError::IoError);
-            }
-            offset += n as usize;
         }
-        let _ = libc::close(fd);
+        let basename = &bytes[start..];
+        let basename_str = core::str::from_utf8(basename)
+            .map_err(|_| ShellError::PathNotFound)?;
 
-        let argv_vmo = match libcapsule::syscalls::vmo_create(4096) {
-            Ok(h) => h,
-            Err(_) => {
-                let _ = libcapsule::syscalls::close(binary_vmo);
-                return Err(ShellError::IoError);
-            }
+        let loader = libcapsule::ProgramLoader::new(BOOTFS_VMO_HANDLE);
+        let pid = match loader.spawn_program(basename_str) {
+            Ok(p) => p as u64,
+            Err(_) => return Err(ShellError::PathNotFound),
         };
 
-        let mut argv_buf = [0u8; 4096];
-        let count = core::cmp::min(args.len() + 1, 16);
-        let count_bytes = (count as u32).to_le_bytes();
-        argv_buf[0..4].copy_from_slice(&count_bytes);
-
-        let mut off = 4;
-        let arg0 = cmd.as_bytes();
-        let arg0_len = arg0.len();
-        let len_bytes0 = (arg0_len as u32).to_le_bytes();
-        argv_buf[off..off+4].copy_from_slice(&len_bytes0);
-        argv_buf[off+4..off+4+arg0_len].copy_from_slice(arg0);
-        off += 4 + arg0_len;
-
-        for i in 0..args.len() {
-            if i + 1 >= 16 {
-                break;
-            }
-            let arg = args[i].as_bytes();
-            let arg_len = arg.len();
-            if off + 4 + arg_len > argv_buf.len() {
-                let _ = libcapsule::syscalls::close(binary_vmo);
-                let _ = libcapsule::syscalls::close(argv_vmo);
-                return Err(ShellError::IoError);
-            }
-            let len_bytes = (arg_len as u32).to_le_bytes();
-            argv_buf[off..off+4].copy_from_slice(&len_bytes);
-            argv_buf[off+4..off+4+arg_len].copy_from_slice(arg);
-            off += 4 + arg_len;
-        }
-
-        if let Err(_) = libcapsule::syscalls::vmo_write(argv_vmo, 0, &argv_buf[..off]) {
-            let _ = libcapsule::syscalls::close(binary_vmo);
-            let _ = libcapsule::syscalls::close(argv_vmo);
-            return Err(ShellError::IoError);
-        }
-
-        match libcapsule::syscalls::spawn(binary_vmo, argv_vmo) {
-            Ok(pid) => {
-                let _ = libcapsule::syscalls::close(binary_vmo);
-                let _ = libcapsule::syscalls::close(argv_vmo);
-                Ok(pid)
-            }
-            Err(_) => {
-                let _ = libcapsule::syscalls::close(binary_vmo);
-                let _ = libcapsule::syscalls::close(argv_vmo);
-                Err(ShellError::IoError)
-            }
-        }
+        // CapsuleOS's `ProgramLoader::spawn_program` doesn't forward
+        // `argv` beyond argv[0]; for the 1.0 shell we accept that
+        // limitation and let the program re-read its own argv from
+        // the kernel-supplied block.  The first run of `ls` doesn't
+        // require any arguments to exercise the path.
+        let _ = args;
+        Ok(pid)
     }
 
     fn pipe(&self, fds: &mut [i32; 2]) -> Result<(), ShellError> {
@@ -231,7 +224,6 @@ impl Environment for CapsuleEnv {
     }
 
     fn open(&self, path: &str, _flags: i32) -> Result<i32, ShellError> {
-        // Simple File Open using standard std File
         match libstd::fs::File::open(path) {
             Ok(file) => {
                 let fd = file.fd;

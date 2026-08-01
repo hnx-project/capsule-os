@@ -39,15 +39,18 @@ impl Readline {
     /// Read one edited line from stdin.  Returns `Ok(n)` where `n`
     /// is the number of valid bytes in the internal buffer.  `n == 0`
     /// means EOF or Ctrl+C.
-    pub fn read_line<E: Environment>(&mut self, env: &E) -> Result<usize, ()> {
+    ///
+    /// The prompt is *not* emitted here — the caller is responsible
+    /// for printing `osh$ ` (or any REPL banner) so empty lines
+    /// don't cascade a fresh prompt on top of the previous one.
+    pub fn read_line<E: Environment>(&mut self, _env: &E) -> Result<usize, ()> {
         self.len = 0;
         self.history_pos = self.history_count;
         self.buf = [0u8; BUF_SIZE];
-        env.write_stdout(b"osh$ ");
 
         loop {
             let mut byte = [0u8; 1];
-            match env.read(0, &mut byte) {
+            match _env.read(0, &mut byte) {
                 Ok(1) => {}
                 _ => continue,
             }
@@ -55,14 +58,14 @@ impl Readline {
 
             match c {
                 b'\r' | b'\n' => {
-                    env.write_stdout(b"\r\n");
+                    _env.write_stdout(b"\r\n");
                     if self.len > 0 {
                         self.push_history();
                     }
                     return Ok(self.len);
                 }
                 0x03 => {
-                    env.write_stdout(b"^C\r\n");
+                    _env.write_stdout(b"^C\r\n");
                     self.len = 0;
                     return Ok(0);
                 }
@@ -78,10 +81,10 @@ impl Readline {
                 }
                 b'\x1b' => {
                     let mut seq = [0u8; 2];
-                    if env.read(0, &mut seq).is_ok() && seq[0] == b'[' {
+                    if _env.read(0, &mut seq).is_ok() && seq[0] == b'[' {
                         match seq[1] {
-                            b'A' => self.history_up(env),
-                            b'B' => self.history_down(env),
+                            b'A' => self.history_up(_env),
+                            b'B' => self.history_down(_env),
                             _ => {}
                         }
                     }
@@ -112,8 +115,9 @@ impl Readline {
         off += 5;
         out[off..off + self.len].copy_from_slice(&self.buf[..self.len]);
         off += self.len;
-        out[off..off + 4].copy_from_slice(b"\x1b[K");
-        off += 4;
+        // \x1b[K is 3 bytes (ESC, '[', 'K').
+        out[off..off + 3].copy_from_slice(b"\x1b[K");
+        off += 3;
         env.write_stdout(&out[..off]);
     }
 
