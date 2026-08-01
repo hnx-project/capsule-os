@@ -5,6 +5,7 @@ extern crate libcapsule;
 
 use libcapsule::{kprint, log_info, log_error, syscalls};
 use shared::status::Status;
+use shared::syscall_nums::SYSCALL_LOGBUF_SET_PHASE;
 
 /// TTY service protocol command codes.
 const TTY_CMD_READ: u8 = 1;
@@ -33,7 +34,16 @@ pub fn main() -> i32 {
         return -2;
     }
     log_info!("TTY", "[SUCCESS] registered service as 'svc.tty'");
+
+    // Signal servicesd that we're alive, then promote the kernel boot
+    // phase so the kernel stops spamming the UART with INFO records.
+    // Severe (WARN/ERROR) records still pierce the gate after this
+    // point.  We deliberately do NOT replay the ring buffer here —
+    // replay would monopolise a single-hart QEMU build and starve the
+    // downstream services that are still finishing their `notify_init`
+    // handshake.  Users can run `dmesg` post-boot to inspect history.
     let _ = libcapsule::notify_init("tty");
+    promote_to_phase_two();
 
     let mut conn_buf = [0u8; 64];
     let mut conn_handles = [0u32; 2];
@@ -149,4 +159,28 @@ pub fn main() -> i32 {
             }
         }
     }
+}
+
+// ----------------------------------------------------------------------------
+// dmesg integration
+// ----------------------------------------------------------------------------
+
+/// Promote the kernel boot phase to "userspace ready".  After this
+/// point only WARN/ERROR records reach the UART.
+///
+/// Boot-log replay is intentionally *not* implemented here: replaying
+/// the entire ring buffer would monopolise a single-hart QEMU build
+/// and starve the downstream services that are still finishing their
+/// `notify_init` handshake.  `dmesg` is the supported way to inspect
+/// the historical boot log post-boot.
+fn promote_to_phase_two() {
+    let _ = libcapsule::syscall!(
+        SYSCALL_LOGBUF_SET_PHASE,
+        2, // BOOT_PHASE_USERS_READY
+        0,
+        0,
+        0,
+        0,
+        0
+    );
 }

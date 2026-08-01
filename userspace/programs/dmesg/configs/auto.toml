@@ -1,0 +1,4 @@
+name = "dmesg"
+path = "dmesg"
+dependencies = ["tty"]
+is_program = true

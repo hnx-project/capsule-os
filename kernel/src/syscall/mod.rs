@@ -260,6 +260,23 @@ pub fn syscall_dispatch(
         };
     }
 
+    // 3h. S8: kernel ring buffer (dmesg equivalent).
+    if syscall_num == shared::syscall_nums::SYSCALL_LOGBUF_TAIL {
+        return handlers::logbuf::sys_logbuf_tail(arg0, arg1);
+    }
+    if syscall_num == shared::syscall_nums::SYSCALL_LOGBUF_READ {
+        return handlers::logbuf::sys_logbuf_read(arg0, arg1, arg2);
+    }
+    if syscall_num == shared::syscall_nums::SYSCALL_LOGBUF_SET_PHASE {
+        return handlers::logbuf::sys_logbuf_set_phase(arg0);
+    }
+    if syscall_num == shared::syscall_nums::SYSCALL_LOGBUF_SET_LEVEL {
+        return handlers::logbuf::sys_logbuf_set_level(arg0);
+    }
+    if syscall_num == shared::syscall_nums::SYSCALL_LOG_EMIT {
+        return handlers::logbuf::sys_log_emit(arg0, arg1, arg2, arg3, arg4);
+    }
+
     // 4. 均未匹配，返回不受支持
     Status::NotAllowed.to_raw()
 }

@@ -5,6 +5,7 @@ pub mod vfs;
 pub mod device;
 pub mod mmio;
 pub mod tty;
+pub mod logbuf;
 
 use shared::status::Status;
 

@@ -63,12 +63,6 @@ static SERVICES: &[ServiceDef] = &[
         dependencies: &["devmgr", "procmgr"],
         is_program: false,
     },
-    ServiceDef {
-        name: "testall",
-        path: "testall",
-        dependencies: &["fileagent", "tty", "netd"],
-        is_program: true,
-    },
 ];
 
 #[no_mangle]

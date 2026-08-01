@@ -378,7 +378,7 @@ pub const SYSCALL_PTY_READ: u32 = 158;
 /// One past the last valid syscall number.  Any `syscall_num >= SYSCALL_NR`
 /// is reserved by the ABI for future extensions and must not be accepted by the
 /// dispatcher — see `kernel/src/syscall/mod.rs`.
-pub const SYSCALL_NR: u32 = 168;
+pub const SYSCALL_NR: u32 = 175;
 
 // -------------------------------------------------------------------------
 // virtio-mmio bus primitives (microkernel principle: only the bus lives in
@@ -405,3 +405,49 @@ pub const SYSCALL_VIRTIO_KICK: u32 = 166;
 
 /// Read ISR (offset 0x060) for `slot` and acknowledge queue interrupts.
 pub const SYSCALL_VIRTIO_READ_ISR: u32 = 167;
+
+// -------------------------------------------------------------------------
+// S8: Kernel ring buffer (dmesg equivalent)
+//
+// These four syscalls expose the kernel's `kcore::logbuf` to EL0.  They
+// form the user-facing half of the dmesg subsystem:
+//
+//   SYS_LOGBUF_TAIL      → returns the next seq the kernel would assign
+//                           (one past the last record).  Callers save this
+//                           to detect "no new messages since last call".
+//   SYS_LOGBUF_READ       → drain records newer than `since_seq` into a
+//                           user buffer.  Returns the next seq touched +
+//                           the byte count actually written.
+//   SYS_LOGBUF_SET_PHASE  → promote the boot phase (called by svc.tty).
+//                           Phase 2 silences non-severe kernel logs.
+//   SYS_LOGBUF_SET_LEVEL  → runtime equivalent of `loglevel=` cmdline.
+//
+// ABI: arg0/arg1/arg2 are user-VAs translated by the caller's L0 page
+// table; see `safe_copy_from/to_user` in `handlers/ipc.rs`.
+// -------------------------------------------------------------------------
+
+/// Returns the next-to-be-assigned log sequence number.  Zero means
+/// the ring buffer is empty.
+pub const SYSCALL_LOGBUF_TAIL: u32 = 170;
+
+/// Drain records with `seq > since_seq` into the user buffer at `buf_ptr`.
+/// `buf_len` caps the read.  Returns `(next_seq << 32) | bytes_written`.
+pub const SYSCALL_LOGBUF_READ: u32 = 171;
+
+/// Set the kernel boot phase.  Used by `svc.tty` to silence non-severe
+/// logs once it owns the console.
+pub const SYSCALL_LOGBUF_SET_PHASE: u32 = 172;
+
+/// Runtime knob for the console verbosity gate (matches Linux's
+/// `kmsg` write to `/proc/sys/kernel/printk`).
+pub const SYSCALL_LOGBUF_SET_LEVEL: u32 = 173;
+
+/// Forward an EL0 log line into the kernel ring buffer.  The kernel
+/// decides whether the line also reaches the console based on the
+/// current boot phase + log level (mirrors Linux's `printk` from
+/// usermode via `/dev/kmsg`).
+///
+/// ABI: `arg0` = level (0=ERROR .. 3=DEBUG), `arg1` = target string
+/// user VA, `arg2` = target length, `arg3` = message string user VA,
+/// `arg4` = message length.  Returns 0 on success or a `Status`.
+pub const SYSCALL_LOG_EMIT: u32 = 174;

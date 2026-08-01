@@ -13,6 +13,12 @@ pub(crate) static END_FREE_PAGE: AtomicUsize = AtomicUsize::new(0);
 static FREE_PAGES_COUNT: AtomicUsize = AtomicUsize::new(0);
 static TOTAL_PAGES_COUNT: AtomicUsize = AtomicUsize::new(0);
 static MMU_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Latches the "PT tracker is full" warning so we only print it once
+/// instead of spamming one line per out-of-budget page.  The first
+/// failure goes to the console + ring buffer; subsequent ones are
+/// dropped (the ring buffer still gets the ring counter via the
+/// tracker `count` field below).
+static TRACKER_FULL_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Dynamic WATCH physical address.  Set during PID 1's FINAL-CANARY
 /// to the actual L3 page PA for that boot.  All WATCH statements that
@@ -44,7 +50,11 @@ pub fn register_pt_page(pa: usize) {
         }
     }
     // No room — not fatal, just means we can't track all PT pages.
-    crate::log_warn!("PHYS", "register_pt_page: tracker full (pa={:#x})", pa);
+    // Print once and latch so we don't spam one WARN per page when the
+    // PT tracker overflows (typical for QEMU's tight 256MiB RAM).
+    if !TRACKER_FULL_WARNED.swap(true, Ordering::Relaxed) {
+        crate::log_warn!("PHYS", "register_pt_page: tracker full; further warnings suppressed");
+    }
 }
 
 pub fn unregister_pt_page(pa: usize) {

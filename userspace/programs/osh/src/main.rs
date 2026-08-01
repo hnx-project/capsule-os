@@ -29,7 +29,15 @@ fn main() {
 #[cfg(not(feature = "host"))]
 #[no_mangle]
 pub fn main() -> i32 {
+    // Boot cleanup: clear the screen so the kernel boot log
+    // (replayed by svc.tty via dmesg) gives way to the shell
+    // prompt.  This is what every commercial OS does at init time
+    // (Linux `getty` issues a screen clear, systemd sets a quiet
+    // plymouth splash, FreeBSD's `cons25` driver clears on login).
+    libstd::io::print("\x1b[2J\x1b[H");
     print_argv_summary();
+    libstd::io::print("CapsuleOS Pangu v1.0.0  --  osh shell\n");
+    libstd::io::print("Type 'help' for built-ins, 'dmesg' to read the kernel ring buffer.\n\n");
     let env = env::capsule::CapsuleEnv;
     shell::run_shell(&env);
     0

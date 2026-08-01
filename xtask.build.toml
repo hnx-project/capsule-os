@@ -77,7 +77,8 @@ crates = [
     { crate_name = "hnx-rmdir", out_name = "rmdir", entry = "65536" },
     { crate_name = "hnx-ps", out_name = "ps", entry = "65536" },
     { crate_name = "hnx-kill", out_name = "kill", entry = "65536" },
-    { crate_name = "hnx-testall", out_name = "testall", entry = "65536", config_path = "userspace/programs/testall/configs" }
+    { crate_name = "hnx-testall", out_name = "testall", entry = "65536", config_path = "userspace/programs/testall/configs" },
+    { crate_name = "hnx-dmesg", out_name = "dmesg", entry = "65536", config_path = "userspace/programs/dmesg/configs" }
 ]
 staging_bin_dir = "build/dist/staging_rootfs/system/bin"
 rootfs_output   = "kernel/files/rootfs.img"

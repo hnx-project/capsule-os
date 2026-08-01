@@ -40,6 +40,7 @@ members = [
     "userspace/programs/ps",
     "userspace/programs/kill",
     "userspace/programs/testall",
+    "userspace/programs/dmesg",
     # testloader — 调试期间专用
     # "userspace/programs/testloader",
 ]

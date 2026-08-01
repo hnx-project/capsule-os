@@ -1,0 +1,17 @@
+[package]
+name = "hnx-dmesg"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = ["host"]
+host = []
+capsule = []
+
+[[bin]]
+name = "dmesg"
+path = "src/main.rs"
+
+[dependencies]
+libc = { workspace = true }
+libcapsule = { path = "../../../libraries/libcapsule", package = "libcapsule" }
