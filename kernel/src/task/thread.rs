@@ -52,6 +52,11 @@ pub struct Thread {
     pub ipc_transfer_slots: [Option<(crate::object::handle_table::KernelObject, u32)>; 2],
     pub port_packet_slot: Option<crate::ipc::port::PortPacket>,
     pub sleep_until: Option<u64>,
+    /// When the thread is in `Blocked` waiting for a child process
+    /// to exit, this records the pid filter passed to `wait4`.
+    /// `0` means "any direct child".  Used by the process
+    /// reaper to figure out which threads to wake on exit.
+    pub wait_child_pid: i64,
 
     /// SMP-only: physical CPU slot that currently owns this thread.
     /// `None` when the thread is free to be scheduled; `Some(c)`
@@ -176,6 +181,7 @@ impl Thread {
             ipc_transfer_slots: [None, None],
             port_packet_slot: None,
             sleep_until: None,
+            wait_child_pid: 0,
             owner_core: None,
         })
     }
@@ -211,6 +217,7 @@ impl Thread {
             ipc_transfer_slots: [None, None],
             port_packet_slot: None,
             sleep_until: None,
+            wait_child_pid: 0,
             owner_core: None,
         })
     }
@@ -246,6 +253,7 @@ impl Thread {
             ipc_transfer_slots: [None, None],
             port_packet_slot: None,
             sleep_until: None,
+            wait_child_pid: 0,
             owner_core: None,
         })
     }
@@ -281,6 +289,7 @@ impl Thread {
             ipc_transfer_slots: [None, None],
             port_packet_slot: None,
             sleep_until: None,
+            wait_child_pid: 0,
             owner_core: None,
         })
     }

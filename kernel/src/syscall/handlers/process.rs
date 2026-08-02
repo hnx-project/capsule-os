@@ -1282,90 +1282,120 @@ pub fn sys_wait4(
         return Err(Status::InvalidArgs);
     }
 
-    // Walk the process table for a direct child of the caller that
-    // matches the requested pid filter.  The walk is O(N) but N is
-    // bounded at MAX_PROCESSES = 8.
-    let mut found_reap_target: Option<(usize, u64, i32)> = None;
-    let mut found_running: Option<u64> = None;
-    for (slot_idx, slot) in unsafe { &mut crate::task::process::PROCESSES }
-        .iter()
-        .enumerate()
-    {
-        let proc = match slot.as_ref() {
-            Some(p) => p,
-            None => continue,
-        };
-        if proc.parent_pid != caller_pid {
+    // Loop: the caller may be re-scheduled multiple times before
+    // one of their children lands in Zombie.  We block on each
+    // iteration and let the kernel's exit reaper (see
+    // `mark_process_zombie`) wake us up.
+    loop {
+        // Walk the process table for a direct child of the caller
+        // that matches the requested pid filter.
+        let mut found_reap_target: Option<(usize, u64, i32)> = None;
+        let mut found_running: Option<u64> = None;
+        for (slot_idx, slot) in unsafe { &mut crate::task::process::PROCESSES }
+            .iter()
+            .enumerate()
+        {
+            let proc = match slot.as_ref() {
+                Some(p) => p,
+                None => continue,
+            };
+            if proc.parent_pid != caller_pid {
+                continue;
+            }
+            match pid {
+                p if p > 0 => {
+                    if proc.id != p as u64 {
+                        continue;
+                    }
+                }
+                _ => {} // pid = 0 or -1: any direct child
+            }
+            if proc.exit_status.is_some()
+                && proc.state == crate::task::process::ProcessState::Zombie
+            {
+                found_reap_target =
+                    Some((slot_idx, proc.id, proc.exit_status.unwrap_or(0)));
+                break;
+            } else {
+                found_running = Some(proc.id);
+            }
+        }
+
+        if let Some((slot_idx, reaped_pid, code)) = found_reap_target {
+            // Reap: clear exit_status, mark Dead, free the slot
+            // index to be re-allocated.
+            if status_out_ptr != 0 {
+                let code_bytes = (code as i32).to_le_bytes();
+                crate::syscall::handlers::ipc::safe_copy_to_user(
+                    match crate::task::process::find_process_mut(caller_pid) {
+                        Some(p) => p.page_table.l0_pa(),
+                        None => 0,
+                    },
+                    &code_bytes,
+                    status_out_ptr,
+                    core::mem::size_of::<i32>(),
+                )
+                .ok();
+            }
+            let mut reaped_process = None;
+            unsafe {
+                reaped_process = crate::task::process::PROCESSES[slot_idx].take();
+            }
+            if let Some(mut p) = reaped_process {
+                p.state = crate::task::process::ProcessState::Dead;
+                p.exit_status = None;
+                p.thread_count = 0;
+            }
+            let _ = reaped_process;
+            return Ok(reaped_pid);
+        }
+
+        if let Some(running_pid) = found_running {
+            if wnohang {
+                // POSIX: return 0 (no child exited yet) without
+                // blocking.
+                return Ok(0);
+            }
+
+            // Block on this child.  We record the pid filter on
+            // the thread and add the thread id to the child's
+            // exit_waiters list; `mark_process_zombie` wakes us
+            // up by calling `wake_thread` on every waiter.  We
+            // hold the scheduler lock while we mutate the child's
+            // waiters list so the waiters can't disappear in the
+            // middle of an exit-driven wake.
+            let caller_tid = {
+                let thread_ptr = unsafe {
+                    crate::task::scheduler::SCHEDULER.get_current_thread_ptr()
+                };
+                match thread_ptr {
+                    Some(p) => unsafe { (*p).id },
+                    None => return Err(Status::NotFound),
+                }
+            };
+            let sched_flags = unsafe { crate::task::scheduler::SCHEDULER.lock() };
+            unsafe {
+                if let Some(child_proc) =
+                    crate::task::process::find_process_mut(running_pid)
+                {
+                    if !child_proc.exit_waiters.contains(&(caller_tid as u64)) {
+                        let _ = child_proc.exit_waiters.push(caller_tid as u64);
+                    }
+                }
+                if let Some(tp) = crate::task::scheduler::SCHEDULER.get_current_thread_ptr() {
+                    let t = &mut *tp;
+                    t.state = crate::task::thread::ThreadState::Blocked;
+                    t.wait_child_pid = pid;
+                }
+                crate::task::scheduler::SCHEDULER.schedule();
+            }
+            unsafe { crate::task::scheduler::SCHEDULER.unlock(sched_flags); }
+            // Loop and re-check — `mark_process_zombie` will have
+            // woken us when the child actually exits.
             continue;
         }
-        match pid {
-            p if p > 0 => {
-                if proc.id != p as u64 {
-                    continue;
-                }
-            }
-            _ => {} // pid = 0 or -1: any direct child
-        }
-        if proc.exit_status.is_some()
-            && proc.state == crate::task::process::ProcessState::Zombie
-        {
-            found_reap_target = Some((slot_idx, proc.id, proc.exit_status.unwrap_or(0)));
-            break;
-        } else {
-            // Track an alive direct child so we can tell the caller
-            // "your child X is still alive" if no zombie is ready.
-            found_running = Some(proc.id);
-        }
+        return Err(Status::NotFound);
     }
-
-    if let Some((slot_idx, reaped_pid, code)) = found_reap_target {
-        // Reap: clear exit_status, mark Dead, free the slot
-        // index to be re-allocated.  We do NOT immediately free
-        // the slot (`Some(Process::new)` placement); the slot
-        // index is set to None so MAX_PROCESSES can grow back.
-        if status_out_ptr != 0 {
-            // Translate through caller's L0 (still the calling
-            // thread's per-process page table; this function runs
-            // in SVC handler context with the caller's TTBR0
-            // live).  safe_copy_to_user handles null/length
-            // checks internally.
-            let code_bytes = (code as i32).to_le_bytes();
-            crate::syscall::handlers::ipc::safe_copy_to_user(
-                match crate::task::process::find_process_mut(caller_pid) {
-                    Some(p) => p.page_table.l0_pa(),
-                    None => 0,
-                },
-                &code_bytes,
-                status_out_ptr,
-                core::mem::size_of::<i32>(),
-            )
-            .ok();
-        }
-        let mut reaped_process = None;
-        unsafe {
-            reaped_process = crate::task::process::PROCESSES[slot_idx].take();
-        }
-        if let Some(mut p) = reaped_process {
-            p.state = crate::task::process::ProcessState::Dead;
-            p.exit_status = None;
-            p.thread_count = 0;
-        }
-        let _ = reaped_process; // Drop the reaped Process, triggering Process::drop()
-        return Ok(reaped_pid);
-    }
-
-    if let Some(running_pid) = found_running {
-        if wnohang {
-            // POSIX: return 0 (no child exited yet) without blocking.
-            // We don't have a real block-on-zombie primitive; the
-            // next opportunity to reap will be the caller's next
-            // `wait4()` invocation.  This matches the busy-poll
-            // flavour every other use site already exhibits.
-            return Ok(0);
-        }
-        return Err(Status::TryAgain);
-    }
-    Err(Status::NotFound)
 }
 
 // -------------------------------------------------------------------------
@@ -1774,6 +1804,23 @@ fn mark_process_zombie(pid: u64, exit_code: i32) {
         proc.state = crate::task::process::ProcessState::Zombie;
     }
 
+    // Wake every thread that was blocked in `sys_wait4` waiting
+    // for this child to exit.  POSIX says any thread waiting in
+    // wait4 (not just the parent) should be woken when a child
+    // dies; in 1.0 we just match pid exactly.  The kernel's
+    // scheduler picks them up on the next interrupt / schedule.
+    let waiters: heapless::Vec<u64, 8> = if let Some(proc) = crate::task::process::find_process_mut(pid) {
+        proc.exit_waiters.clone()
+    } else {
+        heapless::Vec::new()
+    };
+    for waiter_id in waiters.iter() {
+        unsafe { crate::task::scheduler::SCHEDULER.wake_thread(*waiter_id as usize); }
+    }
+    if let Some(proc) = crate::task::process::find_process_mut(pid) {
+        proc.exit_waiters.clear();
+    }
+
     // S5: dispatch SIGCHLD to the parent so a shell that has
     // installed a handler (or uses `wait4`) sees the death.  We
     // skip the dispatch if the parent has explicitly set
@@ -1965,6 +2012,7 @@ pub fn sys_fork() -> Result<u64> {
         ipc_transfer_slots: [None, None],
         port_packet_slot: None,
         sleep_until: None,
+        wait_child_pid: 0,
         owner_core: None,
     };
 

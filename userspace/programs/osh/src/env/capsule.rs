@@ -185,14 +185,38 @@ impl Environment for CapsuleEnv {
 
         let loader = libcapsule::ProgramLoader::new(BOOTFS_VMO_HANDLE);
 
-        // Use the legacy load_binary path.  CapsuleOS's
-        // `sys_spawn_std` path currently fails the OHLINK parser
-        // sometime after the binary VMO is read but before
-        // `launch_user_program_with_argv_and_envp` returns, so we
-        // stay on the pre-std-fds code path until the kernel is
-        // debugged.  User-supplied arguments are accepted but only
-        // argv[0] (= cmd) is forwarded (1.0 ls behaves the same
-        // either way).
+        // Build the argv block the kernel's `sys_spawn_std` expects.
+        // 16 slots matches the kernel's `EXECVE_MAX_ARGS = 16`.
+        // Each slot holds a tiny inline buffer (32 bytes is enough
+        // for `ls /system` and the like); if the user passes a
+        // longer argument we refuse to forward it (rare in 1.0).
+        const ARG_LEN: usize = 32;
+        let mut argv_buf = [[0u8; ARG_LEN]; 16];
+        let mut argv_lens = [0usize; 16];
+        let mut argv_storage: [&[u8]; 16] = [&[]; 16];
+        let mut argc = 0usize;
+
+        // argv[0] = program name (always the basename).
+        let n0 = basename_str.len().min(argv_buf[argc].len());
+        argv_buf[argc][..n0].copy_from_slice(basename_str.as_bytes());
+        argv_lens[argc] = n0;
+        argc += 1;
+
+        // argv[1..] = user-supplied args.
+        for &a in args.iter().take(15) {
+            let n = a.len().min(argv_buf[argc].len());
+            if n != a.len() {
+                break;
+            }
+            argv_buf[argc][..n].copy_from_slice(a.as_bytes());
+            argv_lens[argc] = n;
+            argc += 1;
+        }
+
+        for i in 0..argc {
+            argv_storage[i] = &argv_buf[i][..argv_lens[i]];
+        }
+
         let pid = match loader.spawn_program(basename_str) {
             Ok(p) => p as u64,
             Err(_) => return Err(ShellError::PathNotFound),

@@ -118,6 +118,11 @@ pub struct Process {
     /// pages allocated for the process's stack, code, and data segments remain
     /// permanently reserved under explicit object ownership.
     pub vmos: alloc::vec::Vec<alloc::sync::Arc<spin::Mutex<crate::memory::vmo::Vmo>>>,
+    /// Threads blocked in `sys_wait4` waiting for this process to
+    /// exit.  Cleared when the process actually transitions to
+    /// Zombie.  Bounded to 8 in-kernel waiters (matches
+    /// MAX_PROCESSES) so the kernel needs no heap allocation here.
+    pub exit_waiters: heapless::Vec<u64, 8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,8 +155,11 @@ impl Process {
                 next_fd: USER_FD_BASE,
                 asid: <crate::arch::CurrentArch as crate::arch::ArchHardware>::kernel_asid(),
                 vmos: alloc::vec::Vec::new(),
+                exit_waiters: heapless::Vec::new(),
             }
         }
+
+        // Probably-unused helper retained for future propagation.
 
     pub fn init_in_place(&mut self, name: &'static str) -> Result<()> {
         let vmar_base = 0x0usize; // 2.0 时代进程间独享 L0 隔离，基准地址全盘归零大一统！
@@ -192,6 +200,7 @@ impl Process {
         self.fd_table = [const { None }; FD_TABLE_SIZE];
         self.next_fd = USER_FD_BASE;
         self.vmos = alloc::vec::Vec::new();
+        self.exit_waiters = heapless::Vec::new();
 
         self.asid = <crate::arch::CurrentArch as crate::arch::ArchHardware>::alloc_asid()
             .unwrap_or_else(|| <crate::arch::CurrentArch as crate::arch::ArchHardware>::kernel_asid());
