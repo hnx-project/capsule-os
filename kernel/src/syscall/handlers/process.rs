@@ -1265,18 +1265,18 @@ const WUNTRACED: i32 = 2;
 ///
 /// On success returns the pid of the reaped child.  With `WNOHANG`
 /// and no zombie available, returns `Ok(0)` rather than blocking.
-pub fn sys_wait4(
-    table: &HandleTable,
-    pid: i64,
-    status_out_ptr: usize,
-    options: i32,
-) -> Result<u64> {
-    let _ = table;
-    let wnohang = (options & WNOHANG) != 0;
-    // WUNTRACED is accepted but ignored: no stopped children in 1.0.
-    let _ = options & WUNTRACED;
+    pub fn sys_wait4(
+        table: &HandleTable,
+        pid: i64,
+        status_out_ptr: usize,
+        options: i32,
+    ) -> Result<u64> {
+        let _ = table;
+        let wnohang = (options & WNOHANG) != 0;
+        // WUNTRACED is accepted but ignored: no stopped children in 1.0.
+        let _ = options & WUNTRACED;
 
-    let caller_pid = current_process_id()?;
+        let caller_pid = current_process_id()?;
 
     if pid < -1 {
         return Err(Status::InvalidArgs);
@@ -1324,6 +1324,11 @@ pub fn sys_wait4(
         if let Some((slot_idx, reaped_pid, code)) = found_reap_target {
             // Reap: clear exit_status, mark Dead, free the slot
             // index to be re-allocated.
+            crate::log_warn!(
+                "sys_wait4",
+                "REAPED: pid={} code={} caller={}",
+                reaped_pid, code, caller_pid
+            );
             if status_out_ptr != 0 {
                 let code_bytes = (code as i32).to_le_bytes();
                 crate::syscall::handlers::ipc::safe_copy_to_user(
@@ -1364,6 +1369,11 @@ pub fn sys_wait4(
             // hold the scheduler lock while we mutate the child's
             // waiters list so the waiters can't disappear in the
             // middle of an exit-driven wake.
+            crate::log_warn!(
+                "sys_wait4",
+                "BLOCK: pid={} caller={} running={:?}",
+                pid, caller_pid, found_running
+            );
             let caller_tid = {
                 let thread_ptr = unsafe {
                     crate::task::scheduler::SCHEDULER.get_current_thread_ptr()
@@ -1814,12 +1824,26 @@ fn mark_process_zombie(pid: u64, exit_code: i32) {
     } else {
         heapless::Vec::new()
     };
+    crate::log_warn!(
+        "mark_zombie",
+        "waking {} waiters for pid={}",
+        waiters.len(),
+        pid
+    );
     for waiter_id in waiters.iter() {
         unsafe { crate::task::scheduler::SCHEDULER.wake_thread(*waiter_id as usize); }
     }
     if let Some(proc) = crate::task::process::find_process_mut(pid) {
         proc.exit_waiters.clear();
     }
+
+    // The caller of `mark_process_zombie` is typically `sys_exit`
+    // (in the child thread) which immediately calls
+    // `SCHEDULER.schedule()` after us, so the freshly-RunReady
+    // parent runs in the same quantum as the child exit.  An
+    // explicit `schedule()` here is therefore redundant for the
+    // child-exit path; for the signal-driven exit path it would
+    // matter but that path isn't wired up in 1.0.
 
     // S5: dispatch SIGCHLD to the parent so a shell that has
     // installed a handler (or uses `wait4`) sees the death.  We
