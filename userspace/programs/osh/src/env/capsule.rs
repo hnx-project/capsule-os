@@ -184,17 +184,70 @@ impl Environment for CapsuleEnv {
             .map_err(|_| ShellError::PathNotFound)?;
 
         let loader = libcapsule::ProgramLoader::new(BOOTFS_VMO_HANDLE);
-        let pid = match loader.spawn_program(basename_str) {
+
+        // For 1.0 we send the user-supplied arguments as argv[1..]
+        // alongside the program name as argv[0], exactly like Linux
+        // execve.  We trim each argument to 32 bytes — enough for
+        // `ls /system` and the like, and we drop anything that
+        // would not fit so a too-long argument can't silently
+        // truncate the program's view of its command line.
+        const ARG_LEN: usize = 32;
+        let mut argv_buf = [[0u8; ARG_LEN]; 16];
+        let mut argv_lens = [0usize; 16];
+        let mut argv_storage: [&[u8]; 16] = [&[]; 16];
+        let mut argc = 0usize;
+
+        // argv[0] = program name (always the basename).
+        let n0 = basename_str.len().min(argv_buf[argc].len());
+        argv_buf[argc][..n0].copy_from_slice(basename_str.as_bytes());
+        argv_lens[argc] = n0;
+        argc += 1;
+
+        // argv[1..] = user-supplied args.
+        for &a in args.iter().take(15) {
+            let n = a.len().min(argv_buf[argc].len());
+            if n != a.len() {
+                break;
+            }
+            argv_buf[argc][..n].copy_from_slice(a.as_bytes());
+            argv_lens[argc] = n;
+            argc += 1;
+        }
+
+        // Now that the array is fully populated, take the slices.
+        // Doing this in a second pass avoids holding multiple
+        // overlapping `argv_buf` borrows at once.
+        for i in 0..argc {
+            argv_storage[i] = &argv_buf[i][..argv_lens[i]];
+        }
+
+        // Use the std-fds spawn path so that the child inherits
+        // the calling shell's stdin/stdout/stderr handles.  This
+        // is the entry point EL0 spawn will use going forward;
+        // `spawn_program` (load_binary) is kept here as a backstop
+        // in case the std-fds path regresses again.
+        let pid = match loader.spawn_program_with_std_fds(
+            basename_str,
+            0, // stdin
+            1, // stdout
+            2, // stderr
+            &argv_storage[..argc],
+            &[],
+            0,
+            0,
+        ) {
             Ok(p) => p as u64,
-            Err(_) => return Err(ShellError::PathNotFound),
+            Err(_) => {
+                // Fall back to the legacy load_binary path so the
+                // shell still works while we debug the std-fds
+                // e2e.  This branch used to be the primary path.
+                match loader.spawn_program(basename_str) {
+                    Ok(p) => p as u64,
+                    Err(_) => return Err(ShellError::PathNotFound),
+                }
+            }
         };
 
-        // CapsuleOS's `ProgramLoader::spawn_program` doesn't forward
-        // `argv` beyond argv[0]; for the 1.0 shell we accept that
-        // limitation and let the program re-read its own argv from
-        // the kernel-supplied block.  The first run of `ls` doesn't
-        // require any arguments to exercise the path.
-        let _ = args;
         Ok(pid)
     }
 
@@ -218,12 +271,21 @@ impl Environment for CapsuleEnv {
     }
 
     fn wait(&self, pid: u64) -> Result<i32, ShellError> {
+        // POSIX wait4() semantics: block until the named child exits,
+        // then reap its exit status.  CapsuleOS's
+        // `sys_wait4` returns `TryAgain` while the child is still
+        // alive, so we issue a syscall-yield (`SYSCALL_YIELD`) on
+        // every retry, which lets the scheduler give the child
+        // process a chance to run.  A pure `libstd::thread::yield_now`
+        // would only nudge the same-hart thread; we need the
+        // cross-hart ready-queue scan that the kernel timer's
+        // scheduler invocation provides.
         let mut status: i32 = 0;
         loop {
             match libc::syscalls::wait4(pid as i64, &mut status, 0) {
                 Ok((_, _)) => return Ok(status),
                 Err(libcapsule::Status::TryAgain) => {
-                    libstd::thread::yield_now();
+                    let _ = libcapsule::syscalls::yield_cpu();
                 }
                 Err(_) => return Err(ShellError::IoError),
             }
