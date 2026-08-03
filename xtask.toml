@@ -32,9 +32,9 @@ upstream_repo = "capsule-os"
 
 [toolchain]
 bootstrap = [
-    { name = "ohlink-toolchain", path = "tools/ohlink-toolchain/Cargo.toml", release = true }
+    { name = "toolchain", path = "tools/toolchain/Cargo.toml", release = true }
 ]
-linker = { path = "tools/ohlink-toolchain/Cargo.toml", package = "ohlink-linker" }
+linker = { path = "tools/toolchain/Cargo.toml", package = "ohlink-linker" }
 
 [distribution]
 output_dir = "build/dist/distribution"

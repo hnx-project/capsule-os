@@ -18,7 +18,7 @@ pub fn clean() -> Result<(), String> {
     let mut dist_dir = "build/dist".to_string();
     let mut cache_dir = "build/cache".to_string();
     let mut rootfs_dir = "kernel/files".to_string();
-    let mut toolchain_target = "tools/ohlink-toolchain/target".to_string();
+    let mut toolchain_target = "tools/toolchain/target".to_string();
 
     if let Ok(resolved) = Resolved::load("virt", None) {
         dist_dir = resolved.root.project.dist_dir().to_string();
@@ -32,8 +32,8 @@ pub fn clean() -> Result<(), String> {
                 }
             }
 
-        // Dynamically find ohlink-toolchain bootstrap target directory
-        if let Some(item) = resolved.root.toolchain.bootstrap.iter().find(|i| i.name == "ohlink-toolchain") {
+        // Dynamically find toolchain bootstrap target directory
+        if let Some(item) = resolved.root.toolchain.bootstrap.iter().find(|i| i.name == "toolchain") {
             if let Some(parent) = std::path::Path::new(&item.path).parent().and_then(|p| p.parent()) {
                 toolchain_target = parent.join("target").to_string_lossy().to_string();
             }

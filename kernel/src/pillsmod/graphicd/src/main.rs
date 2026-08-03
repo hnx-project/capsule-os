@@ -210,7 +210,7 @@ pub fn main() -> i32 {
 
     if gpu_base == 0 {
         log_warn!("GPUD", "No physical Virtio-GPU device found. Exiting gracefully to satisfy DAG dependencies.");
-        let _ = libcapsule::notify_init("gpud");
+        let _ = libcapsule::notify_init("graphicd");
         loop {
             let _ = syscalls::yield_cpu();
         }
@@ -402,7 +402,7 @@ pub fn main() -> i32 {
     }
     log_info!("GPUD", "Registered 'svc.gpu' on channel {}", server_chan);
 
-    let _ = libcapsule::notify_init("gpud");
+    let _ = libcapsule::notify_init("graphicd");
 
     let mut active_session = 0usize;
 

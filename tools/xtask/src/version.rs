@@ -117,7 +117,7 @@ pub fn check_version(sync: bool, config: &RootConfig) -> Result<(), String> {
     }
 
     for member in &members {
-        if member.starts_with("tools/ohlink-toolchain") {
+        if member.starts_with("tools/toolchain") {
             continue;
         }
         let member_cargo_path = Path::new(member).join("Cargo.toml");

@@ -1,4 +1,4 @@
-name = "gpud"
-path = "gpud"
+name = "graphicd"
+path = "graphicd"
 dependencies = ["devmgr", "procmgr"]
 is_program = false

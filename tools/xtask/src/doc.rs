@@ -95,15 +95,15 @@ pub fn generate_doc(open: bool, _config: &RootConfig) -> Result<(), String> {
     cmd_toolchain.args([
         "doc",
         "--manifest-path",
-        "tools/ohlink-toolchain/Cargo.toml",
+        "tools/toolchain/Cargo.toml",
         "--no-deps",
     ]);
 
     let status_toolchain = cmd_toolchain
         .status()
-        .map_err(|e| format!("Failed to run cargo doc for ohlink-toolchain: {}", e))?;
+        .map_err(|e| format!("Failed to run cargo doc for toolchain: {}", e))?;
     if !status_toolchain.success() {
-        return Err("Failed to generate ohlink-toolchain documentation".to_string());
+        return Err("Failed to generate toolchain documentation".to_string());
     }
 
     // 6. Gather and collect docs with multi-path fallback
@@ -137,7 +137,7 @@ pub fn generate_doc(open: bool, _config: &RootConfig) -> Result<(), String> {
     // Ohlink Toolchain collection
     find_and_copy_doc(
         &[
-            "tools/ohlink-toolchain/target/doc",
+            "tools/toolchain/target/doc",
             "build/target/doc",
             "target/doc",
         ],

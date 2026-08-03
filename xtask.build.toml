@@ -55,6 +55,17 @@ staging_bin_dir = "build/dist/loader_rootfs/system/bin"
 rootfs_output   = "kernel/files/loader.img"
 
 [[subprojects]]
+name    = "kernel-pills"
+type    = "pills"
+enable  = true
+crates = [
+    { crate_name = "hnx-inputd", out_name = "inputd", entry = "65536", config_path = "kernel/src/pillsmod/inputd/configs" },
+    { crate_name = "hnx-graphicd", out_name = "graphicd", entry = "65536", config_path = "kernel/src/pillsmod/graphicd/configs" },
+    { crate_name = "hnx-touchd", out_name = "touchd", entry = "65536", config_path = "kernel/src/pillsmod/touchd/configs" }
+]
+staging_bin_dir = "build/dist/staging_rootfs/system/lib/pills"
+
+[[subprojects]]
 name    = "userspace-apps"
 type    = "userspace"
 enable  = true
@@ -66,8 +77,6 @@ crates = [
     { crate_name = "hnx-tty", out_name = "tty", entry = "65536", config_path = "userspace/services/tty/configs" },
     { crate_name = "hnx-servicesd", out_name = "servicesd", entry = "65536" },
     { crate_name = "hnx-netd", out_name = "netd", entry = "65536", config_path = "userspace/services/netd/configs" },
-    { crate_name = "hnx-inputd", out_name = "inputd", entry = "65536" },
-    { crate_name = "hnx-gpud", out_name = "gpud", entry = "65536" },
     { crate_name = "hnx-osh", out_name = "osh", entry = "65536", config_path = "userspace/programs/osh/configs" },
     { crate_name = "hnx-ls", out_name = "ls", entry = "65536" },
     { crate_name = "hnx-cat", out_name = "cat", entry = "65536" },

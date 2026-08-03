@@ -191,6 +191,14 @@ pub fn build(resolved: &Resolved, plat: &Platform, generate_dist: bool) -> Resul
                     stage_etc_files(src_etc, dst_etc).map_err(|e| e.to_string())?;
                 }
             }
+            "pills" => {
+                if let Some(crates) = &sub.crates {
+                    for u_crate in crates {
+                        build_userspace_program(plat, u_crate, &v)?;
+                    }
+                }
+                pack_pill_bundles(&resolved.root, plat, sub)?;
+            }
             "kernel" => {
                 build_kernel(sub, plat, &v)?;
                 link_kernel(sub, plat)?;
@@ -411,6 +419,84 @@ fn pack_user_programs(config: &crate::config::RootConfig, plat: &Platform, sub: 
         println!("\r{}  Archiving{} {}... Done", BOLD_GREEN, RESET, rootfs_out);
     }
 
+    Ok(())
+}
+
+fn pack_pill_bundles(config: &crate::config::RootConfig, plat: &Platform, sub: &Subproject) -> Result<(), String> {
+    let staging_pills = sub
+        .staging_bin_dir
+        .as_ref()
+        .ok_or_else(|| "missing staging_bin_dir in pills config".to_string())?;
+    std::fs::create_dir_all(staging_pills).map_err(|e| e.to_string())?;
+
+    let crates = sub
+        .crates
+        .as_ref()
+        .ok_or_else(|| "missing crates in pills config".to_string())?;
+
+    let target_name = Path::new(&plat.userspace_target)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("aarch64-unknown-capsule");
+
+    for u_crate in crates {
+        print!("{}  Packing pill bundle{} {}...", BOLD_GREEN, RESET, u_crate.out_name);
+        
+        let pill_bundle_dir = format!("{}/{}.pill", staging_pills, u_crate.out_name);
+        std::fs::create_dir_all(&pill_bundle_dir).map_err(|e| e.to_string())?;
+
+        let elf = format!(
+            "{}/{}/release/{}",
+            config.project.target_dir,
+            target_name,
+            u_crate.crate_name.replace("hnx-", "")
+        );
+        let output = format!("{}/{}", pill_bundle_dir, u_crate.out_name);
+        let result = run_silent(
+            Command::new("cargo").args([
+                "run",
+                "--manifest-path",
+                &config.toolchain.linker.path,
+                "-p",
+                &config.toolchain.linker.package,
+                "--",
+                "--input",
+                &elf,
+                "--output",
+                &output,
+                "--entry",
+                &u_crate.entry,
+            ]),
+            || {
+                println!(
+                    "\r{}  Packing pill bundle{} {}... Done",
+                    BOLD_GREEN, RESET, u_crate.out_name
+                );
+            },
+        );
+        if !result.success {
+            return Err(format!("failed to pack {}", u_crate.out_name));
+        }
+
+        if let Some(cfg_path) = &u_crate.config_path {
+            let src_path = Path::new(cfg_path);
+            if src_path.exists() {
+                let dst_path = Path::new(&pill_bundle_dir).join("auto.toml");
+                if src_path.is_dir() {
+                    let toml_src = src_path.join("auto.toml");
+                    if toml_src.exists() {
+                        std::fs::copy(&toml_src, &dst_path).map_err(|e| {
+                            format!("Failed to copy config {:?} to {:?}: {}", toml_src, dst_path, e)
+                        })?;
+                    }
+                } else if src_path.is_file() {
+                    std::fs::copy(src_path, &dst_path).map_err(|e| {
+                        format!("Failed to copy config {:?} to {:?}: {}", src_path, dst_path, e)
+                    })?;
+                }
+            }
+        }
+    }
     Ok(())
 }
 
