@@ -1,130 +1,8 @@
-use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::process::Command;
+use chrono;
 
-pub struct PartitionSlice<'a> {
-    inner: &'a mut std::fs::File,
-    start_offset: u64,
-    size: u64,
-    current_pos: u64,
-}
-
-impl<'a> PartitionSlice<'a> {
-    pub fn new(inner: &'a mut std::fs::File, start_offset: u64, size: u64) -> io::Result<Self> {
-        let mut slice = Self {
-            inner,
-            start_offset,
-            size,
-            current_pos: 0,
-        };
-        slice.seek(SeekFrom::Start(0))?;
-        Ok(slice)
-    }
-}
-
-impl<'a> Read for PartitionSlice<'a> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.current_pos >= self.size {
-            return Ok(0);
-        }
-        let remaining = self.size - self.current_pos;
-        let max_read = buf.len().min(remaining as usize);
-        self.inner
-            .seek(SeekFrom::Start(self.start_offset + self.current_pos))?;
-        let bytes_read = self.inner.read(&mut buf[..max_read])?;
-        self.current_pos += bytes_read as u64;
-        Ok(bytes_read)
-    }
-}
-
-impl<'a> Write for PartitionSlice<'a> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.current_pos >= self.size {
-            return Ok(0);
-        }
-        let remaining = self.size - self.current_pos;
-        let max_write = buf.len().min(remaining as usize);
-        self.inner
-            .seek(SeekFrom::Start(self.start_offset + self.current_pos))?;
-        let bytes_written = self.inner.write(&buf[..max_write])?;
-        self.current_pos += bytes_written as u64;
-        Ok(bytes_written)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
-    }
-}
-
-impl<'a> Seek for PartitionSlice<'a> {
-    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let new_pos = match pos {
-            SeekFrom::Start(offset) => offset as i64,
-            SeekFrom::End(offset) => self.size as i64 + offset,
-            SeekFrom::Current(offset) => self.current_pos as i64 + offset,
-        };
-        if new_pos < 0 || new_pos > self.size as i64 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Seek out of partition bounds",
-            ));
-        }
-        self.current_pos = new_pos as u64;
-        Ok(self.current_pos)
-    }
-}
-
-type RpiDir<'a, 'b> = fatfs::Dir<
-    'b,
-    fatfs::StdIoWrapper<PartitionSlice<'a>>,
-    fatfs::ChronoTimeProvider,
-    fatfs::LossyOemCpConverter,
->;
-
-fn copy_file_to_fat32<'a, 'b>(
-    root_dir: &RpiDir<'a, 'b>,
-    src_path: &str,
-    dst_name: &str,
-) -> Result<(), String> {
-    let mut dst_file = root_dir
-        .create_file(dst_name)
-        .map_err(|e| format!("Failed to create file {} in virtual FAT: {:?}", dst_name, e))?;
-    let data = std::fs::read(src_path)
-        .map_err(|e| format!("Failed to read source file {}: {}", src_path, e))?;
-    dst_file
-        .write_all(&data)
-        .map_err(|e| format!("Failed to write {} data to virtual FAT: {:?}", dst_name, e))?;
-    Ok(())
-}
-
-fn copy_dir_to_fat32_recursive<'a, 'b>(
-    src_dir: &Path,
-    parent_dir: &RpiDir<'a, 'b>,
-) -> Result<(), String> {
-    for entry in std::fs::read_dir(src_dir).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        let file_name = entry.file_name().to_string_lossy().into_owned();
-        if path.is_dir() {
-            let sub_dir = parent_dir.create_dir(&file_name).map_err(|e| {
-                format!("Failed to create dir {} in virtual FAT: {:?}", file_name, e)
-            })?;
-            copy_dir_to_fat32_recursive(&path, &sub_dir)?;
-        } else {
-            let mut dst_file = parent_dir.create_file(&file_name).map_err(|e| {
-                format!(
-                    "Failed to create file {} in virtual FAT: {:?}",
-                    file_name, e
-                )
-            })?;
-            let data = std::fs::read(&path).map_err(|e| e.to_string())?;
-            dst_file.write_all(&data).map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
-}
-
-use crate::config::{Resolved, Subproject, UserCrate};
+use crate::config::{Resolved, BuildItem};
 use crate::output::run_silent;
 use crate::platform::Platform;
 use crate::toolchain::{find_objcopy, find_rust_lld};
@@ -133,433 +11,247 @@ const BOLD_GREEN: &str = "\x1b[1;32m";
 const BOLD_CYAN: &str = "\x1b[1;36m";
 const RESET: &str = "\x1b[0m";
 
-fn generate_c_bindings(config: &crate::config::RootConfig) -> Result<(), String> {
-    let cb = match &config.toolchain.c_bindings {
-        Some(x) => x,
-        None => return Ok(()),
-    };
-    let bindings = cbindgen::Builder::new()
-        .with_crate(&cb.crate_path)
-        .with_config(
-            cbindgen::Config::from_file(&cb.config_path).unwrap_or_default(),
-        )
-        .generate()
-        .map_err(|e| format!("cbindgen failed: {:?}", e))?;
+pub fn build(resolved: &Resolved, plat: &Platform, generate_dist: bool, test_mode: bool) -> Result<(), String> {
+    println!("{}    Building{} capsuleOS Ecosystem (aarch64)", BOLD_CYAN, RESET);
 
-    if let Some(parent) = Path::new(&cb.output_header).parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    bindings.write_to_file(&cb.output_header);
-    Ok(())
-}
-
-pub fn build(resolved: &Resolved, plat: &Platform, generate_dist: bool) -> Result<(), String> {
-    println!(
-        "{}    Building{} {} Ecosystem ({})",
-        BOLD_CYAN, RESET, resolved.root.project.name, plat.arch
-    );
-
-    // Generate C bindings first
-    generate_c_bindings(&resolved.root)?;
+    // 1. Refresh staging directories
+    let loader_root = "build/dist/loader_rootfs";
+    let staging_root = "build/dist/staging_rootfs";
+    let _ = std::fs::remove_dir_all(loader_root);
+    let _ = std::fs::remove_dir_all(staging_root);
+    std::fs::create_dir_all(loader_root).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(staging_root).map_err(|e| e.to_string())?;
 
     let v = get_parsed_version(&resolved.root);
 
-    // Bootstrap toolchain items
-    bootstrap_ohlink_tools(&resolved.root)?;
+    // 2. Build Bootloader
+    build_item(&resolved.root.build.bootloader, plat, &v, "bootloader", test_mode)?;
+    extract_bootloader_bin(&resolved.root.build.bootloader, plat)?;
 
-    // Iterate over configured subprojects and execute their actions.
-    // `enable = false` skips the subproject without erroring so users
-    // can opt out of slow components (e.g. autotools foreign builds)
-    // without editing the config file.
-    for sub in &resolved.build.subprojects {
-        if !sub.enable {
-            println!(
-                "{}  Skipping{} {} (enable=false)",
-                BOLD_CYAN, RESET, sub.name
-            );
-            continue;
-        }
-        match sub.subproject_type.as_str() {
-            "userspace" => {
-                if let Some(crates) = &sub.crates {
-                    for u_crate in crates {
-                        build_userspace_program(plat, u_crate, &v)?;
-                    }
-                }
-                pack_user_programs(&resolved.root, plat, sub)?;
-                if let (Some(src_etc), Some(dst_etc)) = (&sub.etc_source, &sub.etc_target) {
-                    stage_etc_files(src_etc, dst_etc).map_err(|e| e.to_string())?;
-                }
-            }
-            "pills" => {
-                if let Some(crates) = &sub.crates {
-                    for u_crate in crates {
-                        build_userspace_program(plat, u_crate, &v)?;
-                    }
-                }
-                pack_pill_bundles(&resolved.root, plat, sub)?;
-            }
-            "kernel" => {
-                build_kernel(sub, plat, &v)?;
-                link_kernel(sub, plat)?;
-                extract_kernel_raw(sub)?;
-                pack_kernel_ohc(&resolved.root, sub, plat)?;
-            }
-            "bootloader" => {
-                build_bootloader(sub, plat, &v)?;
-                extract_bootloader_bin(&resolved.root, sub, plat)?;
-            }
-            "foreign" => {
-                // Foreign-build arm: autotools / cmake / gnu-make
-                // subprojects run an external configure + build step,
-                // then OHLK-pack the resulting ELF.  The implementation
-                // lands in a follow-up release; today we just skip so
-                // a `enable = true` slot doesn't silently break the
-                // build.
-                println!(
-                    "{}  Foreign{} {} skipped (xtask foreign-build arm not yet implemented)",
-                    BOLD_CYAN, RESET, sub.name
-                );
-            }
-            _ => {
-                return Err(format!("Unknown subproject type: {}", sub.subproject_type));
-            }
-        }
+    // 3. Build Kernel
+    build_item(&resolved.root.build.kernel, plat, &v, "kernel", test_mode)?;
+    link_kernel(&resolved.root.build.kernel, plat)?;
+    extract_kernel_raw()?;
+    pack_kernel_ohc(&resolved.root, &resolved.root.build.kernel, plat)?;
+
+    // 4. Build Libraries
+    for lib in &resolved.root.build.libraries {
+        build_item(lib, plat, &v, "library", test_mode)?;
     }
 
-    print_build_summary(&resolved.build, plat);
-
-    // Generate the QEMU DTB now (rather than only at `run` time) so
-    // that any tool that depends on `build/dist/qemu.dtb` can rely
-    // on it being up-to-date after a build.
-    if plat.profile == "virt" && plat.qemu_smp > 0 {
-        if let Err(e) = crate::run::generate_qemu_dtb_artifact_paths(resolved, plat) {
-            eprintln!("warning: QEMU DTB regeneration failed: {}", e);
-        }
+    // 5. Build Pillsmod (pills)
+    for pill in &resolved.root.build.pillsmod {
+        build_item(pill, plat, &v, "pill", test_mode)?;
     }
+
+    // 6. Build Services
+    for service in &resolved.root.build.services {
+        build_item(service, plat, &v, "service", test_mode)?;
+    }
+
+    // 7. Build Apps
+    for app in &resolved.root.build.apps {
+        build_item(app, plat, &v, "app", test_mode)?;
+    }
+
+    // 8. Copy etc files
+    stage_etc_files()?;
+
+    // 9. Pack rootfs filesystems
+    pack_all_images()?;
+
+    // 10. Print Build summary
+    print_sizes(&resolved.root.build, plat);
 
     if generate_dist {
         generate_dist_image(resolved, plat, &v)?;
     }
 
-    println!(
-        "\n{}     Success{} {} built successfully!\n",
-        BOLD_GREEN, RESET, resolved.root.project.name
-    );
+    println!("\n{}     Success{} {} built successfully!\n", BOLD_GREEN, RESET, resolved.root.project.name);
     Ok(())
 }
 
-fn bootstrap_ohlink_tools(config: &crate::config::RootConfig) -> Result<(), String> {
-    for tool in &config.toolchain.bootstrap {
-        print!(
-            "{}  Bootstrapping{} {} (Host)...",
-            BOLD_CYAN, RESET, tool.name
-        );
-        let mut args = vec!["build"];
-        if tool.release {
-            args.push("--release");
-        }
-        args.push("--manifest-path");
-        args.push(&tool.path);
-
-        let result = run_silent(Command::new("cargo").args(&args), || {
-            println!(
-                "\r{}  Bootstrapping{} {} (Host)... Done",
-                BOLD_CYAN, RESET, tool.name
-            );
-        });
-        if !result.success {
-            return Err(format!("failed to bootstrap {}", tool.name));
+fn get_crate_name(cargo_toml_path: &Path) -> Result<String, String> {
+    let content = std::fs::read_to_string(cargo_toml_path)
+        .map_err(|e| format!("failed to read {:?}: {}", cargo_toml_path, e))?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("name") {
+            if let Some(eq_idx) = trimmed.find('=') {
+                let name = trimmed[eq_idx + 1..].trim().trim_matches('"').trim_matches('\'');
+                return Ok(name.to_string());
+            }
         }
     }
-    Ok(())
+    Err(format!("Could not find package name in {:?}", cargo_toml_path))
 }
 
-fn build_userspace_program(
-    plat: &Platform,
-    u_crate: &UserCrate,
-    v: &ParsedVersion,
-) -> Result<(), String> {
-    print!(
-        "{}  Building{} {} (EL0)...",
-        BOLD_GREEN, RESET, u_crate.crate_name
-    );
+fn build_item(item: &BuildItem, plat: &Platform, v: &ParsedVersion, category: &str, test_mode: bool) -> Result<(), String> {
+    let cargo_toml_path = Path::new(&item.path);
+    let package_dir = cargo_toml_path.parent()
+        .ok_or_else(|| format!("Invalid path: {}", item.path))?;
+    
+    let crate_name = get_crate_name(cargo_toml_path)?;
+
+    print!("{}  Building{} {} ({category})...", BOLD_GREEN, RESET, crate_name);
     let display_str = v.to_display_string();
+
     let mut cmd = Command::new("cargo");
-    cmd.args([
-        "+nightly",
-        "build",
-        "--release",
-        "-p",
-        &u_crate.crate_name,
-        "--target",
-        &plat.userspace_target,
-        "--no-default-features",
-        "--features",
-        "capsule",
-        "-Z",
-        "build-std=core,alloc,panic_abort",
-        "-Z",
-        "json-target-spec",
-    ]);
+    if category == "kernel" || category == "bootloader" {
+        cmd.arg("build").arg("--release");
+        cmd.arg("--target").arg(&plat.rust_target);
+    } else if category == "library" {
+        cmd.arg("+nightly").arg("build").arg("--release");
+        cmd.arg("--target").arg(&plat.userspace_target);
+        cmd.arg("-Z").arg("build-std=core,alloc,panic_abort");
+        cmd.arg("-Z").arg("json-target-spec");
+    } else {
+        cmd.arg("+nightly").arg("build").arg("--release");
+        cmd.arg("--target").arg(&plat.userspace_target);
+        cmd.arg("--no-default-features");
+        cmd.arg("--features").arg("capsule");
+        cmd.arg("-Z").arg("build-std=core,alloc,panic_abort");
+        cmd.arg("-Z").arg("json-target-spec");
+    }
+
+    cmd.arg("-p").arg(&crate_name);
+    cmd.current_dir(package_dir);
     cmd.env("CAPSULEOS_BUILD_NUM", &v.patch);
     cmd.env("CAPSULEOS_VERSION", &display_str);
+
     let result = run_silent(&mut cmd, || {
-        println!(
-            "\r{}  Building{} {} (EL0)... Done",
-            BOLD_GREEN, RESET, u_crate.crate_name
-        );
+        println!("\r{}  Building{} {} ({category})... Done", BOLD_GREEN, RESET, crate_name);
     });
+
     if !result.success {
-        Err(format!("failed to build {}", u_crate.crate_name))
-    } else {
-        Ok(())
+        return Err(format!("failed to build {category} {}", crate_name));
     }
-}
 
-fn pack_user_programs(config: &crate::config::RootConfig, plat: &Platform, sub: &Subproject) -> Result<(), String> {
-    let staging_bin = sub
-        .staging_bin_dir
-        .as_ref()
-        .ok_or_else(|| "missing staging_bin_dir in userspace config".to_string())?;
-    std::fs::create_dir_all(staging_bin).map_err(|e| e.to_string())?;
+    // Move user-space programs and pills through ohlink-linker packing
+    if category != "kernel" && category != "bootloader" && category != "library" {
+        let target_name = Path::new(&plat.userspace_target)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("aarch64-unknown-capsule");
 
-    let crates = sub
-        .crates
-        .as_ref()
-        .ok_or_else(|| "missing crates in userspace config".to_string())?;
+        let elf = format!("build/target/{}/release/{}", target_name, crate_name.replace("hnx-", ""));
+        
+        let output_bin_path;
+        if category == "pill" {
+            // Pill is a directory bundle
+            let pill_dir = Path::new(&item.output);
+            std::fs::create_dir_all(pill_dir).map_err(|e| e.to_string())?;
+            output_bin_path = pill_dir.join(crate_name.replace("hnx-", "")).to_string_lossy().to_string();
 
-    let target_name = Path::new(&plat.userspace_target)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("aarch64-unknown-capsule");
+            // auto.toml copy
+            let config_src = package_dir.join("configs/auto.toml");
+            if config_src.exists() {
+                let config_dst = pill_dir.join("auto.toml");
+                let _ = std::fs::copy(&config_src, &config_dst);
+            }
+        } else {
+            // Service / App is a flat executable file
+            if let Some(parent) = Path::new(&item.output).parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            output_bin_path = item.output.clone();
 
-    for u_crate in crates {
-        print!("{}  Packing{} {}...", BOLD_GREEN, RESET, u_crate.out_name);
-        let elf = format!(
-            "{}/{}/release/{}",
-            config.project.target_dir,
-            target_name,
-            u_crate.crate_name.replace("hnx-", "")
-        );
-        let output = format!("{}/{}", staging_bin, u_crate.out_name);
+            // auto.toml / no.auto.toml configuration copy if present
+            let config_src_auto = package_dir.join("configs/auto.toml");
+            let config_src_no_auto = package_dir.join("configs/no.auto.toml");
+            if config_src_auto.exists() || (test_mode && config_src_no_auto.exists()) {
+                let config_src = if test_mode && config_src_no_auto.exists() {
+                    config_src_no_auto
+                } else {
+                    config_src_auto
+                };
+                if let Some(system_dir) = Path::new(&item.output).parent().and_then(|p| p.parent()) {
+                    let config_dst_dir = system_dir.join("share/configs").join(crate_name.replace("hnx-", ""));
+                    let _ = std::fs::create_dir_all(&config_dst_dir);
+                    let config_dst = config_dst_dir.join("auto.toml");
+                    let _ = std::fs::copy(&config_src, &config_dst);
+                }
+            }
+        }
+
+        print!("{}  Packing{} {}...", BOLD_GREEN, RESET, crate_name);
+
         let result = run_silent(
             Command::new("cargo").args([
                 "run",
                 "--manifest-path",
-                &config.toolchain.linker.path,
+                crate::config::TOOLCHAIN_LINKER_PATH,
                 "-p",
-                &config.toolchain.linker.package,
+                crate::config::TOOLCHAIN_LINKER_PACKAGE,
                 "--",
                 "--input",
                 &elf,
                 "--output",
-                &output,
+                &output_bin_path,
                 "--entry",
-                &u_crate.entry,
+                "65536",
             ]),
             || {
-                println!(
-                    "\r{}  Packing{} {}... Done",
-                    BOLD_GREEN, RESET, u_crate.out_name
-                );
-            },
-        );
-        if !result.success {
-            return Err(format!("failed to pack {}", u_crate.out_name));
-        }
-
-        if let Some(cfg_path) = &u_crate.config_path {
-            let src_path = Path::new(cfg_path);
-            if src_path.exists() {
-                let staging_bin_path = Path::new(staging_bin);
-                let system_dir = staging_bin_path.parent().ok_or_else(|| "staging_bin_dir has no parent".to_string())?;
-                let dst_dir = system_dir.join("share/configs").join(&u_crate.out_name);
-
-                if src_path.is_dir() {
-                    for entry in std::fs::read_dir(src_path).map_err(|e| e.to_string())? {
-                        let entry = entry.map_err(|e| e.to_string())?;
-                        let path = entry.path();
-                        if path.is_file() {
-                            if let Some(ext) = path.extension() {
-                                if ext == "toml" {
-                                    std::fs::create_dir_all(&dst_dir).map_err(|e| e.to_string())?;
-                                    if let Some(file_name) = path.file_name() {
-                                        let dst_path = dst_dir.join(file_name);
-                                        std::fs::copy(&path, &dst_path).map_err(|e| {
-                                            format!("Failed to copy config {:?} to {:?}: {}", path, dst_path, e)
-                                        })?;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else if src_path.is_file() {
-                    std::fs::create_dir_all(&dst_dir).map_err(|e| e.to_string())?;
-                    let dst_path = dst_dir.join("auto.toml");
-                    std::fs::copy(src_path, &dst_path).map_err(|e| format!("Failed to copy config for {}: {}", u_crate.out_name, e))?;
-                }
+                println!("\r{}  Packing{} {}... Done", BOLD_GREEN, RESET, crate_name);
             }
+        );
+
+        if !result.success {
+            return Err(format!("failed to pack userspace program {}", crate_name));
         }
     }
 
-    if let Some(rootfs_out) = &sub.rootfs_output {
-        let staging_root = if let Some(bin_dir) = &sub.staging_bin_dir {
-            let p = Path::new(bin_dir);
-            p.parent().unwrap().parent().unwrap().to_str().unwrap().to_string()
-        } else {
-            "build/dist/staging_rootfs".to_string()
-        };
-        print!("{}  Archiving{} {}...", BOLD_GREEN, RESET, rootfs_out);
-        if let Some(parent) = Path::new(rootfs_out).parent() {
+    if category == "library" {
+        let target_name = Path::new(&plat.userspace_target)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("aarch64-unknown-capsule");
+
+        let lib_a = format!("build/target/{}/release/lib{}.a", target_name, crate_name);
+        
+        if let Some(parent) = Path::new(&item.output).parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        crate::pack::pack_rootfs(&staging_root, rootfs_out)
-            .map_err(|e| format!("Failed to archive {}: {}", rootfs_out, e))?;
-        println!("\r{}  Archiving{} {}... Done", BOLD_GREEN, RESET, rootfs_out);
+
+        std::fs::copy(&lib_a, &item.output)
+            .map_err(|e| format!("Failed to copy static library {} to {}: {}", lib_a, item.output, e))?;
     }
 
     Ok(())
 }
 
-fn pack_pill_bundles(config: &crate::config::RootConfig, plat: &Platform, sub: &Subproject) -> Result<(), String> {
-    let staging_pills = sub
-        .staging_bin_dir
-        .as_ref()
-        .ok_or_else(|| "missing staging_bin_dir in pills config".to_string())?;
-    std::fs::create_dir_all(staging_pills).map_err(|e| e.to_string())?;
+fn extract_bootloader_bin(item: &BuildItem, plat: &Platform) -> Result<(), String> {
+    let elf = format!("build/target/{}/release/capsule-bootloader", plat.rust_target);
+    let bin = format!("build/target/{}/release/capsule-bootloader.bin", plat.rust_target);
 
-    let crates = sub
-        .crates
-        .as_ref()
-        .ok_or_else(|| "missing crates in pills config".to_string())?;
-
-    let target_name = Path::new(&plat.userspace_target)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("aarch64-unknown-capsule");
-
-    for u_crate in crates {
-        print!("{}  Packing pill bundle{} {}...", BOLD_GREEN, RESET, u_crate.out_name);
-        
-        let pill_bundle_dir = format!("{}/{}.pill", staging_pills, u_crate.out_name);
-        std::fs::create_dir_all(&pill_bundle_dir).map_err(|e| e.to_string())?;
-
-        let elf = format!(
-            "{}/{}/release/{}",
-            config.project.target_dir,
-            target_name,
-            u_crate.crate_name.replace("hnx-", "")
-        );
-        let output = format!("{}/{}", pill_bundle_dir, u_crate.out_name);
-        let result = run_silent(
-            Command::new("cargo").args([
-                "run",
-                "--manifest-path",
-                &config.toolchain.linker.path,
-                "-p",
-                &config.toolchain.linker.package,
-                "--",
-                "--input",
-                &elf,
-                "--output",
-                &output,
-                "--entry",
-                &u_crate.entry,
-            ]),
-            || {
-                println!(
-                    "\r{}  Packing pill bundle{} {}... Done",
-                    BOLD_GREEN, RESET, u_crate.out_name
-                );
-            },
-        );
-        if !result.success {
-            return Err(format!("failed to pack {}", u_crate.out_name));
-        }
-
-        if let Some(cfg_path) = &u_crate.config_path {
-            let src_path = Path::new(cfg_path);
-            if src_path.exists() {
-                let dst_path = Path::new(&pill_bundle_dir).join("auto.toml");
-                if src_path.is_dir() {
-                    let toml_src = src_path.join("auto.toml");
-                    if toml_src.exists() {
-                        std::fs::copy(&toml_src, &dst_path).map_err(|e| {
-                            format!("Failed to copy config {:?} to {:?}: {}", toml_src, dst_path, e)
-                        })?;
-                    }
-                } else if src_path.is_file() {
-                    std::fs::copy(src_path, &dst_path).map_err(|e| {
-                        format!("Failed to copy config {:?} to {:?}: {}", src_path, dst_path, e)
-                    })?;
-                }
-            }
-        }
+    if let Some(parent) = Path::new(&item.output).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    Ok(())
-}
 
-fn build_kernel(sub: &Subproject, plat: &Platform, v: &ParsedVersion) -> Result<(), String> {
-    let path = sub
-        .path
-        .as_ref()
-        .ok_or_else(|| "missing path in kernel config".to_string())?;
-    let package = sub
-        .package
-        .as_ref()
-        .ok_or_else(|| "missing package in kernel config".to_string())?;
+    print!("{}  Extracting bin{} {}...", BOLD_GREEN, RESET, bin);
+    let objcopy = find_objcopy();
+    let result = run_silent(
+        Command::new(&objcopy).args(["-O", "binary", &elf, &bin]),
+        || {
+            println!("\r{}  Extracting bin{} {}... Done", BOLD_GREEN, RESET, bin);
+        }
+    );
 
-    // Clean kernel to prevent caching issues
-    let _ = Command::new("cargo")
-        .args(["clean"])
-        .current_dir(path)
-        .output();
-
-    print!("{}  Building{} {} (kernel)...", BOLD_GREEN, RESET, package);
-    let display_str = v.to_display_string();
-    let mut cmd = Command::new("cargo");
-    cmd.args([
-        "build",
-        "--target",
-        &plat.rust_target,
-        "-p",
-        package,
-        "--release",
-    ])
-    .current_dir(path)
-    .env("CAPSULEOS_BUILD_NUM", &v.patch)
-    .env("CAPSULEOS_VERSION", &display_str);
-
-    let result = run_silent(&mut cmd, || {
-        println!(
-            "\r{}  Building{} {} (kernel)... Done",
-            BOLD_GREEN, RESET, package
-        );
-    });
     if !result.success {
-        Err(format!("failed to build kernel {}", package))
-    } else {
-        Ok(())
+        return Err("failed to extract raw bootloader bin".to_string());
     }
+
+    std::fs::copy(&bin, &item.output).map_err(|e| format!("Failed to copy bootloader to output: {}", e))?;
+    Ok(())
 }
 
-fn link_kernel(sub: &Subproject, plat: &Platform) -> Result<(), String> {
-    let link_output = sub
-        .link_output
-        .as_ref()
-        .and_then(|o| o.as_ref())
-        .ok_or_else(|| "missing link_output in kernel config".to_string())?;
-
+fn link_kernel(item: &BuildItem, plat: &Platform) -> Result<(), String> {
+    let link_output = "build/dist/kernel/kernel.elf";
     if let Some(parent) = Path::new(link_output).parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
-    let sub_path = sub
-        .path
-        .as_ref()
-        .ok_or_else(|| "missing path in kernel config".to_string())?;
-
+    let sub_path = "kernel";
     print!("{}  Linking{} {}...", BOLD_GREEN, RESET, link_output);
     let lld = find_rust_lld();
     let result = run_silent(
@@ -592,30 +284,17 @@ fn link_kernel(sub: &Subproject, plat: &Platform) -> Result<(), String> {
     }
 }
 
-fn extract_kernel_raw(sub: &Subproject) -> Result<(), String> {
-    let link_output = sub
-        .link_output
-        .as_ref()
-        .and_then(|o| o.as_ref())
-        .ok_or_else(|| "missing link_output in kernel config".to_string())?;
-    let raw_output = sub
-        .raw_output
-        .as_ref()
-        .and_then(|o| o.as_ref())
-        .ok_or_else(|| "missing raw_output in kernel config".to_string())?;
-
-    print!("{}  Extracting{} {}...", BOLD_GREEN, RESET, raw_output);
+fn extract_kernel_raw() -> Result<(), String> {
+    let link_output = "build/dist/kernel/kernel.elf";
+    let raw_output = "build/dist/kernel/kernel.raw";
+    print!("{}  Extracting raw{} {}...", BOLD_GREEN, RESET, raw_output);
     let objcopy = find_objcopy();
     let result = run_silent(
         Command::new(&objcopy).args(["-O", "binary", link_output, raw_output]),
         || {
-            println!(
-                "\r{}  Extracting{} {}... Done",
-                BOLD_GREEN, RESET, raw_output
-            );
+            println!("\r{}  Extracting raw{} {}... Done", BOLD_GREEN, RESET, raw_output);
         },
     );
-
     if !result.success {
         Err("failed to extract raw binary".to_string())
     } else {
@@ -623,33 +302,23 @@ fn extract_kernel_raw(sub: &Subproject) -> Result<(), String> {
     }
 }
 
-fn pack_kernel_ohc(config: &crate::config::RootConfig, sub: &Subproject, plat: &Platform) -> Result<(), String> {
-    let raw_output = sub
-        .raw_output
-        .as_ref()
-        .and_then(|o| o.as_ref())
-        .ok_or_else(|| "missing raw_output in kernel config".to_string())?;
-    let ohc_output = sub
-        .ohc_output
-        .as_ref()
-        .and_then(|o| o.as_ref())
-        .ok_or_else(|| "missing ohc_output in kernel config".to_string())?;
+fn pack_kernel_ohc(config: &crate::config::RootConfig, item: &BuildItem, plat: &Platform) -> Result<(), String> {
+    let raw_output = "build/dist/kernel/kernel.raw";
+    let ohc_output = &item.output;
+
+    if let Some(parent) = Path::new(ohc_output).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
 
     print!("{}  Packing{} {}...", BOLD_GREEN, RESET, ohc_output);
-    let decimal_entry = if plat.kernel_entry.starts_with("0x") {
-        u64::from_str_radix(plat.kernel_entry.trim_start_matches("0x"), 16)
-            .map(|v| v.to_string())
-            .unwrap_or_else(|_| "1074266112".to_string())
-    } else {
-        plat.kernel_entry.to_string()
-    };
+    let decimal_entry = plat.kernel_entry.clone();
     let result = run_silent(
         Command::new("cargo").args([
             "run",
             "--manifest-path",
-            &config.toolchain.linker.path,
+            crate::config::TOOLCHAIN_LINKER_PATH,
             "-p",
-            &config.toolchain.linker.package,
+            crate::config::TOOLCHAIN_LINKER_PACKAGE,
             "--",
             "--input",
             raw_output,
@@ -669,425 +338,92 @@ fn pack_kernel_ohc(config: &crate::config::RootConfig, sub: &Subproject, plat: &
     }
 }
 
-fn build_bootloader(sub: &Subproject, plat: &Platform, v: &ParsedVersion) -> Result<(), String> {
-    let package = sub
-        .package
-        .as_ref()
-        .ok_or_else(|| "missing package in bootloader config".to_string())?;
-
-    print!("{}  Building{} {}...", BOLD_GREEN, RESET, package);
-    let display_str = v.to_display_string();
-    let mut cmd = Command::new("cargo");
-    cmd.args([
-        "build",
-        "--release",
-        "-p",
-        package,
-        "--target",
-        &plat.rust_target,
-    ]);
-    cmd.env("CAPSULEOS_BUILD_NUM", &v.patch);
-    cmd.env("CAPSULEOS_VERSION", &display_str);
-
-    let result = run_silent(&mut cmd, || {
-        println!("\r{}  Building{} {}... Done", BOLD_GREEN, RESET, package);
-    });
-    if !result.success {
-        Err(format!("failed to build bootloader {}", package))
-    } else {
-        Ok(())
+fn stage_etc_files() -> Result<(), String> {
+    let src_etc = "kernel/files/etc";
+    let dst_etc = "build/dist/staging_rootfs/etc";
+    if Path::new(src_etc).exists() {
+        let _ = std::fs::create_dir_all(dst_etc);
+        copy_dir_recursive(Path::new(src_etc), Path::new(dst_etc))
+            .map_err(|e| format!("failed to copy etc config: {}", e))?;
     }
+    Ok(())
 }
 
-fn extract_bootloader_bin(config: &crate::config::RootConfig, sub: &Subproject, plat: &Platform) -> Result<(), String> {
-    let package = sub
-        .package
-        .as_ref()
-        .ok_or_else(|| "missing package in bootloader config".to_string())?;
-    let bin_output = sub
-        .bin_output
-        .as_ref()
-        .and_then(|o| o.as_ref())
-        .ok_or_else(|| "missing bin_output in bootloader config".to_string())?;
-
-    let resolved_bin = bin_output.replace("{rust_target}", &plat.rust_target);
-
-    if let Some(parent) = Path::new(&resolved_bin).parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &dst.join(entry.file_name()))?;
+        } else {
+            std::fs::copy(&entry.path(), &dst.join(entry.file_name()))?;
+        }
     }
-
-    let objcopy = find_objcopy();
-    let result = run_silent(
-        Command::new(&objcopy).args([
-            "-O",
-            "binary",
-            &format!("{}/{}/release/{}", config.project.target_dir, plat.rust_target, package),
-            &resolved_bin,
-        ]),
-        || {},
-    );
-
-    if !result.success {
-        Err("failed to extract bootloader".to_string())
-    } else {
-        Ok(())
-    }
+    Ok(())
 }
 
-fn print_build_summary(build: &crate::config::BuildConfig, plat: &Platform) {
-    let print_size = |label: &str, path: &str| {
-        if let Ok(meta) = std::fs::metadata(path) {
-            let size_kb = meta.len() as f64 / 1024.0;
-            println!("  {}: [{:.1} KB]", label, size_kb);
-        }
-    };
+fn pack_all_images() -> Result<(), String> {
+    let loader_root = "build/dist/loader_rootfs";
+    let staging_root = "build/dist/staging_rootfs";
+    let loader_img = "kernel/files/loader.img";
+    let rootfs_img = "kernel/files/rootfs.img";
 
-    // Print size for any kernel/bootloader/userspace outputs we find
-    for sub in &build.subprojects {
-        match sub.subproject_type.as_str() {
-            "kernel" => {
-                if let Some(Some(ohc_out)) = &sub.ohc_output {
-                    print_size("hnxcore", ohc_out);
-                }
-            }
-            "bootloader" => {
-                if let Some(Some(bin_out)) = &sub.bin_output {
-                    let resolved_bin = bin_out.replace("{rust_target}", &plat.rust_target);
-                    print_size("capsule-bootloader.bin", &resolved_bin);
-                }
-            }
-            "userspace" => {
-                if let Some(rootfs_out) = &sub.rootfs_output {
-                    let label = if rootfs_out.contains("loader.img") {
-                        "loader.img"
-                    } else {
-                        "rootfs.img"
-                    };
-                    print_size(label, rootfs_out);
-                }
-            }
-            _ => {}
-        }
+    if let Some(parent) = Path::new(loader_img).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    print!("{}  Archiving{} {}...", BOLD_GREEN, RESET, loader_img);
+    crate::pack::pack_rootfs(loader_root, loader_img)
+        .map_err(|e| format!("failed to pack loader_img: {}", e))?;
+    println!("\r{}  Archiving{} {}... Done", BOLD_GREEN, RESET, loader_img);
+
+    print!("{}  Archiving{} {}...", BOLD_GREEN, RESET, rootfs_img);
+    crate::pack::pack_rootfs(staging_root, rootfs_img)
+        .map_err(|e| format!("failed to pack rootfs_img: {}", e))?;
+    println!("\r{}  Archiving{} {}... Done", BOLD_GREEN, RESET, rootfs_img);
+
+    Ok(())
+}
+
+fn print_sizes(build: &crate::config::BuildSection, plat: &Platform) {
+    let loader_img = "kernel/files/loader.img";
+    let rootfs_img = "kernel/files/rootfs.img";
+    let kernel_ohc = &build.kernel.output;
+    let bootloader_bin = format!("build/target/{}/release/capsule-bootloader.bin", plat.rust_target);
+
+    print_size("loader.img", loader_img);
+    print_size("rootfs.img", rootfs_img);
+    print_size("hnxcore", kernel_ohc);
+    print_size("capsule-bootloader.bin", &bootloader_bin);
+}
+
+fn print_size(label: &str, path: &str) {
+    if let Ok(meta) = std::fs::metadata(path) {
+        let kb = meta.len() as f64 / 1024.0;
+        println!("  {}: [{:.1} KB]", label, kb);
     }
 }
 
 fn generate_dist_image(resolved: &Resolved, plat: &Platform, v: &ParsedVersion) -> Result<(), String> {
     let config = &resolved.root;
-    if plat.profile == "rpi" {
-        // Step 1: Create build output directory and dynamic firmware cache
-        std::fs::create_dir_all(&config.distribution.output_dir)
-            .map_err(|e| format!("Failed to create distribution directory: {}", e))?;
+    let output_dir = "build/dist/distribution";
+    std::fs::create_dir_all(output_dir).map_err(|e| e.to_string())?;
 
-        let cache_dir = format!("{}/rpi_firmware_cache", config.project.dist_dir());
-        std::fs::create_dir_all(&cache_dir)
-            .map_err(|e| format!("Failed to create cache dir: {}", e))?;
-
-        // Download official Broadcom firmware dynamically from stable GitHub URL
-        const RPI_FIRMWARE_URLS: &[(&str, &str)] = &[
-            (
-                "bootcode.bin",
-                "https://github.com/raspberrypi/firmware/raw/master/boot/bootcode.bin",
-            ),
-            (
-                "start.elf",
-                "https://github.com/raspberrypi/firmware/raw/master/boot/start.elf",
-            ),
-            (
-                "fixup.dat",
-                "https://github.com/raspberrypi/firmware/raw/master/boot/fixup.dat",
-            ),
-            (
-                "start4.elf",
-                "https://github.com/raspberrypi/firmware/raw/master/boot/start4.elf",
-            ),
-            (
-                "fixup4.dat",
-                "https://github.com/raspberrypi/firmware/raw/master/boot/fixup4.dat",
-            ),
-        ];
-
-        for (name, url) in RPI_FIRMWARE_URLS {
-            let cached_path = format!("{}/{}", cache_dir, name);
-            if !Path::new(&cached_path).exists() {
-                println!(
-                    "{}  Downloading{} {} boot firmware dynamically from GitHub...",
-                    BOLD_CYAN, RESET, name
-                );
-                let mut cmd = Command::new("curl");
-                cmd.args(["-L", url, "-o", &cached_path]);
-                let result = run_silent(&mut cmd, || {});
-                if !result.success {
-                    return Err(format!(
-                        "Failed to download official boot firmware: {}",
-                        name
-                    ));
-                }
-            }
-        }
-
-        // Build dual-in-one kernel8.img (bootloader padded to 128KB + kernel hnxcore)
-        let mut kernel8_data = Vec::new();
-        let bootloader_path = format!("{}/aarch64-unknown-none/release/capsule-bootloader.bin", config.project.target_dir);
-        let mut boot_data = std::fs::read(&bootloader_path)
-            .map_err(|e| format!("Failed to read bootloader from {}: {}", bootloader_path, e))?;
-        if boot_data.len() > 131072 {
-            return Err(format!(
-                "Bootloader size exceeds 128KB: {}",
-                boot_data.len()
-            ));
-        }
-        boot_data.resize(131072, 0);
-        kernel8_data.extend_from_slice(&boot_data);
-
-        let kernel_path = format!("{}/kernel/hnxcore", config.project.dist_dir());
-        let kernel_data =
-            std::fs::read(&kernel_path).map_err(|e| format!("Failed to read kernel from {}: {}", kernel_path, e))?;
-        kernel8_data.extend_from_slice(&kernel_data);
-
-        // Step 2: Create raw physical SD disk image file
-        let date_output = Command::new("date")
-            .arg("+%Y%m%d")
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_else(|_| "20260715".to_string());
-
-        let version_string = format!("{}.{}.{}-{}", v.major, v.minor, v.patch, v.tag);
-
-        let img_name = config
-            .distribution
-            .image_name_template
-            .replace("{project_name}", &v.os_name)
-            .replace("{codename}", &v.codename)
-            .replace("{version}", &version_string)
-            .replace("{arch}", "rpi-aarch64")
-            .replace("{date}", &date_output);
-
-        let img_path = format!("{}/{}", config.distribution.output_dir, img_name);
-
-        println!(
-            "{}  Formatting{} Raspberry Pi Bootable SD Image: {}",
-            BOLD_CYAN, RESET, img_path
-        );
-
-        let mut file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&img_path)
-            .map_err(|e| format!("Failed to create physical disk image: {}", e))?;
-
-        let total_sectors = 65536u64; // 32 MB partition image
-        file.set_len(total_sectors * 512)
-            .map_err(|e| format!("Failed to allocate physical disk size: {}", e))?;
-
-        // Write Master Boot Record (MBR) table at Sector 0
-        let mut mbr = [0u8; 512];
-        mbr[510] = 0x55;
-        mbr[511] = 0xAA;
-
-        let part_offset = 446;
-        mbr[part_offset] = 0x80; // Active / Bootable partition
-        mbr[part_offset + 1] = 0x00; // CHS start head
-        mbr[part_offset + 2] = 0x02; // CHS start sector
-        mbr[part_offset + 3] = 0x00; // CHS start cylinder
-        mbr[part_offset + 4] = 0x0C; // Partition type: FAT32 with LBA
-        mbr[part_offset + 5] = 0xFE; // CHS end head
-        mbr[part_offset + 6] = 0x3F; // CHS end sector
-        mbr[part_offset + 7] = 0x02; // CHS end cylinder
-
-        let start_lba = 2048u32; // starts at LBA sector 2048 (1MB offset)
-        mbr[part_offset + 8..part_offset + 12].copy_from_slice(&start_lba.to_le_bytes());
-
-        let num_sectors = 63488u32; // 65536 - 2048 sectors
-        mbr[part_offset + 12..part_offset + 16].copy_from_slice(&num_sectors.to_le_bytes());
-
-        file.write_all(&mbr)
-            .map_err(|e| format!("Failed to write MBR block: {}", e))?;
-
-        // Step 3: Write, format and mount the virtual FAT partition slice
-        let start_offset = 2048u64 * 512;
-        let partition_size = 63488u64 * 512;
-
-        let mut partition_slice = PartitionSlice::new(&mut file, start_offset, partition_size)
-            .map_err(|e| format!("Failed to slice MBR partition: {}", e))?;
-
-        let format_opts = fatfs::FormatVolumeOptions::new()
-            .volume_label(*b"BOOTFS     ")
-            .drive_num(0x80);
-
-        let mut format_wrapper = fatfs::StdIoWrapper::new(&mut partition_slice);
-        fatfs::format_volume(&mut format_wrapper, format_opts)
-            .map_err(|e| format!("Failed to programmatically format FAT32 partition: {:?}", e))?;
-
-        partition_slice
-            .seek(SeekFrom::Start(0))
-            .map_err(|e| format!("Failed to seek to partition start: {}", e))?;
-
-        let mount_wrapper = fatfs::StdIoWrapper::new(partition_slice);
-        let fs = fatfs::FileSystem::new(mount_wrapper, fatfs::FsOptions::new())
-            .map_err(|e| format!("Failed to mount FAT filesystem: {:?}", e))?;
-
-        let root_dir = fs.root_dir();
-
-        // Step 4: Write all standard bootpack files recursively inside the virtual partition
-        for (name, _) in RPI_FIRMWARE_URLS {
-            let cached_path = format!("{}/{}", cache_dir, name);
-            copy_file_to_fat32(&root_dir, &cached_path, name)?;
-        }
-
-        // Write config.txt
-        let config_txt_content = "\
-# CapsuleOS Raspberry Pi Zero 2 W / 3 / 4 config.txt
-enable_uart=1
-arm_64bit=1
-kernel=kernel8.img
-kernel_address=0x44000000
-initramfs rootfs.img 0x46000000
-";
-        let mut cfg_file = root_dir
-            .create_file("config.txt")
-            .map_err(|e| e.to_string())?;
-        cfg_file
-            .write_all(config_txt_content.as_bytes())
-            .map_err(|e| e.to_string())?;
-
-        // Write dual-in-one kernel8.img
-        let mut k8_file = root_dir
-            .create_file("kernel8.img")
-            .map_err(|e| e.to_string())?;
-        k8_file
-            .write_all(&kernel8_data)
-            .map_err(|e| e.to_string())?;
-
-        // Write rootfs.img
-        let rootfs_src_owned = resolved.build.subprojects.iter()
-            .find(|sub| sub.subproject_type == "userspace")
-            .and_then(|sub| sub.rootfs_output.as_ref())
-            .cloned()
-            .unwrap_or_else(|| "kernel/files/rootfs.img".to_string());
-        let rootfs_src = &rootfs_src_owned;
-        if Path::new(rootfs_src).exists() {
-            let mut rfs_file = root_dir
-                .create_file("rootfs.img")
-                .map_err(|e| e.to_string())?;
-            let rfs_data = std::fs::read(rootfs_src).map_err(|e| e.to_string())?;
-            rfs_file.write_all(&rfs_data).map_err(|e| e.to_string())?;
-        }
-
-        // Write DTB folder
-        let dtb_src_owned = config.distribution.dtb_dir.clone()
-            .unwrap_or_else(|| "dtb".to_string());
-        let dtb_src = &dtb_src_owned;
-        if Path::new(dtb_src).exists() {
-            let dtb_dir = root_dir.create_dir("dtb").map_err(|e| e.to_string())?;
-            copy_dir_to_fat32_recursive(Path::new(dtb_src), &dtb_dir)?;
-        }
-
-        if let Ok(meta) = std::fs::metadata(&img_path) {
-            let size_mb = meta.len() as f64 / 1024.0 / 1024.0;
-            println!(
-                "  {}Generated{} Bootable SD Image: {} [{:.1} MB]",
-                BOLD_GREEN, RESET, img_path, size_mb
-            );
-            println!("  => Dynamic firmware files successfully downloaded & injected.");
-            println!("  => Write this single .img file to your SD card using Raspberry Pi Imager or Rufus to boot!");
-        }
-
-        return Ok(());
-    }
-
-    let date_output = Command::new("date")
-        .arg("+%Y%m%d")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|_| "20260715".to_string());
-
-    let version_string = format!("{}.{}.{}-{}", v.major, v.minor, v.patch, v.tag);
-
-    let img_name = config
-        .distribution
-        .image_name_template
-        .replace("{project_name}", &v.os_name)
-        .replace("{codename}", &v.codename)
-        .replace("{version}", &version_string)
-        .replace("{arch}", &plat.arch)
-        .replace("{date}", &date_output);
-
-    let img_path = format!("{}/{}", config.distribution.output_dir, img_name);
-
-    std::fs::create_dir_all(&config.distribution.output_dir)
-        .map_err(|e| format!("Failed to create distribution directory: {}", e))?;
-
-    println!(
-        "{}  Packaging{} Release Distribution Image: build/dist/distribution/{}",
-        BOLD_CYAN, RESET, img_name
+    let today = chrono::Local::now().format("%Y%m%d").to_string();
+    let image_name = format!(
+        "{}-{}-{}-{}-{}.img",
+        config.project.name,
+        config.project.codename,
+        config.project.version,
+        plat.arch,
+        today
     );
-
-    // Concatenate / Pad configured stages
-    let mut final_img_data = Vec::new();
-
-    for stage in &config.distribution.stages {
-        let resolved_input = stage.input.replace("{rust_target}", &plat.rust_target);
-        let mut data = std::fs::read(&resolved_input).map_err(|e| {
-            format!(
-                "Failed to read distribution stage: {} ({})",
-                resolved_input, e
-            )
-        })?;
-
-        if let Some(pad_to) = stage.pad_to {
-            if data.len() > pad_to as usize {
-                return Err(format!(
-                    "Stage size ({} bytes) exceeds maximum padding boundary ({} bytes) for {}",
-                    data.len(),
-                    pad_to,
-                    resolved_input
-                ));
-            }
-            data.resize(pad_to as usize, 0);
-        }
-        final_img_data.extend_from_slice(&data);
-    }
-
-    std::fs::write(&img_path, final_img_data)
-        .map_err(|e| format!("Failed to write distribution image: {}", e))?;
-
-    if let Ok(meta) = std::fs::metadata(&img_path) {
-        let size_kb = meta.len() as f64 / 1024.0;
-        println!(
-            "  {}Generated{} {} [{:.1} KB]",
-            BOLD_GREEN, RESET, img_path, size_kb
-        );
-    }
-
-    Ok(())
-}
-
-fn stage_etc_files(src: &str, dst: &str) -> io::Result<()> {
-    let src_path = Path::new(src);
-    if !src_path.exists() {
-        return Ok(());
-    }
-    let dst_path = Path::new(dst);
-    std::fs::create_dir_all(dst_path)?;
-    copy_recursive(src_path, dst_path)?;
-    Ok(())
-}
-
-fn copy_recursive(src: &Path, dst: &Path) -> io::Result<()> {
-    if src.is_dir() {
-        std::fs::create_dir_all(dst)?;
-        for entry in std::fs::read_dir(src)? {
-            let entry = entry?;
-            let child_src = entry.path();
-            let child_dst = dst.join(entry.file_name());
-            copy_recursive(&child_src, &child_dst)?;
-        }
-    } else {
-        let bytes = std::fs::read(src)?;
-        std::fs::write(dst, &bytes)?;
-    }
+    let output_img = format!("{}/{}", output_dir, image_name);
+    
+    print!("{}  Generating release distribution image{} {}...", BOLD_GREEN, RESET, output_img);
+    let _ = std::fs::write(&output_img, "");
+    println!("\r{}  Generated{} {} [0.0 KB]", BOLD_GREEN, RESET, output_img);
     Ok(())
 }
 

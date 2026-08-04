@@ -1,12 +1,3 @@
-//! `Platform` is the composed view used by `build` / `run` / `test`.
-//!
-//! It pulls build addresses from `xtask.build.toml` and runtime args
-//! from whichever `xtask.<platform>.toml` the user picked.  Fields
-//! the active command doesn't need are `None` (e.g. RPI build has no
-//! `qemu_*` fields).
-
-use crate::config::{BuildConfig, RuntimeConfig};
-
 pub struct Platform {
     pub arch: String,
     pub profile: String,
@@ -20,7 +11,6 @@ pub struct Platform {
     pub boot_addr: String,
     pub rootfs_addr: String,
 
-    // QEMU run args (present iff the runtime-config had a [qemu] block).
     pub qemu_bin: String,
     pub qemu_args: Vec<String>,
     pub qemu_dtb_dump_args: Vec<String>,
@@ -29,66 +19,40 @@ pub struct Platform {
 }
 
 impl Platform {
-    /// Build a `Platform` view from a build profile + (optionally) a
-    /// matching runtime profile.  When the runtime profile has no
-    /// QEMU block (e.g. `xtask.rpi.toml`) the qemu_* fields stay at
-    /// their defaults and `run::run` should never try to launch QEMU.
     pub fn from_configs(
         arch: &str,
         profile_name: &str,
-        build: &BuildConfig,
-        runtime: &RuntimeConfig,
-    ) -> Option<Self> {
-        let arch_cfg = build.platform.get(arch)?;
-        let p_cfg = arch_cfg.profiles.get(profile_name)?;
+        config: &crate::config::RootConfig,
+    ) -> Self {
+        let qemu_bin = config.run.qemu.bin.clone();
+        let qemu_args = config.run.qemu.args.clone();
+        let qemu_dtb_dump_args = config.run.qemu.dtb_dump_args.clone();
+        let qemu_smp = config.run.qemu.smp;
+        let qemu_disk_img = config.run.qemu.disk_img.clone();
 
-        let (
-            qemu_bin,
-            qemu_args,
-            qemu_dtb_dump_args,
-            qemu_smp,
-            qemu_disk_img,
-        ) = runtime
-            .platform
-            .get(arch)
-            .and_then(|a| a.profiles.get(profile_name))
-            .and_then(|p| p.qemu.as_ref())
-            .map(|q| {
-                (
-                    q.bin.clone(),
-                    q.args.clone(),
-                    q.dtb_dump_args.clone(),
-                    q.smp,
-                    q.disk_img.clone(),
-                )
-            })
-            .unwrap_or_else(|| {
-                (
-                    String::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    1,
-                    crate::config::default_disk_img(),
-                )
-            });
+        let root_dir = std::env::current_dir().unwrap();
+        let userspace_target_abs = root_dir.join("libraries/targets/aarch64-unknown-capsule.json")
+            .to_string_lossy().to_string();
+        let linker_script_abs = root_dir.join("kernel/linker/kernel_aarch64.ld")
+            .to_string_lossy().to_string();
 
-        Some(Platform {
+        Platform {
             arch: arch.to_string(),
             profile: profile_name.to_string(),
-            rust_target: p_cfg.rust_target.clone(),
-            userspace_target: p_cfg.userspace_target.clone(),
-            kernel_entry: p_cfg.kernel_entry.clone(),
-            ld_emulation: p_cfg.ld_emulation.clone(),
-            linker_script: p_cfg.linker_script.clone(),
-            dtb_addr: p_cfg.dtb_addr.clone(),
-            ohc_addr: p_cfg.ohc_addr.clone(),
-            boot_addr: p_cfg.boot_addr.clone(),
-            rootfs_addr: p_cfg.rootfs_addr.clone(),
+            rust_target: "aarch64-unknown-none".to_string(),
+            userspace_target: userspace_target_abs,
+            kernel_entry: "1074266112".to_string(),
+            ld_emulation: "aarch64elf".to_string(),
+            linker_script: linker_script_abs,
+            dtb_addr: "0x42000000".to_string(),
+            ohc_addr: "0x40700000".to_string(),
+            boot_addr: "0x44000000".to_string(),
+            rootfs_addr: "0x46000000".to_string(),
             qemu_bin,
             qemu_args,
             qemu_dtb_dump_args,
             qemu_smp,
             qemu_disk_img,
-        })
+        }
     }
 }

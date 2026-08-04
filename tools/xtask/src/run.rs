@@ -18,16 +18,12 @@ pub fn run(resolved: &Resolved, plat: &Platform, gdb: bool) -> Result<(), String
     );
     let _ = Command::new("killall").arg(&plat.qemu_bin).status();
 
-    // Resolve dynamic compiled artifact paths from subprojects configuration.
-    let (boot_bin, boot_bin_raw, kern_bin, loader_img, services_img) = resolve_artifact_paths(&resolved.build, plat)?;
+    // Resolve dynamic compiled artifact paths.
+    let (boot_bin, boot_bin_raw, kern_bin, loader_img, services_img) = resolve_artifact_paths(resolved, plat)?;
 
     // Generate Device Tree Blob
     let _ = std::fs::create_dir_all(resolved.root.project.dist_dir());
 
-    // Materialise the virtio block image that QEMU's `-drive file=...`
-    // points at.  We synthesise a 1.44 MB FAT12 image (the historical
-    // CapsuleOS block format) on disk so the run is no longer dependent
-    // on a stale `disk.img` file living in the repository root.
     let disk_img_path = ensure_disk_image(&plat.qemu_disk_img)?;
 
     generate_qemu_dtb(
@@ -57,52 +53,14 @@ pub fn run(resolved: &Resolved, plat: &Platform, gdb: bool) -> Result<(), String
 }
 
 pub fn resolve_artifact_paths(
-    build: &crate::config::BuildConfig,
+    _resolved: &Resolved,
     plat: &Platform,
 ) -> Result<(String, String, String, String, String), String> {
-    let mut bootloader_bin = String::new();
-    let mut bootloader_bin_raw = String::new();
-    let mut kernel_bin = String::new();
-    let mut loader_img = String::new();
-    let mut services_img = String::new();
-
-    for sub in &build.subprojects {
-        match sub.subproject_type.as_str() {
-            "bootloader" => {
-                if let Some(Some(bin_out)) = &sub.bin_output {
-                    bootloader_bin = bin_out.replace("{rust_target}", &plat.rust_target);
-                    bootloader_bin_raw = bootloader_bin.trim_end_matches(".bin").to_string();
-                }
-            }
-            "kernel" => {
-                if let Some(Some(ohc_out)) = &sub.ohc_output {
-                    kernel_bin = ohc_out.clone();
-                }
-            }
-            "userspace" => {
-                if sub.name == "userspace-loader" {
-                    if let Some(rootfs_out) = &sub.rootfs_output {
-                        loader_img = rootfs_out.clone();
-                    }
-                } else if sub.name == "userspace-apps" {
-                    if let Some(rootfs_out) = &sub.rootfs_output {
-                        services_img = rootfs_out.clone();
-                    }
-                } else {
-                    if let Some(rootfs_out) = &sub.rootfs_output {
-                        loader_img = rootfs_out.clone();
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if bootloader_bin.is_empty() || kernel_bin.is_empty() {
-        return Err(
-            "Failed to resolve compiled artifact paths from subprojects configuration.".to_string(),
-        );
-    }
+    let bootloader_bin = format!("build/target/{}/release/capsule-bootloader.bin", plat.rust_target);
+    let bootloader_bin_raw = format!("build/target/{}/release/capsule-bootloader", plat.rust_target);
+    let kernel_bin = "build/dist/kernel/hnxcore".to_string();
+    let loader_img = "kernel/files/loader.img".to_string();
+    let services_img = "kernel/files/rootfs.img".to_string();
 
     Ok((bootloader_bin, bootloader_bin_raw, kernel_bin, loader_img, services_img))
 }
@@ -198,7 +156,6 @@ fn launch_qemu(
         BOLD_GREEN, RESET, GRAY, RESET
     );
 
-    // Ensure dist directory exists so subsequent steps can write artifacts.
     let _ = std::fs::create_dir_all(resolved.root.project.dist_dir());
 
     let mut qemu = Command::new(&plat.qemu_bin);
@@ -217,7 +174,7 @@ fn launch_qemu(
         qemu.arg(rendered_arg);
     }
 
-if gdb {
+    if gdb {
         qemu.args(["-s", "-S"]);
         println!(
             "{}  GDB Server Enabled{} Listening on TCP port 1234. QEMU CPU suspended. Waiting for GDB...",
@@ -260,13 +217,6 @@ fn render_variables(
         .replace("{smp}", &plat.qemu_smp.to_string())
 }
 
-/// Ensure the virtio block image referenced by `xtask.qemu.toml`
-/// exists on disk.  If the file is missing we synthesise a 1.44 MB
-/// FAT12 stub (the historical CapsuleOS block format) so QEMU's
-/// `-drive file=...` never fails with "No such file or directory".
-///
-/// Returns the absolute path to the image so the caller can pass it
-/// to QEMU regardless of the current working directory.
 pub fn ensure_disk_image(path: &str) -> Result<String, String> {
     let p = std::path::Path::new(path);
     if p.exists() {
@@ -323,25 +273,13 @@ pub fn ensure_disk_image(path: &str) -> Result<String, String> {
         .map_err(|e| format!("failed to canonicalize {}: {}", path, e))
 }
 
-/// Public entry point used by `xtask code build` to regenerate
-/// `build/dist/qemu.dtb` after a clean build, so that downstream
-/// tooling that depends on the DTB doesn't have to wait for a
-/// separate `xtask code run` step.
 pub fn generate_qemu_dtb_artifact_paths(resolved: &Resolved, plat: &Platform) -> Result<(), String> {
-    let (boot_bin, boot_bin_raw, kern_bin, loader_img, services_img) = resolve_artifact_paths(&resolved.build, plat)?;
-    // build.rs calls this against the non-"virt" Platform, so we
-    // re-resolve a "virt" view to get the actual qemu_* args +
-    // SMP value.
-    let virt = crate::platform::Platform::from_configs(
-        &plat.arch, "virt", &resolved.build, &resolved.runtime,
-    )
-    .ok_or_else(|| "virt profile missing for dtb generation".to_string())?;
-    // Ensure the dist directory exists so dtc can write the DTB into it.
+    let (boot_bin, boot_bin_raw, kern_bin, loader_img, services_img) = resolve_artifact_paths(resolved, plat)?;
     let _ = std::fs::create_dir_all(resolved.root.project.dist_dir());
-    let disk_img = ensure_disk_image(&virt.qemu_disk_img)?;
+    let disk_img = ensure_disk_image(&plat.qemu_disk_img)?;
     generate_qemu_dtb(
         resolved,
-        &virt,
+        plat,
         &boot_bin,
         &boot_bin_raw,
         &kern_bin,

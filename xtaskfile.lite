@@ -1,0 +1,58 @@
+[project]
+name = "capsuleOS"
+version = "1.0.0-beta4"
+codename = "Pangu"
+
+[build]
+bootloader = { path = "bootloader/Cargo.toml", output = "build/dist/loader_rootfs/system/bin/bootloader" }
+kernel     = { path = "kernel/Cargo.toml",     output = "build/dist/kernel/hnxcore" }
+
+pillsmod = [
+    { path = "pillsmod/blkdev/Cargo.toml",     output = "build/dist/staging_rootfs/system/lib/pills/blkdev.pill" },
+    { path = "pillsmod/fileagent/Cargo.toml",  output = "build/dist/staging_rootfs/system/lib/pills/fileagent.pill" }
+]
+
+libraries = [
+    { path = "libraries/libc/Cargo.toml",      output = "build/dist/staging_rootfs/system/lib/libc.a" }
+]
+
+services = [
+    { path = "services/devmgr/Cargo.toml",     output = "build/dist/staging_rootfs/system/services/devmgr" },
+    { path = "services/loader/Cargo.toml",     output = "build/dist/loader_rootfs/system/bin/loader" },
+    { path = "services/procmgr/Cargo.toml",    output = "build/dist/staging_rootfs/system/services/procmgr" },
+    { path = "services/servicesd/Cargo.toml",  output = "build/dist/staging_rootfs/system/services/servicesd" }
+]
+
+apps = [
+    { path = "apps/shell/osh/Cargo.toml",      output = "build/dist/staging_rootfs/apps/shell/osh" },
+    { path = "apps/utilities/ls/Cargo.toml",   output = "build/dist/staging_rootfs/apps/utilities/ls" },
+    { path = "apps/utilities/cat/Cargo.toml",  output = "build/dist/staging_rootfs/apps/utilities/cat" }
+]
+
+[run.qemu]
+bin = "qemu-system-aarch64"
+smp = 2
+disk_img = "build/disk.img"
+args = [
+    "-M", "virt,secure=off",
+    "-cpu", "cortex-a72",
+    "-smp", "{smp}",
+    "-m", "256M",
+    "-device", "loader,file={bootloader_bin},addr=0x44000000,cpu-num=0,force-raw=on",
+    "-device", "loader,file={kernel_bin},addr=0x40700000,force-raw=on",
+    "-device", "loader,file={qemu_dtb},addr=0x42000000,force-raw=on",
+    "-device", "loader,file={loader_img},addr=0x46000000,force-raw=on",
+    "-device", "loader,file={rootfs_img},addr=0x48000000,force-raw=on",
+    "-drive", "if=none,format=raw,id=hd0,file={disk_img}",
+    "-device", "virtio-blk-device,drive=hd0",
+    "-nographic",
+    "-semihosting"
+]
+dtb_dump_args = [
+    "-M", "virt,secure=off",
+    "-cpu", "cortex-a72",
+    "-smp", "{smp}",
+    "-m", "256M",
+    "-machine", "dumpdtb=/tmp/qemu_raw.dtb",
+    "-display", "none"
+]

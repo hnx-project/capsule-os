@@ -25,6 +25,97 @@ pub struct ExportSymbol {
     pub addr: usize,
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PillQueueHandles {
+    pub desc_vmo: u64,
+    pub avail_vmo: u64,
+    pub used_vmo: u64,
+    pub desc_bytes: u64,
+    pub avail_bytes: u64,
+    pub used_bytes: u64,
+    pub qsize: u32,
+}
+
+#[no_mangle]
+pub extern "C" fn k_pa_to_kernel_va(pa: usize) -> usize {
+    pa_to_kernel_va(pa)
+}
+
+#[no_mangle]
+pub extern "C" fn kernel_virtio_setup_queue(slot: u32, qsel: u16, qsize: u16) -> Result<PillQueueHandles> {
+    let q = qsize as usize;
+    let desc_b = 16 * q;
+    let avail_b = 6 + 2 * q;
+    let mut used_b = 6 + 8 * q;
+    if used_b < 4096 {
+        used_b = 4096;
+    }
+
+    let desc_pa = alloc_page(PageTag::VmoData)?.as_usize();
+    let avail_pa = alloc_page(PageTag::VmoData)?.as_usize();
+    let used_pa = alloc_page(PageTag::VmoData)?.as_usize();
+
+    unsafe {
+        core::ptr::write_bytes(pa_to_kernel_va(desc_pa) as *mut u8, 0, 4096);
+        core::ptr::write_bytes(pa_to_kernel_va(avail_pa) as *mut u8, 0, 4096);
+        core::ptr::write_bytes(pa_to_kernel_va(used_pa) as *mut u8, 0, 4096);
+    }
+
+    Ok(PillQueueHandles {
+        desc_vmo: desc_pa as u64,
+        avail_vmo: avail_pa as u64,
+        used_vmo: used_pa as u64,
+        desc_bytes: desc_b as u64,
+        avail_bytes: avail_b as u64,
+        used_bytes: used_b as u64,
+        qsize: qsize as u32,
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn kernel_virtio_kick(slot: u32, qsel: u16) -> Result<()> {
+    crate::drivers::bus::mmio_bus::sys_virtio_kick(slot, qsel)
+}
+
+#[no_mangle]
+pub extern "C" fn kernel_virtio_read_isr(slot: u32) -> Result<u32> {
+    crate::drivers::bus::mmio_bus::sys_virtio_read_isr(slot)
+}
+
+#[no_mangle]
+pub extern "C" fn kernel_vmar_map_self(vmo_handle: usize, target_va: usize, len: usize) -> Result<()> {
+    let page_count = (len + 4095) / 4096;
+    for i in 0..page_count {
+        let va = target_va + i * 4096;
+        let pa = vmo_handle + i * 4096;
+        unsafe {
+            crate::arch::mmu::map_page(va, pa, MapFlags::kernel_rw())?;
+        }
+    }
+    unsafe {
+        crate::arch::aarch64::Aarch64Hardware::flush_tlb_local();
+    }
+    Ok(())
+}
+
+#[no_mangle]
+pub extern "C" fn kernel_display_flush(_vmo: usize) {}
+
+#[no_mangle]
+pub extern "C" fn kernel_thread_yield() {
+    unsafe {
+        crate::task::scheduler::SCHEDULER.schedule();
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn kernel_log(tag_ptr: *const u8, tag_len: usize, msg_ptr: *const u8, msg_len: usize) {
+    let tag = unsafe { core::str::from_utf8(core::slice::from_raw_parts(tag_ptr, tag_len)).unwrap_or("PILL") };
+    let msg = unsafe { core::str::from_utf8(core::slice::from_raw_parts(msg_ptr, msg_len)).unwrap_or("") };
+    crate::log_info!("PILL", "[{}] {}", tag, msg);
+}
+
 /// Helper to lookup an exported kernel symbol address by its string name.
 fn lookup_kernel_symbol(name: &str) -> Option<usize> {
     match name {
@@ -34,6 +125,14 @@ fn lookup_kernel_symbol(name: &str) -> Option<usize> {
         "get_ticks" => Some(crate::arch::get_ticks as usize),
         "timer_phys_count" => Some(crate::arch::timer_phys_count as usize),
         "timer_freq_hz" => Some(crate::arch::timer_freq_hz as usize),
+        "pa_to_kernel_va" => Some(k_pa_to_kernel_va as usize),
+        "kernel_virtio_setup_queue" => Some(kernel_virtio_setup_queue as usize),
+        "kernel_virtio_kick" => Some(kernel_virtio_kick as usize),
+        "kernel_virtio_read_isr" => Some(kernel_virtio_read_isr as usize),
+        "kernel_vmar_map_self" => Some(kernel_vmar_map_self as usize),
+        "kernel_display_flush" => Some(kernel_display_flush as usize),
+        "kernel_thread_yield" => Some(kernel_thread_yield as usize),
+        "kernel_log" => Some(kernel_log as usize),
         _ => None,
     }
 }

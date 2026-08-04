@@ -49,41 +49,29 @@ fn main() {
                 }
             }
             CodeSubcommands::Build { arch, platform, config } => {
-                let resolved = match Resolved::load(platform, config.as_deref()) {
+                let resolved = match Resolved::load(config.as_deref()) {
                     Ok(r) => r,
                     Err(e) => {
                         eprintln!("Configuration load failed: {}", e);
                         std::process::exit(1);
                     }
                 };
-                let plat = match Platform::from_configs(arch, platform, &resolved.build, &resolved.runtime) {
-                    Some(p) => p,
-                    None => {
-                        eprintln!("Unsupported architecture/platform: {}/{}", arch, platform);
-                        std::process::exit(1);
-                    }
-                };
-                if let Err(e) = build::build(&resolved, &plat, true) {
+                let plat = Platform::from_configs(arch, platform, &resolved.root);
+                if let Err(e) = build::build(&resolved, &plat, true, false) {
                     eprintln!("Build failed: {}", e);
                     std::process::exit(1);
                 }
             }
             CodeSubcommands::Run { arch, platform, config, gdb } => {
-                let resolved = match Resolved::load(platform, config.as_deref()) {
+                let resolved = match Resolved::load(config.as_deref()) {
                     Ok(r) => r,
                     Err(e) => {
                         eprintln!("Configuration load failed: {}", e);
                         std::process::exit(1);
                     }
                 };
-                let plat = match Platform::from_configs(arch, platform, &resolved.build, &resolved.runtime) {
-                    Some(p) => p,
-                    None => {
-                        eprintln!("Unsupported architecture/platform: {}/{}", arch, platform);
-                        std::process::exit(1);
-                    }
-                };
-                if let Err(e) = build::build(&resolved, &plat, false) {
+                let plat = Platform::from_configs(arch, platform, &resolved.root);
+                if let Err(e) = build::build(&resolved, &plat, false, false) {
                     eprintln!("Build failed: {}", e);
                     std::process::exit(1);
                 }
@@ -93,8 +81,7 @@ fn main() {
                 }
             }
             CodeSubcommands::CheckVersion { sync } => {
-                // CheckVersion only reads root metadata.
-                let resolved = match Resolved::load("virt", None) {
+                let resolved = match Resolved::load(None) {
                     Ok(r) => r,
                     Err(e) => {
                         eprintln!("Configuration load failed: {}", e);
@@ -107,7 +94,7 @@ fn main() {
                 }
             }
             CodeSubcommands::Doc { open } => {
-                let resolved = match Resolved::load("virt", None) {
+                let resolved = match Resolved::load(None) {
                     Ok(r) => r,
                     Err(e) => {
                         eprintln!("Configuration load failed: {}", e);
@@ -120,20 +107,14 @@ fn main() {
                 }
             }
             CodeSubcommands::Test { arch, platform, config, timeout } => {
-                let resolved = match Resolved::load(platform, config.as_deref()) {
+                let resolved = match Resolved::load(config.as_deref()) {
                     Ok(r) => r,
                     Err(e) => {
                         eprintln!("Configuration load failed: {}", e);
                         std::process::exit(1);
                     }
                 };
-                let plat = match Platform::from_configs(arch, platform, &resolved.build, &resolved.runtime) {
-                    Some(p) => p,
-                    None => {
-                        eprintln!("Unsupported architecture/platform: {}/{}", arch, platform);
-                        std::process::exit(1);
-                    }
-                };
+                let plat = Platform::from_configs(arch, platform, &resolved.root);
                 if let Err(e) = test::test(&resolved, &plat, *timeout) {
                     eprintln!("Test failed: {}", e);
                     std::process::exit(1);

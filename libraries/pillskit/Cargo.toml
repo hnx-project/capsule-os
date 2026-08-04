@@ -1,0 +1,17 @@
+[package]
+name = "pillskit"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+name = "pillskit"
+
+[dependencies]
+capsule = { path = "../libcapsule", package = "libcapsule", optional = true }
+shared = { path = "../../kernel/shared" }
+
+[features]
+default = ["user"]
+user = ["dep:capsule", "capsule/runtime"]
+kernel = []

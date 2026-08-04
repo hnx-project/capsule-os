@@ -1,4 +1,4 @@
 name = "testall"
 path = "testall"
-dependencies = ["fileagent", "tty", "netd"]
+dependencies = ["tty", "netd"]
 is_program = true

@@ -37,7 +37,7 @@ pub struct Vmo {
     pub is_cow: bool,
     pub parent_id: Option<u64>,
     /// Array of allocated metadata pages for pages 1+ to keep their RAII live.
-    extra_meta_pages: [Option<PhysPage>; 8],
+    extra_meta_pages: [Option<PhysPage>; 64],
     /// Track of committed RAII data pages.
     committed_pages: alloc::vec::Vec<Option<PhysPage>>,
 }
@@ -62,10 +62,11 @@ impl Vmo {
         if pages > VMO_MAX_PAGES { return Err(Status::InvalidArgs); }
 
         let mpn = meta_pages_needed(pages);
+        crate::log_info!("VMO", "create_physical: addr={:#x}, size={}, pages={}, mpn={}", phys_addr, size, pages, mpn);
         let meta_pa = phys::alloc_vmo_meta()?;
         let meta_page = PhysPage::new(meta_pa);
 
-        let mut extra_meta_pages = [const { None }; 8];
+        let mut extra_meta_pages = [const { None }; 64];
         let committed_pages = alloc::vec::Vec::new(); // 物理借用VMO，直接保持空Vec，零字节堆开销！
 
         unsafe {
@@ -113,7 +114,7 @@ impl Vmo {
         let meta_pa = phys::alloc_vmo_meta()?;
         let meta_page = PhysPage::new(meta_pa);
 
-        let mut extra_meta_pages = [const { None }; 8];
+        let mut extra_meta_pages = [const { None }; 64];
         let mut committed_pages = alloc::vec::Vec::with_capacity(pages);
         for _ in 0..pages {
             committed_pages.push(None);
@@ -357,9 +358,9 @@ impl Clone for Vmo {
     fn clone(&self) -> Self {
         // Safe shallow reference copying, RAII drops are avoided since the clone target copies metadata base PAs.
         // NOTE: Standard clone does shallow tracking; for deep copies, fork should be preferred.
-        let mut extra_meta_pages = [const { None }; 8];
+        let mut extra_meta_pages = [const { None }; 64];
         
-        for i in 0..8 {
+        for i in 0..64 {
             if let Some(ref page) = self.extra_meta_pages[i] {
                 extra_meta_pages[i] = Some(PhysPage::new(page.addr()));
                 core::mem::forget(page.addr()); // Avoid double release on the cloned meta pages

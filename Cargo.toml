@@ -6,6 +6,7 @@ edition = "2021"
 libc = { path = "libraries/libc" }
 libstd = { path = "libraries/libstd" }
 libcapsule = { path = "libraries/libcapsule" }
+pillskit = { path = "libraries/pillskit" }
 
 [workspace]
 members = [
@@ -19,6 +20,7 @@ members = [
     "libraries/libstd",
     "libraries/libcapsule",
     "libraries/libtty",
+    "libraries/pillskit",
     # services | CapsuleOS system services
     "services/devmgr",
     "services/loader",
@@ -33,6 +35,7 @@ members = [
     "pillsmod/touchd",
     "pillsmod/blkdev",
     "pillsmod/fileagent",
+    "pillsmod/mockd",
     # apps | CapsuleOS user applications
     "apps/shell/osh",
     "apps/utilities/ls",

@@ -1,0 +1,18 @@
+[package]
+name = "hnx-mockd"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "mockd"
+path = "src/main.rs"
+
+[dependencies]
+pillskit = { path = "../../libraries/pillskit", default-features = false }
+shared = { path = "../../kernel/shared" }
+
+[features]
+default = ["user"]
+user = ["pillskit/user"]
+kernel = ["pillskit/kernel"]
+capsule = ["user"]
