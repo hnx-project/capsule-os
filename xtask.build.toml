@@ -61,7 +61,9 @@ enable  = true
 crates = [
     { crate_name = "hnx-inputd", out_name = "inputd", entry = "65536", config_path = "pillsmod/inputd/configs" },
     { crate_name = "hnx-graphicd", out_name = "graphicd", entry = "65536", config_path = "pillsmod/graphicd/configs" },
-    { crate_name = "hnx-touchd", out_name = "touchd", entry = "65536", config_path = "pillsmod/touchd/configs" }
+    { crate_name = "hnx-touchd", out_name = "touchd", entry = "65536", config_path = "pillsmod/touchd/configs" },
+    { crate_name = "hnx-blkdev", out_name = "blkdev", entry = "65536", config_path = "pillsmod/blkdev/configs" },
+    { crate_name = "hnx-fileagent", out_name = "fileagent", entry = "65536", config_path = "pillsmod/fileagent/configs" }
 ]
 staging_bin_dir = "build/dist/staging_rootfs/system/lib/pills"
 
@@ -71,8 +73,6 @@ type    = "userspace"
 enable  = true
 crates = [
     { crate_name = "hnx-devmgr", out_name = "devmgr", entry = "65536", config_path = "services/devmgr/configs" },
-    { crate_name = "hnx-blkdev", out_name = "blkdev", entry = "65536", config_path = "services/blkdev/configs" },
-    { crate_name = "hnx-fileagent", out_name = "fileagent", entry = "65536", config_path = "services/fileagent/configs" },
     { crate_name = "hnx-procmgr", out_name = "procmgr", entry = "65536", config_path = "services/procmgr/configs" },
     { crate_name = "hnx-tty", out_name = "tty", entry = "65536", config_path = "services/tty/configs" },
     { crate_name = "hnx-servicesd", out_name = "servicesd", entry = "65536" },

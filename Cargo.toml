@@ -21,8 +21,6 @@ members = [
     "libraries/libtty",
     # services | CapsuleOS system services
     "services/devmgr",
-    "services/blkdev",
-    "services/fileagent",
     "services/loader",
     "services/procmgr",
     "services/tty",
@@ -33,6 +31,8 @@ members = [
     "pillsmod/inputd",
     "pillsmod/graphicd",
     "pillsmod/touchd",
+    "pillsmod/blkdev",
+    "pillsmod/fileagent",
     # apps | CapsuleOS user applications
     "apps/shell/osh",
     "apps/utilities/ls",
