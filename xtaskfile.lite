@@ -8,8 +8,7 @@ bootloader = { path = "bootloader/Cargo.toml", output = "build/dist/loader_rootf
 kernel     = { path = "kernel/Cargo.toml",     output = "build/dist/kernel/hnxcore" }
 
 pillsmod = [
-    { path = "pillsmod/blkdev/Cargo.toml",     output = "build/dist/staging_rootfs/system/lib/pills/blkdev.pill" },
-    { path = "pillsmod/fileagent/Cargo.toml",  output = "build/dist/staging_rootfs/system/lib/pills/fileagent.pill" }
+    { path = "pillsmod/blkdev/Cargo.toml",     output = "build/dist/staging_rootfs/system/lib/pills/blkdev.pill" }
 ]
 
 libraries = [
@@ -20,7 +19,8 @@ services = [
     { path = "services/devmgr/Cargo.toml",     output = "build/dist/staging_rootfs/system/services/devmgr" },
     { path = "services/loader/Cargo.toml",     output = "build/dist/loader_rootfs/system/bin/loader" },
     { path = "services/procmgr/Cargo.toml",    output = "build/dist/staging_rootfs/system/services/procmgr" },
-    { path = "services/servicesd/Cargo.toml",  output = "build/dist/staging_rootfs/system/services/servicesd" }
+    { path = "services/servicesd/Cargo.toml",  output = "build/dist/staging_rootfs/system/services/servicesd" },
+    { path = "services/fileagent/Cargo.toml",  output = "build/dist/staging_rootfs/system/services/fileagent" }
 ]
 
 apps = [

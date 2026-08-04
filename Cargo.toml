@@ -29,12 +29,12 @@ members = [
     "services/servicesd",
     "services/netd",
     "services/piped",
+    "services/fileagent",
     # pills | Kernel Extensions
     "pillsmod/inputd",
     "pillsmod/graphicd",
     "pillsmod/touchd",
     "pillsmod/blkdev",
-    "pillsmod/fileagent",
     "pillsmod/mockd",
     # apps | CapsuleOS user applications
     "apps/shell/osh",

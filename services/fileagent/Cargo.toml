@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 libcapsule = { path = "../../libraries/libcapsule", package = "libcapsule", features = ["runtime"] }
 shared = { path = "../../kernel/shared" }
+pillskit = { path = "../../libraries/pillskit", package = "pillskit", features = ["user"] }
 fatfs = { package = "starry-fatfs", version = "0.4.1-preview.2", default-features = false }
 
 [features]

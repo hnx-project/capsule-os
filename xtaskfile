@@ -12,7 +12,6 @@ pillsmod = [
     { path = "pillsmod/graphicd/Cargo.toml",   output = "build/dist/staging_rootfs/system/lib/pills/graphicd.pill" },
     { path = "pillsmod/touchd/Cargo.toml",     output = "build/dist/staging_rootfs/system/lib/pills/touchd.pill" },
     { path = "pillsmod/blkdev/Cargo.toml",     output = "build/dist/staging_rootfs/system/lib/pills/blkdev.pill" },
-    { path = "pillsmod/fileagent/Cargo.toml",  output = "build/dist/staging_rootfs/system/lib/pills/fileagent.pill" },
     { path = "pillsmod/mockd/Cargo.toml",      output = "build/dist/staging_rootfs/system/lib/pills/mockd.pill" }
 ]
 
@@ -27,7 +26,8 @@ services = [
     { path = "services/tty/Cargo.toml",         output = "build/dist/staging_rootfs/system/bin/tty" },
     { path = "services/servicesd/Cargo.toml",  output = "build/dist/staging_rootfs/system/bin/servicesd" },
     { path = "services/netd/Cargo.toml",       output = "build/dist/staging_rootfs/system/bin/netd" },
-    { path = "services/piped/Cargo.toml",      output = "build/dist/staging_rootfs/system/bin/piped" }
+    { path = "services/piped/Cargo.toml",      output = "build/dist/staging_rootfs/system/bin/piped" },
+    { path = "services/fileagent/Cargo.toml",  output = "build/dist/staging_rootfs/system/bin/fileagent" }
 ]
 
 apps = [
