@@ -77,10 +77,15 @@ impl Resolved {
             None => {
                 if Path::new("xtaskfile").exists() {
                     "xtaskfile".to_string()
+                } else if Path::new("xtaskfile.lite").exists() {
+                    "xtaskfile.lite".to_string()
                 } else if Path::new("xtask.toml").exists() {
                     "xtask.toml".to_string()
                 } else {
-                    return Err("No xtaskfile or xtask.toml found in current directory".to_string());
+                    return Err(
+                        "No xtaskfile, xtaskfile.lite, or xtask.toml found in current directory"
+                            .to_string(),
+                    );
                 }
             }
         };
