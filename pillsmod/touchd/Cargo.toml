@@ -8,8 +8,8 @@ name = "touchd"
 path = "src/main.rs"
 
 [dependencies]
-libcapsule = { path = "../../../../libraries/libcapsule", package = "libcapsule", features = ["runtime"] }
-shared = { path = "../../../shared" }
+libcapsule = { path = "../../libraries/libcapsule", package = "libcapsule", features = ["runtime"] }
+shared = { path = "../../kernel/shared" }
 
 [features]
 capsule = []

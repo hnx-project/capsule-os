@@ -59,9 +59,9 @@ name    = "kernel-pills"
 type    = "pills"
 enable  = true
 crates = [
-    { crate_name = "hnx-inputd", out_name = "inputd", entry = "65536", config_path = "kernel/src/pillsmod/inputd/configs" },
-    { crate_name = "hnx-graphicd", out_name = "graphicd", entry = "65536", config_path = "kernel/src/pillsmod/graphicd/configs" },
-    { crate_name = "hnx-touchd", out_name = "touchd", entry = "65536", config_path = "kernel/src/pillsmod/touchd/configs" }
+    { crate_name = "hnx-inputd", out_name = "inputd", entry = "65536", config_path = "pillsmod/inputd/configs" },
+    { crate_name = "hnx-graphicd", out_name = "graphicd", entry = "65536", config_path = "pillsmod/graphicd/configs" },
+    { crate_name = "hnx-touchd", out_name = "touchd", entry = "65536", config_path = "pillsmod/touchd/configs" }
 ]
 staging_bin_dir = "build/dist/staging_rootfs/system/lib/pills"
 
@@ -70,14 +70,14 @@ name    = "userspace-apps"
 type    = "userspace"
 enable  = true
 crates = [
-    { crate_name = "hnx-devmgr", out_name = "devmgr", entry = "65536", config_path = "userspace/services/devmgr/configs" },
-    { crate_name = "hnx-blkdev", out_name = "blkdev", entry = "65536", config_path = "userspace/services/blkdev/configs" },
-    { crate_name = "hnx-fileagent", out_name = "fileagent", entry = "65536", config_path = "userspace/services/fileagent/configs" },
-    { crate_name = "hnx-procmgr", out_name = "procmgr", entry = "65536", config_path = "userspace/services/procmgr/configs" },
-    { crate_name = "hnx-tty", out_name = "tty", entry = "65536", config_path = "userspace/services/tty/configs" },
+    { crate_name = "hnx-devmgr", out_name = "devmgr", entry = "65536", config_path = "services/devmgr/configs" },
+    { crate_name = "hnx-blkdev", out_name = "blkdev", entry = "65536", config_path = "services/blkdev/configs" },
+    { crate_name = "hnx-fileagent", out_name = "fileagent", entry = "65536", config_path = "services/fileagent/configs" },
+    { crate_name = "hnx-procmgr", out_name = "procmgr", entry = "65536", config_path = "services/procmgr/configs" },
+    { crate_name = "hnx-tty", out_name = "tty", entry = "65536", config_path = "services/tty/configs" },
     { crate_name = "hnx-servicesd", out_name = "servicesd", entry = "65536" },
-    { crate_name = "hnx-netd", out_name = "netd", entry = "65536", config_path = "userspace/services/netd/configs" },
-    { crate_name = "hnx-osh", out_name = "osh", entry = "65536", config_path = "userspace/programs/osh/configs" },
+    { crate_name = "hnx-netd", out_name = "netd", entry = "65536", config_path = "services/netd/configs" },
+    { crate_name = "hnx-osh", out_name = "osh", entry = "65536", config_path = "apps/shell/osh/configs" },
     { crate_name = "hnx-ls", out_name = "ls", entry = "65536" },
     { crate_name = "hnx-cat", out_name = "cat", entry = "65536" },
     { crate_name = "hnx-mkdir", out_name = "mkdir", entry = "65536" },
@@ -86,8 +86,8 @@ crates = [
     { crate_name = "hnx-rmdir", out_name = "rmdir", entry = "65536" },
     { crate_name = "hnx-ps", out_name = "ps", entry = "65536" },
     { crate_name = "hnx-kill", out_name = "kill", entry = "65536" },
-    { crate_name = "hnx-testall", out_name = "testall", entry = "65536", config_path = "userspace/programs/testall/configs" },
-    { crate_name = "hnx-dmesg", out_name = "dmesg", entry = "65536", config_path = "userspace/programs/dmesg/configs" }
+    { crate_name = "hnx-testall", out_name = "testall", entry = "65536", config_path = "apps/utilities/testall/configs" },
+    { crate_name = "hnx-dmesg", out_name = "dmesg", entry = "65536", config_path = "apps/utilities/dmesg/configs" }
 ]
 staging_bin_dir = "build/dist/staging_rootfs/system/bin"
 rootfs_output   = "kernel/files/rootfs.img"
@@ -125,9 +125,9 @@ bin_output = "build/target/{rust_target}/release/capsule-bootloader.bin"
 name         = "bash"
 type         = "foreign"
 enable       = false
-src_path     = "userspace/posix/bash"
+src_path     = "apps/shell/bash"
 configure    = "./capsule-configure.sh"
 build        = "make -j$(nproc)"
-artifact     = "userspace/posix/bash/bash"
+artifact     = "apps/shell/bash/bash"
 ohlink_entry = "65536"
 staging_bin  = "build/dist/staging_rootfs/system/bin/bash"

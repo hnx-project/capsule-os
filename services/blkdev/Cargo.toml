@@ -8,8 +8,8 @@ name = "blkdev"
 path = "src/main.rs"
 
 [dependencies]
-libcapsule = { path = "../../../libraries/libcapsule", package = "libcapsule", features = ["runtime"] }
-shared = { path = "../../../kernel/shared" }
+libcapsule = { path = "../../libraries/libcapsule", package = "libcapsule", features = ["runtime"] }
+shared = { path = "../../kernel/shared" }
 
 [features]
 capsule = []
