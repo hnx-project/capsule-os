@@ -39,7 +39,7 @@ CapsuleOS enforces a strict, hierarchical layered topology. Layers can only depe
 ```text
 capsule-os/                         # Root Folder
 ├── README.md                       # Public Quickstart Index
-├── DEVELOPMENT.md                  # The 8 Engineering & Testing Standards
+├── DEVELOPMENT.md                  # The 10 Engineering & Testing Standards
 ├── ARCHITECTURE.md                 # System Architecture Specifications
 ├── CONTRIBUTING.md                 # Development & Commit Guide
 ├── AGENTS.md                       # AI Agent Guidelines & Invariants
@@ -51,22 +51,35 @@ capsule-os/                         # Root Folder
 │   ├── linker/                     # aarch64 Linker Scripts
 │   └── src/                        # Rust Core Source Files
 │       ├── arch/aarch64/           # CPU instructions, MMU, vectors, traps (HAL)
-│       ├── mm/                     # VMO, VMAR, and page allocation
-│       ├── task/                   # Scheduler, Process, and Thread contexts
-│       ├── object/                 # HandleTable, capability rights policing
-│       ├── ipc/                    # Zero-allocation synchronous Channel & Port
-│       ├── drivers/                # PL011 UART and GIC drivers
+│       │   └── drivers/            # SoC-specific drivers (PL011, GIC, Timer)
+│       ├── core/                   # Scheduler, Process, Thread, VM, and Locks (Microkernel)
+│       ├── posix/                  # High-performance in-kernel POSIX fast-paths (pipe, shm)
+│       ├── pills/                  # Kernel-level Pill loader module
 │       └── lib.rs                  # Microkernel entry and initialization
+│
+├── pillsmod/                       # 💊 Plug-in high-privilege peripheral driver bundles (EL1/EL0.5)
+│   ├── graphicd/                   # VirtIO-GPU display driver (.pill)
+│   ├── inputd/                     # VirtIO-Mouse input driver (.pill)
+│   └── touchd/                     # VirtIO-Touch multi-touch driver (.pill)
 │
 ├── libraries/                      # Sandboxed Runtime Support Libraries (L2)
 │   ├── libc/                       # Standard POSIX translation layer (C-ABI)
 │   ├── libstd/                     # Self-built Rust standard library
 │   ├── libcapsule/                 # Safe system call wrapper with Error statuses
+│   ├── libtty/                     # Terminal line discipline / TTY library
 │   └── targets/                    # aarch64-unknown-capsule target JSON
 │
-└── userspace/                      # Sandboxed Processes & Utilities
-    ├── services/                   # System-level services (devmgr, fileagent) (L3)
-    └── programs/                   # POSIX applications (testall, osh, ls) (L4)
+├── services/                       # 📂 Sandboxed Daemon Services (L3)
+│   ├── servicesd/                  # 1️⃣ Init & Dynamic DAG service manager
+│   ├── fileagent/                  # VFS fileagent (Ext2/FAT/Ramfs)
+│   ├── blkdev/                     # Block storage device service
+│   ├── devmgr/                     # Hardware probing & FDT service
+│   ├── loader/                     # User-space OHLINK binary loader
+│   └── netd/                       # TCP/IP network protocol stack
+│
+└── apps/                           # 📂 User Applications & Shells (L4)
+    ├── shell/                      # Interactive terminal shells (osh, bash)
+    └── utilities/                  # Standard command-line POSIX tools
 ```
 
 ---
@@ -139,6 +152,23 @@ Our self-built compiler backend support 6 distinct AArch64 relocation equations 
 *   `R_AARCH64_ADD_ABS_LO12_NC`
 *   `R_AARCH64_LDST64_ABS_LO12_NC`
 *   `R_AARCH64_ADR_PREL_LO21`
+
+---
+
+## 7. 💊 Pangu-Hybrid: Pills-ification & SoC Driver HAL Isolation
+
+To address the latency, throughput, and initialization deadlocks traditional to pure microkernels, CapsuleOS incorporates a hybrid design separating core board bring-up from dynamic high-performance peripheral modules.
+
+### 7.1 SoC-specific Driver HAL Isolation
+All SoC-specific system-level drivers (Generic Interrupt Controller, ARM Generic Timer, and UART consoles pl011/ns16550) are isolated under the Hardware Abstraction Layer (HAL) at `kernel/src/arch/aarch64/drivers/`.
+*   **Decoupled Interface**: The general microkernel core (`kernel/src/lib.rs` and core subsystems) accesses platform hardware solely through generic interfaces defined in `kernel/src/arch/mod.rs` (e.g. `early_console_init()`, `interrupts_init()`, and `get_ticks()`).
+*   **Target Agnosticism**: This isolation guarantees that the core microkernel is completely board-independent, facilitating seamless porting to other architectures (like RISC-V or x86) by merely implementing their respective HAL facades.
+
+### 7.2 High-Performance Dynamic ".pill" Bundles
+Plug-in peripheral drivers (VirtIO-GPU, VirtIO-Mouse, VirtIO-Touch, and eventually high-throughput services like network protocol stacks and block device managers) are designed as **Pills (Kernel Extensions)** located in `/pillsmod/`.
+*   **Pill Bundle Structure**: Each pill is packed as a directory bundle containing its custom hardware metadata manifest (`auto.toml`) and its compiled OHLINK binary (e.g. `system/lib/pills/graphicd.pill/`).
+*   **Dual-Mode Capability**: These components can be compiled to run as isolated EL0 daemon processes (for security and online debugging) or dynamically loaded by the kernel-level `pill_loader.rs` in EL1 (for zero-copy high-throughput DMA and low-latency interrupt routing).
+*   **BootFS Staging**: `.pill` bundles are built and staged into the root filesystem archive (`rootfs.img`) dynamically before userspace boot, preventing filesystems-not-ready initialization deadlocks.
 
 ---
 *Designed and engineered with passion by the **HNX-Project** community.*

@@ -73,6 +73,16 @@ To keep the codebase modular, robust, and safe, any code modification must adher
 *   **Pre-Implementation Inspection**: Prior to adding new functionality, you must thoroughly scan the codebase using standard tools (such as Grep) to see if similar operations are already implemented.
 *   **Refactor First**: If an existing utility, helper, or core implementation is suboptimal, insufficient, or poorly designed for your needs, you must refactor and extend the existing code directly rather than introducing redundant functions, workarounds, or duplicate helper wrappers.
 
+### 11. 💊 特权药丸开发标准 (Pillsmod Development Standard)
+*   **Decoupled Pill Packages**: Plug-in peripheral drivers (like `graphicd`, `inputd`, `touchd`) must be packed as `.pill` bundles inside `/pillsmod/` and stored in `/system/lib/pills/` of the RootFS. They must never be statically hardcoded into the core microkernel directory.
+*   **Hardware Metadata Manifest**: Each `.pill` bundle must contain an `auto.toml` manifest file declaring its target hardware bus properties, device IDs, and required kernel exported symbols.
+*   **Dual-Mode Compilation**: Support compiling either as an EL0 userspace daemon (for diagnostics and online safety debugging) or dynamically linked at EL1 by the kernel loader (for zero-copy DMA throughput).
+
+### 12. 🔌 硬件驱动隔离标准 (SoC Driver HAL Isolation Standard)
+*   **No SoC-specific Code in Core**: Core microkernel code (`kernel/src/lib.rs` and subsystems) must contain zero hardware register, GIC, or UART-specific hardcoded references.
+*   **HAL Decoupling**: All SoC-specific bootstrap drivers (such as interrupt controllers, early UART controllers, system timers) must reside strictly under `kernel/src/arch/aarch64/drivers/` (HAL).
+*   **Abstract Interfaces**: The core kernel interacts with early platform hardware solely via generic facade functions defined at the arch boundary (such as `early_console_init()`, `interrupts_init()`, and `timer_init()`), ensuring target-agnosticism.
+
 ---
 
 ## 🧪 Testing & Verification Standards
