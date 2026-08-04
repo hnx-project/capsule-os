@@ -237,18 +237,75 @@ pub fn early_init() {
     aarch64::early_init();
 }
 
+pub fn early_console_init(boot: &crate::fdt::BootInfo) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        aarch64::drivers::uart::EARLY_UART_BASE.store(boot.uart_base, core::sync::atomic::Ordering::SeqCst);
+        if boot.uart_type.as_str() == "pl011" {
+            aarch64::drivers::uart::init_pl011(boot.uart_base);
+        } else if boot.uart_type.as_str() == "ns16550" {
+            aarch64::drivers::uart::init_ns16550(boot.uart_base);
+        }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    let _ = boot;
+}
+
+pub fn interrupts_init(boot: &crate::fdt::BootInfo) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        if boot.gicd_base != 0 && boot.gicc_base != 0 {
+            aarch64::drivers::gic::init(boot.gicd_base, boot.gicc_base);
+        }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    let _ = boot;
+}
+
+pub fn timer_init() {
+    #[cfg(target_arch = "aarch64")]
+    aarch64::drivers::timer::init();
+}
+
 pub fn console_putchar(c: u8) {
-    crate::drivers::uart::putchar(c);
+    #[cfg(target_arch = "aarch64")]
+    self::aarch64::console_putchar(c);
+    #[cfg(not(target_arch = "aarch64"))]
+    let _ = c;
 }
 
 pub fn console_getchar() -> Option<u8> {
-    crate::drivers::uart::getchar()
+    #[cfg(target_arch = "aarch64")]
+    return self::aarch64::console_getchar();
+    #[cfg(not(target_arch = "aarch64"))]
+    None
 }
 
 pub fn console_putbytes(s: &[u8]) {
     for &c in s {
         console_putchar(c);
     }
+}
+
+pub fn get_ticks() -> u64 {
+    #[cfg(target_arch = "aarch64")]
+    return self::aarch64::drivers::timer::get_ticks();
+    #[cfg(not(target_arch = "aarch64"))]
+    0
+}
+
+pub fn timer_phys_count() -> u64 {
+    #[cfg(target_arch = "aarch64")]
+    return self::aarch64::drivers::timer::phys_count();
+    #[cfg(not(target_arch = "aarch64"))]
+    0
+}
+
+pub fn timer_freq_hz() -> u64 {
+    #[cfg(target_arch = "aarch64")]
+    return self::aarch64::drivers::timer::freq_hz() as u64;
+    #[cfg(not(target_arch = "aarch64"))]
+    1_000_000
 }
 
 #[cfg(target_arch = "aarch64")]

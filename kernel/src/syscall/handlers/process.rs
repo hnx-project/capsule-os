@@ -2216,7 +2216,7 @@ pub fn sys_thread_sleep(ticks: u64) -> Result<()> {
     if ticks == 0 {
         return Ok(());
     }
-    let current_ticks = crate::drivers::timer::get_ticks();
+    let current_ticks = crate::arch::get_ticks();
     let wakeup_tick = current_ticks.saturating_add(ticks);
 
     if let Some(t) = unsafe { crate::task::scheduler::SCHEDULER.get_current_thread_ptr() } {

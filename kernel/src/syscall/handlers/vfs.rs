@@ -51,7 +51,7 @@ pub fn sys_read(fd: u32, buf_ptr: usize, buf_len: usize) -> Result<usize> {
         // boundary.
         let mut total = 0usize;
         while total < buf_len {
-            let mut byte = match crate::drivers::uart::getchar() {
+            let mut byte = match crate::arch::console_getchar() {
                 Some(b) => b,
                 None => return if total == 0 { Ok(0) } else { Ok(total) },
             };

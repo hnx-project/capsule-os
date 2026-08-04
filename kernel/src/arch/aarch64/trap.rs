@@ -62,7 +62,7 @@ pub extern "C" fn irq_handler(iar: u32, frame: *mut TrapFrame) {
     let _x19_guard = X19Guard { saved: saved_x19 };
     // PPI #30 (INTID 30) = generic timer.
     if iar == 30 {
-        crate::drivers::timer::handle_tick_from_irq(frame);
+        crate::arch::aarch64::drivers::timer::handle_tick_from_irq(frame);
     }
     // Other INTIDs are silently EOId (the stub always EOIs).
 }

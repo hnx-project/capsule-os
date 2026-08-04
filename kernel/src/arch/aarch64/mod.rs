@@ -65,6 +65,7 @@ pub mod trap;
 pub mod page_table;
 pub mod phys;
 pub mod slab;
+pub mod drivers;
 
 #[repr(C, align(16))]
 #[derive(Debug, Clone, Copy)]
@@ -380,9 +381,13 @@ pub fn early_init() {
 
 pub fn console_putchar(c: u8) {
     if c == b'\n' {
-        crate::drivers::uart::putchar_pl011_raw(b'\r');
+        self::drivers::uart::putchar_pl011_raw(b'\r');
     }
-    crate::drivers::uart::putchar_pl011_raw(c);
+    self::drivers::uart::putchar_pl011_raw(c);
+}
+
+pub fn console_getchar() -> Option<u8> {
+    self::drivers::uart::getchar()
 }
 
 pub mod boot {

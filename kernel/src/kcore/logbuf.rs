@@ -120,7 +120,7 @@ pub fn log_to_ring(level: u8, target: &str, msg: &str) {
     let seq = buf.next_seq.wrapping_add(1);
     buf.next_seq = seq;
 
-    let timestamp_ticks = crate::drivers::timer::get_ticks();
+    let timestamp_ticks = crate::arch::get_ticks();
 
     let target_bytes = target.as_bytes();
     let target_len = core::cmp::min(target_bytes.len(), 8);

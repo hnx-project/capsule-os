@@ -76,8 +76,8 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
 
     match fdt::parse(dtb_ptr) {
         Ok(boot) => {
-            // Dynamically update the early UART base address from FDT parsing.
-            drivers::uart::EARLY_UART_BASE.store(boot.uart_base, core::sync::atomic::Ordering::SeqCst);
+            // Dynamically update and initialize early console from FDT parsing.
+            crate::arch::early_console_init(&boot);
 
             unsafe {
                 DEVICE_INFO_BOOT.write(boot);
@@ -85,12 +85,6 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
             }
 
             let boot = unsafe { &*DEVICE_INFO_BOOT.as_ptr() };
-
-            if boot.uart_type.as_str() == "pl011" {
-                drivers::uart::init_pl011(boot.uart_base);
-            } else if boot.uart_type.as_str() == "ns16550" {
-                drivers::uart::init_ns16550(boot.uart_base);
-            }
             arch::early_init();
 
             crate::kprintln!();
@@ -116,38 +110,12 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
                 }
             }
 
-            // Phase 3.1: bring up the GIC and the generic timer.
-            // This must happen AFTER the MMU is on so the timer reads
-            // (which use the virtual system-register interface) and
-            // the GIC MMIO accesses go through our page-table walker.
-            #[cfg(target_arch = "aarch64")]
-            {
-                if boot.gicd_base != 0 && boot.gicc_base != 0 {
-                    crate::log_info!("IRQ", "GICD={:#x} GICC={:#x}", boot.gicd_base, boot.gicc_base);
-                    drivers::gic::init(boot.gicd_base, boot.gicc_base);
-                    drivers::timer::init();
-                    crate::log_info!("IRQ", "GIC + generic timer enabled");
-
-                    // virtio-mmio bus is probed lazily on the first
-                    // `SYSCALL_VIRTIO_PROBE` from EL0 — running the
-                    // scan at this point can race with the devices'
-                    // own power-on reset (we observed all slots
-                    // returning dev_id=0).  See virtio_bus.rs.
-
-                    // Virtio-GPU MMIO Driver is decoupled and runs in user space (gpud)
-                    // drivers::virtio_gpu::init();
-
-                    // Virtio-Input MMIO Driver is decoupled and runs in user space (inputd)
-                    // drivers::virtio_input::init();
-                } else {
-                    crate::log_warn!("IRQ", "no GIC in FDT, skipping timer bring-up");
-                }
-            }
-            #[cfg(target_arch = "riscv64")]
-            {
-                drivers::timer::init();
-                crate::log_info!("IRQ", "RISC-V Supervisor timer enabled");
-            }
+            // Phase 3.1: bring up the Interrupt Controller and the generic timer.
+            // This must happen AFTER the MMU is on.
+            crate::log_info!("IRQ", "Initializing target-specific interrupt controller and timer...");
+            crate::arch::interrupts_init(&boot);
+            crate::arch::timer_init();
+            crate::log_info!("IRQ", "Interrupt controller + generic timer enabled");
 
             crate::log_info!("BOOT", "OK");
 
@@ -195,7 +163,10 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
             }
         }
         Err(e) => {
-            drivers::uart::init_pl011(0x09000000);
+            let mut fallback_boot = crate::fdt::BootInfo::empty();
+            fallback_boot.uart_base = 0x09000000;
+            fallback_boot.uart_type = heapless::String::from("pl011");
+            crate::arch::early_console_init(&fallback_boot);
 
             arch::early_init();
             crate::kprintln!();

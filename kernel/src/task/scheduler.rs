@@ -262,7 +262,7 @@ impl Scheduler {
         }
 
         // Wake up any sleeping threads whose timer has elapsed.
-        self.check_sleeping_threads(crate::drivers::timer::get_ticks());
+        self.check_sleeping_threads(crate::arch::get_ticks());
 
         // 1. Release this core's currently-running thread (if any).
         let prev_idx = match self.current_indices[my] {

@@ -422,9 +422,9 @@ pub fn sys_gettimeofday(tv_ptr: usize, _tz_ptr: usize) -> usize {
     }
 
     // Read the physical counter (CNTPCT_EL0 on aarch64).  We use
-    // the same counter exposed by `drivers::timer::phys_count()`.
-    let ticks = crate::drivers::timer::phys_count();
-    let freq = crate::drivers::timer::freq_hz() as u64;
+    // the same counter exposed by `crate::arch::timer_phys_count()`.
+    let ticks = crate::arch::timer_phys_count();
+    let freq = crate::arch::timer_freq_hz();
     // freq is bounded by QEMU's 62.5 MHz default, but we don't
     // hand it out — return seconds + microseconds.
     let us = ticks.saturating_mul(1_000_000) / freq.max(1);

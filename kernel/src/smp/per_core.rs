@@ -27,8 +27,8 @@ pub extern "C" fn kmain_secondary(slot: usize) -> ! {
     // w.r.t. the global init done in `kernel_main` for core 0.
     #[cfg(target_arch = "aarch64")]
     {
-        crate::drivers::gic::init_local_cpu_interface();
-        crate::drivers::timer::init();
+        crate::arch::aarch64::drivers::gic::init_local_cpu_interface();
+        crate::arch::aarch64::drivers::timer::init();
         crate::arch::aarch64::trap::enable_irqs();
     }
 

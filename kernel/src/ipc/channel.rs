@@ -374,7 +374,7 @@ impl Channel {
         }
 
         let deadline = if timeout_ms > 0 {
-            Some(crate::drivers::timer::get_ticks() + timeout_ms * 1000 / 10)
+            Some(crate::arch::get_ticks() + timeout_ms * 1000 / 10)
         } else {
             None
         };
@@ -386,7 +386,7 @@ impl Channel {
         let woken_thread = unsafe { &mut *cur_thread_ptr };
 
         if deadline.is_some() {
-            let current_ticks = crate::drivers::timer::get_ticks();
+            let current_ticks = crate::arch::get_ticks();
             if current_ticks >= deadline.unwrap() {
                 self.remove_receiver(tid);
                 if cur_thread.state == crate::task::thread::ThreadState::Blocked {
