@@ -8,11 +8,9 @@ name = "mockd"
 path = "src/main.rs"
 
 [dependencies]
-pillskit = { path = "../../libraries/pillskit", default-features = false }
+modskit = { path = "../../libraries/modskit", default-features = false }
 shared = { path = "../../kernel/shared" }
 
 [features]
-default = ["user"]
-user = ["pillskit/user"]
-kernel = ["pillskit/kernel"]
-capsule = ["user"]
+default = []
+capsule = []

@@ -100,6 +100,10 @@ fn build_item(item: &BuildItem, plat: &Platform, v: &ParsedVersion, category: &s
     if category == "kernel" || category == "bootloader" {
         cmd.arg("build").arg("--release");
         cmd.arg("--target").arg(&plat.rust_target);
+    } else if category == "pill" {
+        // Pills are EL1 Kexts compiled with the kernel target.
+        cmd.arg("build").arg("--release");
+        cmd.arg("--target").arg(&plat.rust_target);
     } else if category == "library" {
         cmd.arg("+nightly").arg("build").arg("--release");
         cmd.arg("--target").arg(&plat.userspace_target);
@@ -129,10 +133,20 @@ fn build_item(item: &BuildItem, plat: &Platform, v: &ParsedVersion, category: &s
 
     // Move user-space programs and pills through ohlink-linker packing
     if category != "kernel" && category != "bootloader" && category != "library" {
-        let target_name = Path::new(&plat.userspace_target)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("aarch64-unknown-capsule");
+        let target_name = if category == "pill" {
+            // Pills are compiled with the kernel target (EL1 Kexts).
+            Path::new(&plat.rust_target)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("aarch64-unknown-none")
+                .to_string()
+        } else {
+            Path::new(&plat.userspace_target)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("aarch64-unknown-capsule")
+                .to_string()
+        };
 
         let elf = format!("build/target/{}/release/{}", target_name, crate_name.replace("hnx-", ""));
         

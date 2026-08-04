@@ -7,6 +7,7 @@ libc = { path = "libraries/libc" }
 libstd = { path = "libraries/libstd" }
 libcapsule = { path = "libraries/libcapsule" }
 pillskit = { path = "libraries/pillskit" }
+modskit = { path = "libraries/modskit" }
 
 [workspace]
 members = [
@@ -21,6 +22,7 @@ members = [
     "libraries/libcapsule",
     "libraries/libtty",
     "libraries/pillskit",
+    "libraries/modskit",
     # services | CapsuleOS system services
     "services/devmgr",
     "services/loader",

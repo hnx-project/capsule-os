@@ -8,8 +8,9 @@ name = "inputd"
 path = "src/main.rs"
 
 [dependencies]
-libcapsule = { path = "../../libraries/libcapsule", package = "libcapsule", features = ["runtime"] }
+modskit = { path = "../../libraries/modskit", default-features = false }
 shared = { path = "../../kernel/shared" }
 
 [features]
+default = []
 capsule = []

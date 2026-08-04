@@ -1,0 +1,15 @@
+[package]
+name = "modskit"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+name = "modskit"
+
+[dependencies]
+shared = { path = "../../kernel/shared" }
+
+[features]
+default = ["kernel"]
+kernel = []
