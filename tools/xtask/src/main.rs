@@ -1,15 +1,10 @@
-mod build;
 mod clean;
 mod cli;
 mod config;
-mod doc;
 mod output;
 mod pack;
 mod platform;
-mod run;
-mod test;
-mod toolchain;
-mod version;
+mod code;
 
 use clap::Parser;
 use cli::{Cli, CodeSubcommands, Commands};
@@ -36,7 +31,7 @@ fn main() {
         }
         Commands::Code { sub } => match sub {
             CodeSubcommands::CheckEnv { expected_rust } => {
-                match toolchain::check_toolchain(expected_rust.as_deref()) {
+                match code::toolchain::check_toolchain(expected_rust.as_deref()) {
                     Ok(info) => {
                         println!("Rust: {}", info.rustc_version);
                         println!("rust-lld: {:?}", info.rust_lld_path);
@@ -56,14 +51,14 @@ fn main() {
                         std::process::exit(1);
                     }
                 };
-                let plat = match Platform::from_configs(arch, platform, &resolved.build, &resolved.runtime) {
+                let plat = match Platform::from_configs(arch, platform, &resolved.root) {
                     Some(p) => p,
                     None => {
                         eprintln!("Unsupported architecture/platform: {}/{}", arch, platform);
                         std::process::exit(1);
                     }
                 };
-                if let Err(e) = build::build(&resolved, &plat, true) {
+                if let Err(e) = code::build::build(&resolved, &plat, true) {
                     eprintln!("Build failed: {}", e);
                     std::process::exit(1);
                 }
@@ -76,24 +71,23 @@ fn main() {
                         std::process::exit(1);
                     }
                 };
-                let plat = match Platform::from_configs(arch, platform, &resolved.build, &resolved.runtime) {
+                let plat = match Platform::from_configs(arch, platform, &resolved.root) {
                     Some(p) => p,
                     None => {
                         eprintln!("Unsupported architecture/platform: {}/{}", arch, platform);
                         std::process::exit(1);
                     }
                 };
-                if let Err(e) = build::build(&resolved, &plat, false) {
+                if let Err(e) = code::build::build(&resolved, &plat, false) {
                     eprintln!("Build failed: {}", e);
                     std::process::exit(1);
                 }
-                if let Err(e) = run::run(&resolved, &plat, *gdb) {
+                if let Err(e) = code::run::run(&resolved, &plat, *gdb) {
                     eprintln!("Run failed: {}", e);
                     std::process::exit(1);
                 }
             }
             CodeSubcommands::CheckVersion { sync } => {
-                // CheckVersion only reads root metadata.
                 let resolved = match Resolved::load("virt", None) {
                     Ok(r) => r,
                     Err(e) => {
@@ -101,7 +95,7 @@ fn main() {
                         std::process::exit(1);
                     }
                 };
-                if let Err(e) = version::check_version(*sync, &resolved.root) {
+                if let Err(e) = code::version::check_version(*sync, &resolved.root) {
                     eprintln!("{}", e);
                     std::process::exit(1);
                 }
@@ -114,7 +108,7 @@ fn main() {
                         std::process::exit(1);
                     }
                 };
-                if let Err(e) = doc::generate_doc(*open, &resolved.root) {
+                if let Err(e) = code::doc::generate_doc(*open, &resolved.root) {
                     eprintln!("Document generation failed: {}", e);
                     std::process::exit(1);
                 }
@@ -127,14 +121,14 @@ fn main() {
                         std::process::exit(1);
                     }
                 };
-                let plat = match Platform::from_configs(arch, platform, &resolved.build, &resolved.runtime) {
+                let plat = match Platform::from_configs(arch, platform, &resolved.root) {
                     Some(p) => p,
                     None => {
                         eprintln!("Unsupported architecture/platform: {}/{}", arch, platform);
                         std::process::exit(1);
                     }
                 };
-                if let Err(e) = test::test(&resolved, &plat, *timeout) {
+                if let Err(e) = code::test::test(&resolved, &plat, *timeout) {
                     eprintln!("Test failed: {}", e);
                     std::process::exit(1);
                 }

@@ -38,7 +38,7 @@ pub enum CodeSubcommands {
         platform: String,
         #[arg(
             long,
-            help = "Override runtime-config path (default: xtask.{platform}.toml)"
+            help = "Override unified configuration path (default: xtaskfile)"
         )]
         config: Option<PathBuf>,
     },
@@ -58,7 +58,7 @@ pub enum CodeSubcommands {
         platform: String,
         #[arg(
             long,
-            help = "Override runtime-config path (default: xtask.{platform}.toml)"
+            help = "Override unified configuration path (default: xtaskfile)"
         )]
         config: Option<PathBuf>,
         #[arg(
@@ -108,7 +108,7 @@ pub enum CodeSubcommands {
         platform: String,
         #[arg(
             long,
-            help = "Override runtime-config path (default: xtask.{platform}.toml)"
+            help = "Override unified configuration path (default: xtaskfile)"
         )]
         config: Option<PathBuf>,
         #[arg(

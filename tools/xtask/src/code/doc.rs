@@ -293,7 +293,7 @@ pub fn generate_doc(open: bool, _config: &RootConfig) -> Result<(), String> {
                 <div class="item-desc">Standard C-ABI compatibility interface (libc), Safe microkernel capability wrappers (libcapsule), customized safe Rust standard library (libstd), and standard sandboxed user services.</div>
             </a>
         </div>
-
+        
         <div class="section-title">Development & Toolchain Reference</div>
         <div class="list">
             <a href="./host_tools/xtask/index.html" class="item">
@@ -311,7 +311,7 @@ pub fn generate_doc(open: bool, _config: &RootConfig) -> Result<(), String> {
                 <div class="item-desc">Custom decoupled absolute binary layout specification (OHLINK), compiler codegen plugin for rustc, and low-level physical linker.</div>
             </a>
         </div>
-
+        
         <footer>
             pangu 1.0.0-beta4 / hnx-project / built with rust & cargo-doc
         </footer>
@@ -337,7 +337,6 @@ pub fn generate_doc(open: bool, _config: &RootConfig) -> Result<(), String> {
 }
 
 fn serve_and_open_docs(doc_dir_str: &str) -> Result<(), String> {
-    // 1. Bind to a random OS-assigned available local TCP port
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|e| format!("Failed to bind local HTTP server port: {}", e))?;
     let port = listener.local_addr().unwrap().port();
@@ -352,7 +351,6 @@ fn serve_and_open_docs(doc_dir_str: &str) -> Result<(), String> {
     );
 
     let doc_dir = doc_dir_str.to_string();
-    // 2. Spawn multi-threaded file-serving HTTP handler
     thread::spawn(move || {
         for stream in listener.incoming() {
             if let Ok(mut stream) = stream {
@@ -369,7 +367,6 @@ fn serve_and_open_docs(doc_dir_str: &str) -> Result<(), String> {
                             }
                         }
 
-                        // Remove query parameters or fragments if any
                         let path_part_clean = path_part
                             .split('?')
                             .next()
@@ -378,14 +375,11 @@ fn serve_and_open_docs(doc_dir_str: &str) -> Result<(), String> {
                             .next()
                             .unwrap_or(path_part);
 
-                        // Percent decode URLs (e.g. "%20" to " ")
                         let decoded_path = url_decode(path_part_clean);
 
-                        // Check if the requested path maps to a directory on disk
                         let disk_path = format!("{}{}", doc_dir_clone, decoded_path);
                         let disk_path_obj = Path::new(&disk_path);
                         if disk_path_obj.exists() && disk_path_obj.is_dir() {
-                            // Directory must have trailing slash so relative CSS/JS paths resolve correctly in the browser
                             if !decoded_path.ends_with('/') {
                                 let redirect_url = format!("{}/", path_part_clean);
                                 let response = format!(
@@ -441,8 +435,6 @@ fn serve_and_open_docs(doc_dir_str: &str) -> Result<(), String> {
         }
     });
 
-    // 3. Open platform default browser on macOS, Linux, or Windows
-    println!("\x1b[1;36m🌐 Launching default web browser...\x1b[0m");
     #[cfg(target_os = "macos")]
     let _ = Command::new("open").arg(&url).status();
 
@@ -452,7 +444,6 @@ fn serve_and_open_docs(doc_dir_str: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let _ = Command::new("cmd").args(["/C", "start", &url]).status();
 
-    // 4. Block on the main thread so the server doesn't shut down immediately
     loop {
         thread::sleep(std::time::Duration::from_secs(60));
     }

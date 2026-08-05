@@ -5,7 +5,7 @@ use std::path::Path;
 pub fn check_version(sync: bool, config: &RootConfig) -> Result<(), String> {
     let xtask_version = &config.project.version;
     println!(
-        "🔍 [Version Check] xtask.toml configured version: \x1b[1;36m{}\x1b[0m",
+        "🔍 [Version Check] xtaskfile configured version: \x1b[1;36m{}\x1b[0m",
         xtask_version
     );
 
@@ -85,7 +85,7 @@ pub fn check_version(sync: bool, config: &RootConfig) -> Result<(), String> {
             versions_match = true;
             println!("✨ [Version Sync] Root Cargo.toml successfully synchronized!");
         } else {
-            println!("\x1b[1;31m❌ Error: Version mismatch! xtask.toml ({}) differs from root Cargo.toml ({})\x1b[0m", xtask_version, current_workspace_version);
+            println!("\x1b[1;31m❌ Error: Version mismatch! xtaskfile ({}) differs from root Cargo.toml ({})\x1b[0m", xtask_version, current_workspace_version);
             println!("💡 Run \x1b[1;36mxtask code check-version --sync\x1b[0m to synchronize them automatically.");
         }
     }
@@ -239,7 +239,7 @@ pub fn check_version(sync: bool, config: &RootConfig) -> Result<(), String> {
 
     if !versions_match {
         return Err(
-            "Version validation failed: xtask.toml and root Cargo.toml are out of sync."
+            "Version validation failed: xtaskfile and root Cargo.toml are out of sync."
                 .to_string(),
         );
     }

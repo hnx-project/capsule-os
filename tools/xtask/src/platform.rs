@@ -1,14 +1,11 @@
 //! `Platform` is the composed view used by `build` / `run` / `test`.
 //!
-//! It pulls build addresses from `xtask.build.toml` and runtime args
-//! from whichever `xtask.<platform>.toml` the user picked.  Fields
-//! the active command doesn't need are `None` (e.g. RPI build has no
-//! `qemu_*` fields).
-
-use crate::config::{BuildConfig, RuntimeConfig};
+//! It maps the arch and platform to static constants representing memory mapped addresses,
+//! while extracting dynamic runtime simulation variables from the unified configuration.
 
 pub struct Platform {
     pub arch: String,
+    #[allow(dead_code)]
     pub profile: String,
     pub rust_target: String,
     pub userspace_target: String,
@@ -20,7 +17,7 @@ pub struct Platform {
     pub boot_addr: String,
     pub rootfs_addr: String,
 
-    // QEMU run args (present iff the runtime-config had a [qemu] block).
+    // QEMU run args (from [run.qemu] section in configuration)
     pub qemu_bin: String,
     pub qemu_args: Vec<String>,
     pub qemu_dtb_dump_args: Vec<String>,
@@ -29,30 +26,62 @@ pub struct Platform {
 }
 
 impl Platform {
-    /// Build a `Platform` view from a build profile + (optionally) a
-    /// matching runtime profile.  When the runtime profile has no
-    /// QEMU block (e.g. `xtask.rpi.toml`) the qemu_* fields stay at
-    /// their defaults and `run::run` should never try to launch QEMU.
+    /// Build a `Platform` view from arch, platform profile name, and RootConfig metadata.
     pub fn from_configs(
         arch: &str,
         profile_name: &str,
-        build: &BuildConfig,
-        runtime: &RuntimeConfig,
+        config: &crate::config::RootConfig,
     ) -> Option<Self> {
-        let arch_cfg = build.platform.get(arch)?;
-        let p_cfg = arch_cfg.profiles.get(profile_name)?;
+        // Enforce supported architecture
+        if arch != "aarch64" {
+            return None;
+        }
 
+        // Retrieve architectural target values (memory map addresses and linker variables)
+        let (
+            rust_target,
+            userspace_target,
+            kernel_entry,
+            ld_emulation,
+            linker_script,
+            dtb_addr,
+            ohc_addr,
+            boot_addr,
+            rootfs_addr,
+        ) = match profile_name {
+            "virt" => (
+                "aarch64-unknown-none".to_string(),
+                "libraries/targets/aarch64-unknown-capsule.json".to_string(),
+                "1074266112".to_string(),
+                "aarch64elf".to_string(),
+                "kernel/linker/kernel_aarch64.ld".to_string(),
+                "0x42000000".to_string(),
+                "0x40700000".to_string(),
+                "0x44000000".to_string(),
+                "0x46000000".to_string(),
+            ),
+            "rpi" => (
+                "aarch64-unknown-none".to_string(),
+                "libraries/targets/aarch64-unknown-capsule.json".to_string(),
+                "1074266112".to_string(),
+                "aarch64elf".to_string(),
+                "kernel/linker/kernel_aarch64.ld".to_string(),
+                "0x42000000".to_string(),
+                "0x44010000".to_string(),
+                "0x44000000".to_string(),
+                "0x46000000".to_string(),
+            ),
+            _ => return None,
+        };
+
+        // Extract runtime settings
         let (
             qemu_bin,
             qemu_args,
             qemu_dtb_dump_args,
             qemu_smp,
             qemu_disk_img,
-        ) = runtime
-            .platform
-            .get(arch)
-            .and_then(|a| a.profiles.get(profile_name))
-            .and_then(|p| p.qemu.as_ref())
+        ) = config.run.qemu.as_ref()
             .map(|q| {
                 (
                     q.bin.clone(),
@@ -67,7 +96,7 @@ impl Platform {
                     String::new(),
                     Vec::new(),
                     Vec::new(),
-                    1,
+                    4,
                     crate::config::default_disk_img(),
                 )
             });
@@ -75,15 +104,15 @@ impl Platform {
         Some(Platform {
             arch: arch.to_string(),
             profile: profile_name.to_string(),
-            rust_target: p_cfg.rust_target.clone(),
-            userspace_target: p_cfg.userspace_target.clone(),
-            kernel_entry: p_cfg.kernel_entry.clone(),
-            ld_emulation: p_cfg.ld_emulation.clone(),
-            linker_script: p_cfg.linker_script.clone(),
-            dtb_addr: p_cfg.dtb_addr.clone(),
-            ohc_addr: p_cfg.ohc_addr.clone(),
-            boot_addr: p_cfg.boot_addr.clone(),
-            rootfs_addr: p_cfg.rootfs_addr.clone(),
+            rust_target,
+            userspace_target,
+            kernel_entry,
+            ld_emulation,
+            linker_script,
+            dtb_addr,
+            ohc_addr,
+            boot_addr,
+            rootfs_addr,
             qemu_bin,
             qemu_args,
             qemu_dtb_dump_args,

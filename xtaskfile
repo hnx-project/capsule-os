@@ -1,0 +1,21 @@
+[project]
+name = "capsuleOS"
+version = "1.0.0-beta4"
+codename = "Pangu"
+
+[run.qemu]
+bin = "qemu-system-aarch64"
+smp = 4
+args = [
+    "-M", "virt,secure=off",
+    "-cpu", "cortex-a72",
+    "-smp", "{smp}",
+    "-m", "512M",
+    "-bios", "{uefi_bios}",
+    "-drive", "file=fat:rw:{disk_dir},media=disk,format=raw",
+    "-nographic"
+]
+
+[build]
+bootloader = { path = 'bootloader/uefi/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/EFI/BOOT/BOOTAA64.EFI' }
+kernel     = { path = 'kernel/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/boot/HNXCore' }

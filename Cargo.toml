@@ -10,6 +10,7 @@ libcapsule = { path = "libraries/libcapsule" }
 [workspace]
 members = [
     "bootloader",
+    "bootloader/uefi",
     "tools/xtask",
     "tools/ohlink-toolchain/crates/ohlink-format",
     "tools/ohlink-toolchain/crates/ohlink-linker",

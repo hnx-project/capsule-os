@@ -1,0 +1,8 @@
+[package]
+name = "capsule-uefi-bootloader"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+uefi = { version = "0.24", features = ["alloc", "logger"] }
+uefi-services = "0.21"

@@ -1,239 +1,67 @@
-//! # xtask configuration split
-//!
-//! xtask's configuration is split across four files for single-responsibility
-//! cleanliness:
-//!
-//! | File             | Holds                                                   |
-//! |------------------|---------------------------------------------------------|
-//! | `xtask.toml`     | project metadata, gitcode remotes, toolchain bootstrap, distribution template |
-//! | `xtask.build.toml` | per-arch / per-platform build addresses + `[[subprojects]]` table |
-//! | `xtask.qemu.toml` | QEMU-only run arguments (machine model, CPU, RAM, drives) |
-//! | `xtask.rpi.toml`  | Raspberry Pi firmware cache + disk-image layout |
-//!
-//! `Resolved::load(arch, platform, runtime_config_override)` reads the
-//! three files and produces a [`Resolved`] struct that the rest of
-//! xtask consumes.  `--config <path>` (passed through CLI) overrides
-//! the runtime-config file (the one named by `platform`).
-//!
-//! The legacy `Config` struct is kept for callers that only need root
-//! metadata; new code should pick the narrowest struct for its needs.
-
 use serde::Deserialize;
-use std::collections::BTreeMap;
 use std::path::Path;
+use std::fs;
+use std::process::Command;
 
-// ----------------------------------------------------------------------------
-// Root metadata (`xtask.toml`)
-// ----------------------------------------------------------------------------
+pub const BUILD_TARGET: &str = "build/target";
+pub const BUILD_TEMP_RESOURCE: &str = "build/dist/temp_resource";
+pub const BUILD_DIST: &str = "build/dist";
 
 #[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
 pub struct RootConfig {
     pub project: Project,
-    pub gitcode: GitCode,
-    pub submodules: BTreeMap<String, Submodule>,
-    pub toolchain: Toolchain,
-    pub distribution: Distribution,
+    pub build: BuildConfig,
+    #[serde(default)]
+    pub run: RunConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
 pub struct Project {
     pub name: String,
-    pub codename: String,
     pub version: String,
-    pub target_dir: String,
-    pub dist_dir: Option<String>,
+    pub codename: String,
 }
 
 impl Project {
+    #[allow(dead_code)]
     pub fn dist_dir(&self) -> &str {
-        self.dist_dir.as_deref().unwrap_or("build/dist")
+        BUILD_DIST
     }
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
-pub struct GitCode {
-    pub upstream_owner: String,
-    pub upstream_repo: String,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
-pub struct Submodule {
-    pub upstream: String,
-    pub fork_repo: String,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct Toolchain {
-    pub bootstrap: Vec<BootstrapItem>,
-    pub linker: Linker,
-    #[serde(default)]
-    pub c_bindings: Option<CBindingsConfig>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct CBindingsConfig {
-    pub crate_path: String,
-    pub config_path: String,
-    pub output_header: String,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct BootstrapItem {
-    pub name: String,
-    pub path: String,
-    pub release: bool,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct Linker {
-    pub path: String,
-    pub package: String,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct Distribution {
-    pub output_dir: String,
-    pub image_name_template: String,
-    pub dtb_dir: Option<String>,
-    // Stages only live in the root config because they apply to both
-    // QEMU and RPI final-image generation.
-    #[serde(default)]
-    pub stages: Vec<DistributionStage>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
-pub struct DistributionStage {
-    pub input: String,
-    pub pad_to: Option<u64>,
-}
-
-// ----------------------------------------------------------------------------
-// Build config (`xtask.build.toml`)
-// ----------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize, Clone)]
 pub struct BuildConfig {
-    /// Keyed by arch → profile name → per-platform build settings.
-    pub platform: BTreeMap<String, ArchBuildConfig>,
-    pub subprojects: Vec<Subproject>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct ArchBuildConfig {
-    pub profiles: BTreeMap<String, PlatformBuildProfile>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct PlatformBuildProfile {
-    pub rust_target: String,
-    pub userspace_target: String,
-    pub kernel_entry: String,
-    pub ld_emulation: String,
-    pub linker_script: String,
-    pub dtb_addr: String,
-    pub ohc_addr: String,
-    pub boot_addr: String,
-    pub rootfs_addr: String,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
-pub struct Subproject {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub subproject_type: String,
-    /// `enable = false` lets users opt out of slow subprojects (e.g.
-    /// autotools-based foreign builds) without editing this file.
-    #[serde(default = "default_enable")]
-    pub enable: bool,
-    // For userspace apps
-    pub crates: Option<Vec<UserCrate>>,
-    pub staging_bin_dir: Option<String>,
-    pub rootfs_output: Option<String>,
-    pub etc_source: Option<String>,
-    pub etc_target: Option<String>,
-    // For kernel / bootloader / common crates
-    pub path: Option<String>,
-    pub package: Option<String>,
-    pub link_output: Option<Option<String>>,
-    pub raw_output: Option<Option<String>>,
-    pub ohc_output: Option<Option<String>>,
-    pub bin_output: Option<Option<String>>,
-    // For foreign (autotools / cmake / gnu-make) subprojects.
-    pub src_path: Option<String>,
-    pub configure: Option<String>,
-    pub build: Option<String>,
-    pub artifact: Option<String>,
-    pub ohlink_entry: Option<String>,
-    pub staging_bin: Option<String>,
-}
-
-fn default_enable() -> bool {
-    true
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct UserCrate {
-    pub crate_name: String,
-    pub out_name: String,
-    pub entry: String,
-    pub config_path: Option<String>,
-}
-
-// ----------------------------------------------------------------------------
-// Runtime config (`xtask.qemu.toml` or `xtask.rpi.toml`)
-// ----------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct RuntimeConfig {
-    pub platform: BTreeMap<String, ArchRuntimeConfig>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct ArchRuntimeConfig {
-    pub profiles: BTreeMap<String, PlatformRuntimeProfile>,
-}
-
-/// One profile's runtime settings.  QEMU and RPI share the wrapper
-/// but populate it differently (mutually-exclusive inner tables).
-///
-/// `broadcom` / `disk` are populated by `xtask.rpi.toml` and will be
-/// consumed by the `code run --platform rpi` + disk-image arms of
-/// `code build --platform rpi` (follow-up releases).  The fields are
-/// reserved here so the schema is stable from day one.
-#[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
-pub struct PlatformRuntimeProfile {
-    /// QEMU launcher (when platform = virt).
+    pub bootloader: Option<BuildItem>,
+    pub kernel: Option<BuildItem>,
     #[serde(default)]
+    pub pillsmod: Vec<BuildItem>,
+    #[serde(default)]
+    pub libraries: Vec<BuildItem>,
+    #[serde(default)]
+    pub services: Vec<BuildItem>,
+    #[serde(default)]
+    pub apps: Vec<BuildItem>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct BuildItem {
+    pub path: String,
+    pub output: String,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct RunConfig {
     pub qemu: Option<QemuRuntime>,
-    /// Raspberry Pi boot flow (when platform = rpi).
-    #[serde(default)]
-    pub broadcom: Option<BroadcomRuntime>,
-    /// Raspberry Pi disk-image generation.
-    #[serde(default)]
-    pub disk: Option<RpiDiskRuntime>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct QemuRuntime {
     pub bin: String,
     pub args: Vec<String>,
+    #[serde(default)]
     pub dtb_dump_args: Vec<String>,
-    /// Number of guest CPUs exposed both to the running VM and to
-    /// the `dumpdtb` machinery.  Defaults to 1 if omitted.
     #[serde(default = "default_smp")]
     pub smp: u32,
-    /// Path to the raw virtio block image that QEMU's `-drive file=…`
-    /// points at.  xtask generates a fresh FAT12 image at this path
-    /// before launching QEMU if the file is missing, so the build/run
-    /// pipeline no longer depends on a stale `disk.img` sitting in the
-    /// repository root.  Templated into `args` as `{disk_img}`.
     #[serde(default = "default_disk_img")]
     pub disk_img: String,
 }
@@ -243,79 +71,93 @@ pub fn default_disk_img() -> String {
 }
 
 fn default_smp() -> u32 {
-    1
+    4
 }
 
-#[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
-pub struct BroadcomRuntime {
-    pub firmware_cache: String,
-    #[serde(default)]
-    pub firmware: Vec<BroadcomFirmwareEntry>,
+pub fn resolve_path_placeholders(path: &str) -> String {
+    path.replace("{BUILD_TARGET}", BUILD_TARGET)
+        .replace("{BUILD_TEMP_RESOURCE}", BUILD_TEMP_RESOURCE)
+        .replace("{BUILD_DIST}", BUILD_DIST)
 }
 
-#[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
-pub struct BroadcomFirmwareEntry {
-    pub name: String,
-    pub url: String,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
-pub struct RpiDiskRuntime {
-    pub output_dir: String,
-    pub image_arch: String,
-    pub bootloader_pad_bytes: u64,
-    #[serde(default)]
-    pub stages: Vec<DistributionStage>,
+/// Parse Cargo.toml to extract the package name and target binary name
+pub fn parse_cargo_toml(path: &str) -> Result<(String, String), String> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {}", path, e))?;
+    
+    let mut package_name = String::new();
+    let mut bin_name = String::new();
+    let mut in_package = false;
+    let mut in_bin = false;
+    
+    for line in content.lines() {
+        let line_trimmed = line.trim();
+        if line_trimmed == "[package]" {
+            in_package = true;
+            in_bin = false;
+        } else if line_trimmed == "[[bin]]" {
+            in_package = false;
+            in_bin = true;
+        } else if line_trimmed.starts_with('[') {
+            in_package = false;
+            in_bin = false;
+        }
+        
+        if in_package && line_trimmed.starts_with("name") {
+            if let Some(idx) = line_trimmed.find('=') {
+                let name = line_trimmed[idx + 1..].trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string();
+                package_name = name;
+            }
+        }
+        
+        if in_bin && line_trimmed.starts_with("name") {
+            if let Some(idx) = line_trimmed.find('=') {
+                let name = line_trimmed[idx + 1..].trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string();
+                bin_name = name;
+            }
+        }
+    }
+    
+    if package_name.is_empty() {
+        return Err(format!("Could not find package name in {}", path));
+    }
+    
+    if bin_name.is_empty() {
+        bin_name = package_name.replace("hnx-", "");
+    }
+    
+    Ok((package_name, bin_name))
 }
 
 // ----------------------------------------------------------------------------
-// Resolved: composed view the rest of xtask consumes.
+// Resolved: composed view for backwards compatibility with orchestrator files
 // ----------------------------------------------------------------------------
 
-/// The three parsed TOML configs.  Code paths that need only root
-/// metadata take `&RootConfig`; those that need build addresses take
-/// `&BuildConfig` + a [`crate::platform::Platform`]; those that need
-/// run-only data take `&RuntimeConfig`.
 pub struct Resolved {
     pub root: RootConfig,
     pub build: BuildConfig,
-    pub runtime: RuntimeConfig,
 }
 
 impl Resolved {
-    /// Read `xtask.toml`, `xtask.build.toml`, and the runtime-config
-    /// file appropriate to `platform` (`xtask.qemu.toml` for virt,
-    /// `xtask.rpi.toml` for rpi).
-    ///
-    /// `runtime_override`, if `Some`, replaces the platform-default
-    /// runtime-config file.
     pub fn load(
-        platform: &str,
+        _platform: &str,
         runtime_override: Option<&Path>,
     ) -> Result<Self, String> {
-        let root = read_toml::<RootConfig>("xtask.toml")?;
-        let build = read_toml::<BuildConfig>("xtask.build.toml")?;
-
-        let runtime_path: std::path::PathBuf = match runtime_override {
+        let path = match runtime_override {
             Some(p) => p.to_path_buf(),
-            None => default_runtime_path(platform)?,
+            None => Path::new("xtaskfile").to_path_buf(),
         };
-        let runtime = read_toml::<RuntimeConfig>(&runtime_path)?;
-
-        Ok(Self { root, build, runtime })
-    }
-}
-
-fn default_runtime_path(platform: &str) -> Result<std::path::PathBuf, String> {
-    match platform {
-        "virt" => Ok("xtask.qemu.toml".into()),
-        "rpi" => Ok("xtask.rpi.toml".into()),
-        other => Err(format!(
-            "unknown platform '{other}': expected 'virt' or 'rpi'"
-        )),
+        
+        let root = read_toml::<RootConfig>(&path)?;
+        let build = root.build.clone();
+        
+        Ok(Self { root, build })
     }
 }
 
@@ -324,23 +166,118 @@ fn read_toml<T: for<'de> Deserialize<'de>>(path: impl AsRef<Path>) -> Result<T, 
     if !p.exists() {
         return Err(format!("config file not found: {}", p.display()));
     }
-    let content = std::fs::read_to_string(p)
+    let content = fs::read_to_string(p)
         .map_err(|e| format!("failed to read {}: {}", p.display(), e))?;
     toml::from_str(&content)
         .map_err(|e| format!("failed to parse {}: {}", p.display(), e))
 }
 
 // ----------------------------------------------------------------------------
-// Legacy `Config` shim.
-//
-// Older call sites take `&Config` for root-only fields (project name,
-// toolchain bootstrap, distribution).  `Config` is now a thin alias
-// over `RootConfig` so existing signatures continue to compile.
+// Versioning helpers
 // ----------------------------------------------------------------------------
 
-#[deprecated(
-    since = "Pangu 1.0.0.beta5",
-    note = "Use `Resolved::load()` and pick the narrowest struct (RootConfig / BuildConfig / RuntimeConfig)"
-)]
-#[allow(dead_code)]
-pub type Config = RootConfig;
+pub struct ParsedVersion {
+    pub os_name: String,
+    pub codename: String,
+    pub major: u32,
+    pub minor: u32,
+    pub patch: String,
+    pub tag: String,
+}
+
+impl ParsedVersion {
+    pub fn to_display_string(&self) -> String {
+        format!(
+            "{} {} v{}.{}.{} ({})",
+            self.os_name, self.codename, self.major, self.minor, self.patch, self.tag
+        )
+    }
+}
+
+pub fn get_parsed_version(config: &RootConfig) -> ParsedVersion {
+    let os_name = config.project.name.clone();
+    let codename = config.project.codename.clone();
+
+    let mut major = 1;
+    let mut minor = 0;
+
+    let raw_ver = &config.project.version;
+    let ver_parts: Vec<&str> = raw_ver.split('-').collect();
+    let mut tag = if ver_parts.len() >= 2 {
+        ver_parts[1].to_string()
+    } else {
+        "release".to_string()
+    };
+
+    let num_parts: Vec<&str> = ver_parts[0].split('.').collect();
+    if num_parts.len() >= 1 {
+        if let Ok(maj) = num_parts[0].parse::<u32>() {
+            major = maj;
+        }
+    }
+    if num_parts.len() >= 2 {
+        if let Ok(min) = num_parts[1].parse::<u32>() {
+            minor = min;
+        }
+    }
+
+    let mut patch = "0".to_string();
+    let mut git_success = false;
+
+    let match_pattern = "v*".to_string();
+    if let Ok(output) = Command::new("git")
+        .args(["describe", "--tags", "--long", "--match", &match_pattern])
+        .output()
+    {
+        if output.status.success() {
+            let s = String::from_utf8_lossy(&output.stdout);
+            let trimmed = s.trim();
+            let parts: Vec<&str> = trimmed.split('-').collect();
+            if parts.len() >= 3 {
+                patch = parts[parts.len() - 2].to_string();
+                let tag_info = &parts[..parts.len() - 2];
+                if tag_info.len() >= 1 {
+                    let clean_ver = tag_info[0].trim_start_matches('v');
+                    let version_parts: Vec<&str> = clean_ver.split('.').collect();
+                    if version_parts.len() >= 1 {
+                        if let Ok(maj) = version_parts[0].parse::<u32>() {
+                            major = maj;
+                        }
+                    }
+                    if version_parts.len() >= 2 {
+                        if let Ok(min) = version_parts[1].parse::<u32>() {
+                            minor = min;
+                        }
+                    }
+                }
+                if tag_info.len() >= 2 {
+                    tag = tag_info[1..].join("-");
+                } else {
+                    tag = "release".to_string();
+                }
+                git_success = true;
+            }
+        }
+    }
+
+    if !git_success {
+        if let Ok(output) = Command::new("git")
+            .args(["rev-list", "--count", "HEAD"])
+            .output()
+        {
+            if output.status.success() {
+                let s = String::from_utf8_lossy(&output.stdout);
+                patch = s.trim().to_string();
+            }
+        }
+    }
+
+    ParsedVersion {
+        os_name,
+        codename,
+        major,
+        minor,
+        patch,
+        tag,
+    }
+}
