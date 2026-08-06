@@ -18,4 +18,4 @@ args = [
 
 [build]
 bootloader = { path = 'bootloader/uefi/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/EFI/BOOT/BOOTAA64.EFI' }
-kernel     = { path = 'kernel/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/boot/HNXCore' }
+kernel     = { path = 'mcore/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/boot/KERNEL' }

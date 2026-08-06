@@ -18,6 +18,36 @@ pub fn run(resolved: &Resolved, plat: &Platform, gdb: bool) -> Result<(), String
     let uefi_bios_path = find_uefi_bios_path()?;
     println!("  Using UEFI Firmware: {}", uefi_bios_path);
 
+    // 1.5 Automatically dump/generate QEMU's dynamic DTB matching the current config dynamically
+    if plat.arch == "aarch64" && (plat.qemu_bin.contains("qemu-system-aarch64") || plat.qemu_bin.contains("qemu")) {
+        let dtb_output_path = format!("{}/boot/qemu_virt.dtb", BUILD_TEMP_RESOURCE);
+        let mut dtb_cmd = Command::new(&plat.qemu_bin);
+        
+        let mut dtb_args = Vec::new();
+        let mut iter = plat.qemu_args.iter();
+        while let Some(arg) = iter.next() {
+            let rendered = arg
+                .replace("{uefi_bios}", &uefi_bios_path)
+                .replace("{disk_dir}", BUILD_TEMP_RESOURCE)
+                .replace("{smp}", &plat.qemu_smp.to_string());
+            
+            if rendered == "-M" {
+                dtb_args.push(rendered);
+                if let Some(next_arg) = iter.next() {
+                    let m_arg = next_arg
+                        .replace("{uefi_bios}", &uefi_bios_path)
+                        .replace("{disk_dir}", BUILD_TEMP_RESOURCE)
+                        .replace("{smp}", &plat.qemu_smp.to_string());
+                    dtb_args.push(format!("{},dumpdtb={}", m_arg, dtb_output_path));
+                }
+            } else {
+                dtb_args.push(rendered);
+            }
+        }
+        dtb_cmd.args(&dtb_args);
+        let _ = dtb_cmd.status();
+    }
+
     // 2. Launch QEMU by mounting build/dist/temp_resource as virtual U-Disk
     launch_qemu(resolved, plat, gdb, &uefi_bios_path);
     Ok(())

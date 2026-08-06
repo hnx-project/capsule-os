@@ -6,3 +6,5 @@ edition.workspace = true
 [dependencies]
 uefi = { version = "0.24", features = ["alloc", "logger"] }
 uefi-services = "0.21"
+heapless = "0.7"
+log = "0.4"

@@ -11,6 +11,7 @@ libcapsule = { path = "libraries/libcapsule" }
 members = [
     "bootloader",
     "bootloader/uefi",
+    "mcore",
     "tools/xtask",
     "tools/ohlink-toolchain/crates/ohlink-format",
     "tools/ohlink-toolchain/crates/ohlink-linker",
