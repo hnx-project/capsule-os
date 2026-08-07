@@ -64,7 +64,7 @@ static mut DEVICE_INFO_BOOT: core::mem::MaybeUninit<crate::fdt::BootInfo> =
 static mut DEVICE_INFO_VALID: bool = false;
 
 #[no_mangle]
-pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size: usize) {
+pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size: usize, pill_pa: usize, pill_size: usize) {
     unsafe {
         DTB_POINTER = dtb_ptr;
         BOOTFS_PHYS_ADDR = bootfs_pa;
@@ -74,6 +74,8 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
     // Slot 0 is the primary CPU.  Record it before any SMP code
     // path expects `current_core_id()` to return a known value.
     smp::register_core(0);
+
+    crate::log_info!("BOOT", "kernel_main entry: dtb={:?}, bootfs={:#x}/{}, pill={:#x}/{}", dtb_ptr, bootfs_pa, bootfs_size, pill_pa, pill_size);
 
     match fdt::parse(dtb_ptr) {
         Ok(boot) => {
@@ -141,6 +143,15 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
             crate::log_info!("BOOT", "OK");
 
             crate::memory::smoke::vmo_vmar_smoke_test();
+
+            if pill_pa != 0 && pill_size > 0 {
+                let pill_va = crate::arch::mmu_facade::pa_to_kernel_va(pill_pa);
+                let pill_buf = unsafe { core::slice::from_raw_parts(pill_va as *const u8, pill_size) };
+                crate::log_info!("BOOT", "Received .pill package from bootloader at physical {:#x}", pill_pa);
+                if let Ok(pill) = crate::pillsmod::ParsedPill::parse(pill_buf) {
+                    let _ = pill.load_kext();
+                }
+            }
 
             match crate::loader::launch_loader() {
                 Ok(_) => {

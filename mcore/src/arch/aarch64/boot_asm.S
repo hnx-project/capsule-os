@@ -4,9 +4,9 @@
 .type _start, @function
 _start:
     // 0a. Check core ID. Only Core 0 goes through main boot; others spin
-    mrs     x3, mpidr_el1
-    and     x3, x3, #0xFF
-    cmp     x3, #0
+    mrs     x5, mpidr_el1
+    and     x5, x5, #0xFF
+    cmp     x5, #0
     b.ne    secondary_spin
 
     // 0. EL2 to EL1 drop.  QEMU PSCI firmware sets HCR_EL2 IMO+FMO bits
@@ -29,10 +29,12 @@ _start:
     eret
 0:
     // _start_el1: we are now at EL1
-    // 1. Save DTB pointer (passed in x0), BootFS PA (x1), BootFS Size (x2) in callee-saved registers.
+    // 1. Save DTB pointer (passed in x0), BootFS PA (x1), BootFS Size (x2) and Pill parameters in callee-saved registers.
     mov     x19, x0
     mov     x20, x1
     mov     x21, x2
+    mov     x22, x3
+    mov     x23, x4
 
     // 2. Use SP_EL1 for the kernel's stack.  The kernel always runs
     //    with SP_ELx (so the trap stubs' IRQ-EL1-SP_ELx slot fires).
@@ -64,10 +66,12 @@ bss_zero_loop:
     b bss_zero_loop
 bss_zero_done:
 
-    // 7. Hand off to Rust with DTB pointer in x0, BootFS PA in x1, BootFS Size in x2.
+    // 7. Hand off to Rust with DTB pointer in x0, BootFS PA in x1, BootFS Size in x2, pill_pa in x3, pill_size in x4.
     mov x0, x19
     mov x1, x20
     mov x2, x21
+    mov x3, x22
+    mov x4, x23
     bl kernel_main
 
 halt:

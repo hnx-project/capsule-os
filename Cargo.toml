@@ -41,7 +41,7 @@ members = [
     "userspace/programs/ps",
     "userspace/programs/kill",
     "userspace/programs/testall",
-    "userspace/programs/dmesg",
+    "userspace/programs/dmesg", "userspace/addons/hello_pill",
     # testloader — 调试期间专用
     # "userspace/programs/testloader",
 ]

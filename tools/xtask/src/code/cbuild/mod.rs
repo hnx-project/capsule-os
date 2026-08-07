@@ -1,5 +1,6 @@
 pub mod build_bootloader;
 pub mod build_kernel;
+pub mod build_pillsmod;
 
 use crate::config::{Resolved, get_parsed_version, BUILD_TEMP_RESOURCE};
 use crate::platform::Platform;
@@ -32,6 +33,9 @@ pub fn build(resolved: &Resolved, plat: &Platform, _generate_dist: bool) -> Resu
 
     // Run Microkernel build
     build_kernel::build_kernel(resolved, plat, &v, &mut current_step, total_steps as u32)?;
+
+    // Run PillsMod build
+    build_pillsmod::build_pillsmod(resolved, plat, &v, &mut current_step, total_steps as u32)?;
 
     // Print size summary
     print_sizes();

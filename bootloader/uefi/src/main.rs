@@ -24,6 +24,8 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     let mut entry_point: u64 = 0;
     let mut dtb_ptr = core::ptr::null();
     let mut payload_size: usize = 0;
+    let mut pill_pa: u64 = 0;
+    let mut pill_size: u64 = 0;
 
     // Inner lexical block to contain all file loading and parsing borrows
     {
@@ -212,6 +214,33 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
             }
         }
         info!("  Final system DTB pointer: {:?}", dtb_ptr);
+
+        // 8a2. Load the hello_pill.pill from U-Disk if present
+        if let Ok(pill_handle) = root.open(
+            cstr16!("extensions\\hello_pill.pill"),
+            uefi::proto::media::file::FileMode::Read,
+            uefi::proto::media::file::FileAttribute::empty()
+        ) {
+            if let Ok(uefi::proto::media::file::FileType::Regular(mut pill_file)) = pill_handle.into_type() {
+                let mut pill_info_buf = [0u8; 128];
+                if let Ok(pill_info) = pill_file.get_info::<uefi::proto::media::file::FileInfo>(&mut pill_info_buf) {
+                    let p_size = pill_info.file_size() as usize;
+                    let p_pages = (p_size + 4095) / 4096;
+                    if let Ok(p_addr) = boot_services.allocate_pages(
+                        uefi::table::boot::AllocateType::AnyPages,
+                        uefi::table::boot::MemoryType::LOADER_DATA,
+                        p_pages
+                    ) {
+                        let pill_buf = unsafe { core::slice::from_raw_parts_mut(p_addr as *mut u8, p_size) };
+                        if pill_file.read(pill_buf).is_ok() {
+                            pill_pa = p_addr;
+                            pill_size = p_size as u64;
+                            info!("  [SUCCESS] Loaded driver package '\\extensions\\hello_pill.pill' ({:#x}, {} bytes)!", p_addr, p_size);
+                        }
+                    }
+                }
+            }
+        }
         
         // 8b. Dynamically clear EXECUTE_PROTECT (NX) using standard MemoryProtection protocol
         if let Ok(handle) = boot_services.get_handle_for_protocol::<MemoryProtection>() {
@@ -224,6 +253,17 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
                     info!("  [SUCCESS] Execute-Never (NX) attribute cleared successfully on kernel memory!");
                 } else {
                     error!("  Failed to clear EXECUTE_PROTECT attribute on the kernel region!");
+                }
+
+                if pill_pa != 0 && pill_size > 0 {
+                    info!("  Clearing EXECUTE_PROTECT on loaded driver package...");
+                    let pill_aligned_size = (pill_size + 4095) & !4095;
+                    let pill_range = pill_pa .. pill_pa + pill_aligned_size;
+                    if mp_ref.clear_memory_attributes(pill_range, MemoryAttribute::EXECUTE_PROTECT).is_ok() {
+                        info!("  [SUCCESS] Execute-Never (NX) attribute cleared successfully on driver memory!");
+                    } else {
+                        error!("  Failed to clear EXECUTE_PROTECT attribute on the driver region!");
+                    }
                 }
             }
         } else {
@@ -249,6 +289,25 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
         }
         core::arch::asm!("dsb ish", "isb");
     }
+
+    if pill_pa != 0 && pill_size > 0 {
+        unsafe {
+            let mut addr = pill_pa;
+            let end = pill_pa + pill_size;
+            while addr < end {
+                core::arch::asm!("dc cvac, {0}", in(reg) addr);
+                addr += 64;
+            }
+            core::arch::asm!("dsb ish");
+            
+            let mut addr = pill_pa;
+            while addr < end {
+                core::arch::asm!("ic ivau, {0}", in(reg) addr);
+                addr += 64;
+            }
+            core::arch::asm!("dsb ish", "isb");
+        }
+    }
     
     // 9. Exit Boot Services to hand over bare-metal CPU state
     info!("  Exiting UEFI Boot Services to jump into microkernel...");
@@ -267,6 +326,8 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
             in("x0") dtb_ptr, // Pass DTB pointer in x0
             in("x1") 0usize,  // Pass bootfs_pa in x1
             in("x2") 0usize,  // Pass bootfs_size in x2
+            in("x3") pill_pa as usize,   // Pass pill_pa in x3
+            in("x4") pill_size as usize, // Pass pill_size in x4
             options(noreturn)
         );
     }
