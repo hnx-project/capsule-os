@@ -27,7 +27,6 @@ members = [
     "userspace/services/fileagent",
     "userspace/services/loader",
     "userspace/services/procmgr",
-    "userspace/services/tty",
     "userspace/services/servicesd",
     "userspace/services/netd",
     "userspace/services/inputd",

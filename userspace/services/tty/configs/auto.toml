@@ -1,4 +1,0 @@
-name = "tty"
-path = "tty"
-dependencies = []
-is_program = false

@@ -55,10 +55,6 @@ fn devmgr_connect() -> Option<usize> {
     syscalls::channel_lookup("svc.dev").ok()
 }
 
-fn tty_connect() -> Option<usize> {
-    syscalls::channel_lookup("svc.tty").ok()
-}
-
 fn devmgr_open(devmgr: usize, name: &str) -> Option<u32> {
     let name_bytes = name.as_bytes();
     let plen = name_bytes.len().min(240);
@@ -461,24 +457,21 @@ pub fn do_close(session_idx: usize, fd: u32) -> i32 {
 pub fn do_read(session_idx: usize, fd: u32, buf: &mut [u8]) -> i32 {
     unsafe {
         if fd == tty_fd() {
-            if let Some(tty_chan) = tty_connect() {
-                let mut cmd = [0u8; 148];
-                cmd[0] = 1; // TTY_CMD_READ
-                cmd[1] = 0; // seq
-                let read_len = buf.len().min(128);
-                cmd[4..8].copy_from_slice(&(read_len as u32).to_le_bytes());
-
-                if syscalls::channel_write(tty_chan, &cmd, &[]).is_ok() {
-                    let mut resp = [0u8; 148];
-                    let mut resp_handles = [0u32; 2];
-                    if syscalls::channel_read(tty_chan, &mut resp, &mut resp_handles).is_ok() {
-                        let _ = syscalls::close(tty_chan);
-                        let mut len_bytes = [0u8; 4];
-                        len_bytes.copy_from_slice(&resp[4..8]);
-                        let actual_len = (u32::from_le_bytes(len_bytes) as usize).min(read_len);
-                        if actual_len > 0 {
-                            buf[..actual_len].copy_from_slice(&resp[20..20 + actual_len]);
-                        }
+            let read_len = buf.len().min(128);
+            let read_res = libcapsule::syscall!(
+                shared::syscall_nums::SYSCALL_READ,
+                0, // fd = 0 (stdin)
+                buf.as_mut_ptr() as usize,
+                read_len,
+                0,
+                0,
+                0
+            ) as isize;
+            if read_res < 0 {
+                return 0;
+            }
+            return read_res as i32;
+        }
                         return actual_len as i32;
                     }
                 }
@@ -551,21 +544,20 @@ pub fn do_read(session_idx: usize, fd: u32, buf: &mut [u8]) -> i32 {
 pub fn do_write(session_idx: usize, fd: u32, data: &[u8]) -> i32 {
     unsafe {
         if fd == tty_fd() {
-            if let Some(tty_chan) = tty_connect() {
-                let mut cmd = [0u8; 148];
-                cmd[0] = 2; // TTY_CMD_WRITE
-                cmd[1] = 0; // seq
-                let write_len = data.len().min(128);
-                cmd[4..8].copy_from_slice(&(write_len as u32).to_le_bytes());
-                cmd[20..20 + write_len].copy_from_slice(&data[..write_len]);
-
-                if syscalls::channel_write(tty_chan, &cmd, &[]).is_ok() {
-                    let mut resp = [0u8; 148];
-                    let mut resp_handles = [0u32; 2];
-                    if syscalls::channel_read(tty_chan, &mut resp, &mut resp_handles).is_ok() {
-                        let _ = syscalls::close(tty_chan);
-                        return write_len as i32;
-                    }
+            let write_len = data.len().min(128);
+            if write_len > 0 {
+                let _ = libcapsule::syscall!(
+                    shared::syscall_nums::SYSCALL_WRITE,
+                    1, // fd = 1 (stdout)
+                    data.as_ptr() as usize,
+                    write_len,
+                    0,
+                    0,
+                    0
+                );
+            }
+            return write_len as i32;
+        }
                 }
                 let _ = syscalls::close(tty_chan);
             }
