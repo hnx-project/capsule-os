@@ -40,15 +40,9 @@ static SERVICES: &[ServiceDef] = &[
         is_program: false,
     },
     ServiceDef {
-        name: "blkdev",
-        path: "blkdev",
-        dependencies: &[],
-        is_program: false,
-    },
-    ServiceDef {
         name: "fileagent",
         path: "fileagent",
-        dependencies: &["blkdev", "devmgr", "procmgr"],
+        dependencies: &["devmgr", "procmgr"],
         is_program: false,
     },
     ServiceDef {

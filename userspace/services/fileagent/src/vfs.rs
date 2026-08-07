@@ -774,18 +774,15 @@ pub fn do_stat(path: &str) -> (i32, u64) {
     }
 }
 
-/// The IPC-based adapter stream that wraps block sectors from "svc.blk" and exposes
-/// standard fatfs I/O operations.
+/// Direct block system-call adapter stream that interfaces directly with the kernel's
+/// Virtio-Block MMIO driver and exposes standard fatfs I/O operations.
 pub struct BlkDevStream {
-    session_chan: usize,
     position: u64,
 }
 
 impl BlkDevStream {
     pub fn new() -> Result<Self, Status> {
-        let chan = syscalls::channel_lookup("svc.blk").map_err(|_| Status::NotFound)?;
         Ok(Self {
-            session_chan: chan,
             position: 0,
         })
     }
@@ -825,30 +822,22 @@ impl fatfs::Read for BlkDevStream {
             let remaining_in_sector = 512 - sector_offset;
             let want = core::cmp::min(buf.len() - total_read, remaining_in_sector);
 
-            // Read the sector from svc.blk
-            let mut cmd = [0u8; 16];
-            cmd[0] = 0; // BLK_CMD_READ
-            cmd[8..16].copy_from_slice(&sector.to_le_bytes());
-
-            let mut resp = [0u8; 520];
-            let mut resp_handles = [0u32; 2];
-
-            if let Err(_) = syscalls::channel_write(self.session_chan, &cmd, &[]) {
-                return Err(FileError(Status::TryAgain));
+            // Read the sector directly from the kernel block device
+            let mut sector_data = [0u8; 512];
+            let ret = libcapsule::syscall!(
+                shared::syscall_nums::SYSCALL_BLOCK_READ,
+                sector,
+                sector_data.as_mut_ptr() as usize,
+                0,
+                0,
+                0,
+                0
+            );
+            if (ret as isize) < 0 {
+                return Err(FileError(Status::from_raw(ret as i32)));
             }
-            match syscalls::channel_read(self.session_chan, &mut resp, &mut resp_handles) {
-                Ok(n) if n >= 8 => {
-                    let mut status_bytes = [0u8; 8];
-                    status_bytes.copy_from_slice(&resp[0..8]);
-                    let status = i64::from_le_bytes(status_bytes);
-                    if status < 0 {
-                        return Err(FileError(Status::from_raw(status as i32)));
-                    }
-                    buf[total_read..total_read + want].copy_from_slice(&resp[8 + sector_offset..8 + sector_offset + want]);
-                    total_read += want;
-                }
-                _ => return Err(FileError(Status::PeerClosed)),
-            }
+            buf[total_read..total_read + want].copy_from_slice(&sector_data[sector_offset..sector_offset + want]);
+            total_read += want;
         }
         self.position += total_read as u64;
         Ok(total_read)
@@ -866,57 +855,37 @@ impl fatfs::Write for BlkDevStream {
 
             let mut sector_data = [0u8; 512];
             if want < 512 {
-                // Read original sector
-                let mut cmd = [0u8; 16];
-                cmd[0] = 0; // BLK_CMD_READ
-                cmd[8..16].copy_from_slice(&sector.to_le_bytes());
-
-                let mut resp = [0u8; 520];
-                let mut resp_handles = [0u32; 2];
-
-                if let Err(_) = syscalls::channel_write(self.session_chan, &cmd, &[]) {
-                    return Err(FileError(Status::TryAgain));
-                }
-                match syscalls::channel_read(self.session_chan, &mut resp, &mut resp_handles) {
-                    Ok(n) if n >= 8 => {
-                        let mut status_bytes = [0u8; 8];
-                        status_bytes.copy_from_slice(&resp[0..8]);
-                        let status = i64::from_le_bytes(status_bytes);
-                        if status < 0 {
-                            return Err(FileError(Status::from_raw(status as i32)));
-                        }
-                        sector_data.copy_from_slice(&resp[8..520]);
-                    }
-                    _ => return Err(FileError(Status::PeerClosed)),
+                // Read original sector from kernel block device
+                let ret = libcapsule::syscall!(
+                    shared::syscall_nums::SYSCALL_BLOCK_READ,
+                    sector,
+                    sector_data.as_mut_ptr() as usize,
+                    0,
+                    0,
+                    0,
+                    0
+                );
+                if (ret as isize) < 0 {
+                    return Err(FileError(Status::from_raw(ret as i32)));
                 }
             }
 
             // Modify and write back
             sector_data[sector_offset..sector_offset + want].copy_from_slice(&buf[total_written..total_written + want]);
 
-            let mut cmd = [0u8; 528];
-            cmd[0] = 1; // BLK_CMD_WRITE
-            cmd[8..16].copy_from_slice(&sector.to_le_bytes());
-            cmd[16..528].copy_from_slice(&sector_data);
-
-            let mut resp = [0u8; 8];
-            let mut resp_handles = [0u32; 2];
-
-            if let Err(_) = syscalls::channel_write(self.session_chan, &cmd, &[]) {
-                return Err(FileError(Status::TryAgain));
+            let ret = libcapsule::syscall!(
+                shared::syscall_nums::SYSCALL_BLOCK_WRITE,
+                sector,
+                sector_data.as_ptr() as usize,
+                0,
+                0,
+                0,
+                0
+            );
+            if (ret as isize) < 0 {
+                return Err(FileError(Status::from_raw(ret as i32)));
             }
-            match syscalls::channel_read(self.session_chan, &mut resp, &mut resp_handles) {
-                Ok(n) if n >= 8 => {
-                    let mut status_bytes = [0u8; 8];
-                    status_bytes.copy_from_slice(&resp[0..8]);
-                    let status = i64::from_le_bytes(status_bytes);
-                    if status < 0 {
-                        return Err(FileError(Status::from_raw(status as i32)));
-                    }
-                    total_written += want;
-                }
-                _ => return Err(FileError(Status::PeerClosed)),
-            }
+            total_written += want;
         }
         self.position += total_written as u64;
         Ok(total_written)
@@ -943,31 +912,27 @@ impl fatfs::Seek for BlkDevStream {
                 Ok(self.position)
             }
             fatfs::SeekFrom::End(offset) => {
-                let mut cmd = [0u8; 16];
-                cmd[0] = 2; // BLK_CMD_SIZE
+                let ret = libcapsule::syscall!(
+                    shared::syscall_nums::SYSCALL_BLOCK_SIZE,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                );
+                if (ret as isize) < 0 {
+                    return Err(FileError(Status::from_raw(ret as i32)));
+                }
+                let size_sectors = ret as u64;
+                let total_size = size_sectors * 512;
                 
-                let mut resp = [0u8; 16];
-                let mut resp_handles = [0u32; 2];
-
-                if let Err(_) = syscalls::channel_write(self.session_chan, &cmd, &[]) {
-                    return Err(FileError(Status::TryAgain));
+                let new_pos = total_size as i64 + offset;
+                if new_pos < 0 {
+                    return Err(FileError(Status::InvalidArgs));
                 }
-                match syscalls::channel_read(self.session_chan, &mut resp, &mut resp_handles) {
-                    Ok(n) if n >= 16 => {
-                        let mut size_bytes = [0u8; 8];
-                        size_bytes.copy_from_slice(&resp[8..16]);
-                        let size_sectors = u64::from_le_bytes(size_bytes);
-                        let total_size = size_sectors * 512;
-                        
-                        let new_pos = total_size as i64 + offset;
-                        if new_pos < 0 {
-                            return Err(FileError(Status::InvalidArgs));
-                        }
-                        self.position = new_pos as u64;
-                        Ok(self.position)
-                    }
-                    _ => Err(FileError(Status::PeerClosed)),
-                }
+                self.position = new_pos as u64;
+                Ok(self.position)
             }
         }
     }
