@@ -107,3 +107,85 @@ PillsAddon 驱动在启动时，必须向 `devmgr` (设备管理器) 注册其�
 | **I/O 传输效率**| 极致 (直接 DMA 映射，零拷贝) | 较高 (依赖内核 MMIO 代理与 Port 唤醒) |
 | **中断响应延迟**| **0 延迟** (物理中断向量直达) | **低延迟** (依赖内核上下文调度唤醒) |
 | **典型代表设备**| 磁盘 (`virtio_blk`)、网卡 (`virtio_net`) | 显卡 (`gpud`)、触控板 (`touchd`) |
+
+---
+
+## 📦 6. `.pill` 单文件分发格式与加载协定 (Binary Bundle Specification)
+
+为了满足高内聚、易于分发、并支持 `xtaskfile` 全自动编译打包流的需求：
+```toml
+pillsmod = [
+    { path = '..../Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/extensions/*.pill' }
+]
+```
+CapsuleOS 制定了单一归档格式的 `.pill` 驱动文件规范。该格式可同时用于 **PillsMod (内核态)** 与 **PillsAddon (用户态)** 驱动。
+
+### 6.1 二进制物理结构 (Binary Layout)
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ 1. 头部魔数区 (Header) - 32 字节                             │
+│    - Magic: 4 字节 [0x50, 0x49, 0x4c, 0x4c] ("PILL")        │
+│    - Version: 4 字节 (主/次版本号)                          │
+│    - Metadata Offset: 8 字节                                │
+│    - Metadata Size: 8 字节                                  │
+│    - Payload Offset: 8 字节                                 │
+│    - Payload Size: 8 字节                                   │
+├─────────────────────────────────────────────────────────────┤
+│ 2. 元数据区 (Metadata) - TOML / JSON 文本                     │
+│    - 包含驱动名称、类别 (PillsMod/PillsAddon)、设备树兼容性、   │
+│      MMIO 注册区间、绑定中断号、加载入口符号等信息                │
+├─────────────────────────────────────────────────────────────┤
+│ 3. 驱动负载区 (Payload) - 纯二进制代码段 (Executable Binary) │
+│    - 已经由 ohlink-linker 链接完成的对齐可执行段 (Text/Data)   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 6.1.1 头部结构体定义 (C-ABI Representation)
+```rust
+#[repr(C, packed)]
+pub struct PillHeader {
+    pub magic: [u8; 4],         // 必须为 b"PILL"
+    pub version_major: u16,     // 主版本号，例如 1
+    pub version_minor: u16,     // 次版本号，例如 0
+    pub metadata_offset: u64,   // 描述文本在文件中的绝对偏移
+    pub metadata_size: u64,     // 描述文本大小
+    pub payload_offset: u64,    // 驱动代码段在文件中的绝对偏移
+    pub payload_size: u64,      // 驱动代码段字节大小
+}
+```
+
+#### 6.1.2 驱动描述文本 (`metadata.toml` / Json) 格式样例
+```toml
+[driver]
+name = "virtio_net"               # 驱动唯一标识符
+version = "1.0.0-beta"            # 驱动版本
+class = "PillsMod"                # 核心类型: [PillsMod (EL1) | PillsAddon (EL0)]
+entry_symbol = "pillsmod_init"    # 驱动加载入口点
+
+[requirements]
+kernel_version = ">=1.0.0"        # 内核版本依赖
+dependencies = ["pci_bus"]        # 依赖的其他驱动模块
+
+[resources]
+mmio_regions = ["0x0a000000/0x200"] # 声明接管的硬件 MMIO 地址区间 (安全审计用)
+irqs = [32]                       # 申请绑定的中断向量号
+```
+
+---
+
+## 🔄 7. 构建与动态加载流程 (Build & Load Pipeline)
+
+### 7.1 `xtask` 自动化打包流 (Build Orchestration)
+1. **编译驱动**：通过 `cargo build --release` 编译驱动（PillsMod 采用 EL1 target，PillsAddon 采用 EL0 target）。
+2. **提取负载**：利用 `objcopy -O binary` 从 ELF 提取纯净代码段 `driver.raw`。
+3. **元数据集成**：在驱动项目的根目录下自动读取 `metadata.toml` 配置文件。
+4. **合成封包**：按 `PillHeader` 规整各个偏移并拼接二进制字节流，输出并写入 `{BUILD_TEMP_RESOURCE}/extensions/name.pill`。
+
+### 7.2 动态加载自举机制 (Dynamic Loading Mechanism)
+1. **扫描设备**：自举期间，用户态 `devmgr` 或 UEFI 引导器自动扫描 U 盘中的 `/extensions/*.pill` 文件。
+2. **校验解析**：读入内存后，解析 `PillHeader` 校验 `"PILL"` 签名。若为 `PillsAddon`，则就地调用 `sys_spawn` 建立独立进程沙箱并注册 MMIO 地址白名单。
+3. **内核级 PillsMod 注册 (Kext Loader)**：
+   - 若 class 为 `PillsMod`，则调用专用的内核系统调用。
+   - 内核 `pillsmod` 模块（物理目录为 `mcore/src/pillsmod/`）接收该 VMO 物理盘，解析并将其装载到内核高半区虚拟内存（Identity-mapped 或 VMAR 专用段中）。
+   - 审计并注册中断向量，提取符号执行跳转自检（`pillsmod_init`）。

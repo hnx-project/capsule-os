@@ -18,6 +18,7 @@ pub mod vfs;
 pub mod loader;
 pub mod rootfs;
 pub mod smp;
+pub mod pillsmod;
 
 use crate::arch::ArchHardware;
 
