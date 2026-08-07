@@ -1,11 +1,112 @@
 #![no_main]
 #![no_std]
 
+extern crate alloc;
+
 use uefi::prelude::*;
 use uefi::proto::media::file::File;
 use uefi::proto::security::MemoryProtection;
 use uefi::table::boot::MemoryAttribute;
 use log::{info, error, warn};
+
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use alloc::collections::BTreeMap;
+use uefi::proto::media::file::{FileMode, FileAttribute, FileType};
+
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy)]
+pub struct DriverHandoff {
+    pub name: [u8; 32],
+    pub paddr: u64,
+    pub size: u64,
+}
+
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy)]
+pub struct DriverTableHandoff {
+    pub count: u64,
+    pub drivers: [DriverHandoff; 16],
+}
+
+#[derive(Debug, Clone)]
+pub struct DriverNode {
+    pub name: String,
+    pub path_name: String,
+    pub dependencies: Vec<String>,
+    pub paddr: u64,
+    pub size: u64,
+}
+
+fn parse_metadata_field(toml: &str, key: &str) -> Option<String> {
+    if let Some(idx) = toml.find(key) {
+        let rest = &toml[idx + key.len()..];
+        if let Some(start_quote) = rest.find('"') {
+            let rest2 = &rest[start_quote + 1..];
+            if let Some(end_quote) = rest2.find('"') {
+                return Some(String::from(&rest2[..end_quote]));
+            }
+        }
+    }
+    None
+}
+
+fn parse_metadata_dependencies(toml: &str) -> Vec<String> {
+    let mut deps = Vec::new();
+    if let Some(idx) = toml.find("dependencies = [") {
+        let rest = &toml[idx + "dependencies = [".len()..];
+        if let Some(end_bracket) = rest.find(']') {
+            let deps_str = &rest[..end_bracket];
+            for item in deps_str.split(',') {
+                let trimmed = item.trim().trim_matches('"').trim_matches('\'').trim();
+                if !trimmed.is_empty() {
+                    deps.push(String::from(trimmed));
+                }
+            }
+        }
+    }
+    deps
+}
+
+fn topological_sort(nodes: &mut Vec<DriverNode>) -> core::result::Result<Vec<DriverNode>, &'static str> {
+    let mut sorted = Vec::new();
+    let mut visited = BTreeMap::new(); // name -> State (0 = visiting, 1 = visited)
+    
+    fn dfs(
+        node_idx: usize,
+        nodes: &Vec<DriverNode>,
+        visited: &mut BTreeMap<String, u8>,
+        sorted: &mut Vec<DriverNode>,
+    ) -> core::result::Result<(), &'static str> {
+        let node = &nodes[node_idx];
+        if let Some(&state) = visited.get(&node.name) {
+            if state == 0 {
+                return Err("Circular dependency detected!");
+            }
+            return Ok(());
+        }
+        
+        visited.insert(node.name.clone(), 0); // visiting
+        
+        for dep in &node.dependencies {
+            if let Some(dep_idx) = nodes.iter().position(|n| &n.name == dep) {
+                dfs(dep_idx, nodes, visited, sorted)?;
+            }
+        }
+        
+        visited.insert(node.name.clone(), 1); // visited
+        sorted.push(nodes[node_idx].clone());
+        Ok(())
+    }
+    
+    for i in 0..nodes.len() {
+        if !visited.contains_key(&nodes[i].name) {
+            dfs(i, nodes, &mut visited, &mut sorted)?;
+        }
+    }
+    
+    Ok(sorted)
+}
 
 #[entry]
 fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
@@ -24,8 +125,8 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     let mut entry_point: u64 = 0;
     let mut dtb_ptr = core::ptr::null();
     let mut payload_size: usize = 0;
-    let mut pill_pa: u64 = 0;
-    let mut pill_size: u64 = 0;
+    let mut handoff_table_pa: u64 = 0;
+    let mut handoff_table_size: u64 = 0;
 
     // Inner lexical block to contain all file loading and parsing borrows
     {
@@ -81,7 +182,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
         };
         
         // 5. Query KERNEL file size
-        let mut info_buf = [0u8; 128];
+        let mut info_buf = [0u8; 256];
         let file_info = match file.get_info::<uefi::proto::media::file::FileInfo>(&mut info_buf) {
             Ok(info) => info,
             Err(_) => {
@@ -183,7 +284,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
             uefi::proto::media::file::FileAttribute::empty()
         ) {
             if let Ok(uefi::proto::media::file::FileType::Regular(mut dtb_file)) = dtb_handle.into_type() {
-                let mut dtb_info_buf = [0u8; 128];
+                let mut dtb_info_buf = [0u8; 256];
                 if let Ok(dtb_info) = dtb_file.get_info::<uefi::proto::media::file::FileInfo>(&mut dtb_info_buf) {
                     let dtb_size = dtb_info.file_size() as usize;
                     let dtb_pages = (dtb_size + 4095) / 4096;
@@ -215,36 +316,178 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
         }
         info!("  Final system DTB pointer: {:?}", dtb_ptr);
 
-        // 8a2. Load the hello_pill.pill from U-Disk if present
-        if let Ok(pill_handle) = root.open(
-            cstr16!("extensions\\hello_pill.pill"),
+        let mut driver_nodes = Vec::new();
+
+        // 8a. Dynamic directory scanning for .pill driver bundles
+        if let Ok(dir_handle) = root.open(
+            cstr16!("extensions"),
             uefi::proto::media::file::FileMode::Read,
-            uefi::proto::media::file::FileAttribute::empty()
+            uefi::proto::media::file::FileAttribute::DIRECTORY
         ) {
-            if let Ok(uefi::proto::media::file::FileType::Regular(mut pill_file)) = pill_handle.into_type() {
-                let mut pill_info_buf = [0u8; 128];
-                if let Ok(pill_info) = pill_file.get_info::<uefi::proto::media::file::FileInfo>(&mut pill_info_buf) {
-                    let p_size = pill_info.file_size() as usize;
-                    let p_pages = (p_size + 4095) / 4096;
-                    if let Ok(p_addr) = boot_services.allocate_pages(
-                        uefi::table::boot::AllocateType::AnyPages,
-                        uefi::table::boot::MemoryType::LOADER_DATA,
-                        p_pages
-                    ) {
-                        let pill_buf = unsafe { core::slice::from_raw_parts_mut(p_addr as *mut u8, p_size) };
-                        if pill_file.read(pill_buf).is_ok() {
-                            pill_pa = p_addr;
-                            pill_size = p_size as u64;
-                            info!("  [SUCCESS] Loaded driver package '\\extensions\\hello_pill.pill' ({:#x}, {} bytes)!", p_addr, p_size);
+            if let Ok(uefi::proto::media::file::FileType::Dir(mut dir)) = dir_handle.into_type() {
+                while let Ok(Some(entry)) = dir.read_entry_boxed() {
+                    let file_name = entry.file_name();
+                    let name_str = file_name.to_string();
+                    if name_str == "." || name_str == ".." {
+                        continue;
+                    }
+                    if name_str.ends_with(".pill") {
+                        info!("  Discovered .pill driver bundle: {}", name_str);
+                        
+                        // Parse metadata.toml inside this directory
+                        let mut meta_content = String::new();
+                        let meta_path_str = alloc::format!("extensions\\{}\\metadata.toml", name_str);
+                        let meta_path = uefi::CString16::try_from(meta_path_str.as_str()).unwrap();
+                        
+                        let meta_open_res = root.open(&meta_path, FileMode::Read, FileAttribute::empty());
+                        match meta_open_res {
+                            Ok(meta_handle) => {
+                                info!("    Successfully opened metadata.toml!");
+                                match meta_handle.into_type() {
+                                    Ok(FileType::Regular(mut meta_file)) => {
+                                        // Read up to 1024 bytes directly without calling get_info
+                                        let mut meta_bytes = [0u8; 1024];
+                                        if let Ok(read_bytes) = meta_file.read(&mut meta_bytes) {
+                                            if read_bytes > 0 {
+                                                if let Ok(meta_str) = core::str::from_utf8(&meta_bytes[..read_bytes]) {
+                                                    meta_content = String::from(meta_str);
+                                                    info!("      Successfully read metadata.toml ({} bytes)!", read_bytes);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Ok(FileType::Dir(_)) => {
+                                        error!("      metadata.toml is a Directory!");
+                                    }
+                                    Err(e) => {
+                                        error!("      into_type failed: {:?}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("    Failed to open metadata.toml at {}: {:?}", meta_path_str, e);
+                            }
+                        }
+
+                        if meta_content.is_empty() {
+                            error!("    Failed to load metadata.toml for {}", name_str);
+                            continue;
+                        }
+
+                        let driver_name = parse_metadata_field(&meta_content, "name = ").unwrap_or_else(|| String::from(&name_str[..name_str.len() - 5]));
+                        let dependencies = parse_metadata_dependencies(&meta_content);
+
+                        // Load driver inside this directory
+                        let raw_path_str = alloc::format!("extensions\\{}\\driver", name_str);
+                        let raw_path = uefi::CString16::try_from(raw_path_str.as_str()).unwrap();
+                        
+                        let mut paddr: u64 = 0;
+                        let mut size: u64 = 0;
+
+                        let raw_open_res = root.open(&raw_path, FileMode::Read, FileAttribute::empty());
+                        match raw_open_res {
+                            Ok(raw_handle) => {
+                                match raw_handle.into_type() {
+                                    Ok(FileType::Regular(mut raw_file)) => {
+                                        let mut raw_info_buf_aligned = [0u64; 32];
+                                        let raw_info_buf = unsafe {
+                                            core::slice::from_raw_parts_mut(raw_info_buf_aligned.as_mut_ptr() as *mut u8, 256)
+                                        };
+                                        let info_res = raw_file.get_info::<uefi::proto::media::file::FileInfo>(raw_info_buf);
+                                        match info_res {
+                                            Ok(raw_info) => {
+                                                let r_size = raw_info.file_size() as usize;
+                                                let r_pages = (r_size + 4095) / 4096;
+                                                if let Ok(r_addr) = boot_services.allocate_pages(
+                                                    uefi::table::boot::AllocateType::AnyPages,
+                                                    uefi::table::boot::MemoryType::LOADER_DATA,
+                                                    r_pages
+                                                ) {
+                                                    let raw_buf = unsafe { core::slice::from_raw_parts_mut(r_addr as *mut u8, r_size) };
+                                                    if raw_file.read(raw_buf).is_ok() {
+                                                        paddr = r_addr;
+                                                        size = r_size as u64;
+                                                        info!("    [SUCCESS] Loaded driver payload ({:#x}, {} bytes)", r_addr, r_size);
+                                                    } else {
+                                                        error!("      Failed to read driver bytes!");
+                                                    }
+                                                } else {
+                                                    error!("      Failed to allocate pages for driver!");
+                                                }
+                                            }
+                                            Err(e) => {
+                                                error!("      get_info failed on driver: {:?}", e);
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        error!("      driver is not a Regular file!");
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("    Failed to open driver at {}: {:?}", raw_path_str, e);
+                            }
+                        }
+
+                        if paddr != 0 && size > 0 {
+                            driver_nodes.push(DriverNode {
+                                name: driver_name,
+                                path_name: name_str,
+                                dependencies,
+                                paddr,
+                                size,
+                            });
                         }
                     }
                 }
             }
         }
+
+        // 8a2. Topological dependency resolution
+        let sorted_drivers = match topological_sort(&mut driver_nodes) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("  [FATAL] Driver dependency sort failed: {}", e);
+                return Status::LOAD_ERROR;
+            }
+        };
+
+        // 8a3. Build dynamic DriverTableHandoff in boot loader memory
+        if !sorted_drivers.is_empty() {
+            let table_pages = (core::mem::size_of::<DriverTableHandoff>() + 4095) / 4096;
+            if let Ok(table_addr) = boot_services.allocate_pages(
+                uefi::table::boot::AllocateType::AnyPages,
+                uefi::table::boot::MemoryType::LOADER_DATA,
+                table_pages
+            ) {
+                let handoff_table = unsafe { &mut *(table_addr as *mut DriverTableHandoff) };
+                handoff_table.count = sorted_drivers.len() as u64;
+                
+                let drv_count = handoff_table.count;
+                info!("  Constructing Driver Handoff Table ({} drivers):", drv_count);
+                for (i, drv) in sorted_drivers.iter().enumerate() {
+                    let mut name_bytes = [0u8; 32];
+                    let src_bytes = drv.name.as_bytes();
+                    let len = src_bytes.len().min(31);
+                    name_bytes[..len].copy_from_slice(&src_bytes[..len]);
+
+                    handoff_table.drivers[i] = DriverHandoff {
+                        name: name_bytes,
+                        paddr: drv.paddr,
+                        size: drv.size,
+                    };
+                    info!("    [{}] name: {}, paddr: {:#x}, size: {}", i, drv.name, drv.paddr, drv.size);
+                }
+                
+                handoff_table_pa = table_addr;
+                handoff_table_size = core::mem::size_of::<DriverTableHandoff>() as u64;
+            }
+        }
         
         // 8b. Dynamically clear EXECUTE_PROTECT (NX) using standard MemoryProtection protocol
         if let Ok(handle) = boot_services.get_handle_for_protocol::<MemoryProtection>() {
-            if let Ok(mut mp) = boot_services.open_protocol_exclusive::<MemoryProtection>(handle) {
+            if let Ok(mp) = boot_services.open_protocol_exclusive::<MemoryProtection>(handle) {
                 let mp_ref = mp.get_mut().unwrap();
                 info!("  MemoryProtection protocol located. Clearing EXECUTE_PROTECT on kernel region...");
                 let aligned_size = (payload_size as u64 + 4095) & !4095;
@@ -255,14 +498,18 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
                     error!("  Failed to clear EXECUTE_PROTECT attribute on the kernel region!");
                 }
 
-                if pill_pa != 0 && pill_size > 0 {
-                    info!("  Clearing EXECUTE_PROTECT on loaded driver package...");
-                    let pill_aligned_size = (pill_size + 4095) & !4095;
-                    let pill_range = pill_pa .. pill_pa + pill_aligned_size;
-                    if mp_ref.clear_memory_attributes(pill_range, MemoryAttribute::EXECUTE_PROTECT).is_ok() {
-                        info!("  [SUCCESS] Execute-Never (NX) attribute cleared successfully on driver memory!");
-                    } else {
-                        error!("  Failed to clear EXECUTE_PROTECT attribute on the driver region!");
+                if handoff_table_pa != 0 {
+                    let handoff_table = unsafe { &*(handoff_table_pa as *const DriverTableHandoff) };
+                    for i in 0..handoff_table.count as usize {
+                        let drv = &handoff_table.drivers[i];
+                        info!("  Clearing EXECUTE_PROTECT on driver '{}'...", core::str::from_utf8(&drv.name).unwrap_or("unknown").trim_matches('\0'));
+                        let pill_aligned_size = (drv.size + 4095) & !4095;
+                        let pill_range = drv.paddr .. drv.paddr + pill_aligned_size;
+                        if mp_ref.clear_memory_attributes(pill_range, MemoryAttribute::EXECUTE_PROTECT).is_ok() {
+                            info!("    [SUCCESS] Execute-Never (NX) attribute cleared successfully!");
+                        } else {
+                            error!("    Failed to clear EXECUTE_PROTECT attribute!");
+                        }
                     }
                 }
             }
@@ -290,22 +537,26 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
         core::arch::asm!("dsb ish", "isb");
     }
 
-    if pill_pa != 0 && pill_size > 0 {
-        unsafe {
-            let mut addr = pill_pa;
-            let end = pill_pa + pill_size;
-            while addr < end {
-                core::arch::asm!("dc cvac, {0}", in(reg) addr);
-                addr += 64;
+    if handoff_table_pa != 0 {
+        let handoff_table = unsafe { &*(handoff_table_pa as *const DriverTableHandoff) };
+        for i in 0..handoff_table.count as usize {
+            let drv = &handoff_table.drivers[i];
+            unsafe {
+                let mut addr = drv.paddr;
+                let end = drv.paddr + drv.size;
+                while addr < end {
+                    core::arch::asm!("dc cvac, {0}", in(reg) addr);
+                    addr += 64;
+                }
+                core::arch::asm!("dsb ish");
+                
+                let mut addr = drv.paddr;
+                while addr < end {
+                    core::arch::asm!("ic ivau, {0}", in(reg) addr);
+                    addr += 64;
+                }
+                core::arch::asm!("dsb ish", "isb");
             }
-            core::arch::asm!("dsb ish");
-            
-            let mut addr = pill_pa;
-            while addr < end {
-                core::arch::asm!("ic ivau, {0}", in(reg) addr);
-                addr += 64;
-            }
-            core::arch::asm!("dsb ish", "isb");
         }
     }
     
@@ -326,8 +577,8 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
             in("x0") dtb_ptr, // Pass DTB pointer in x0
             in("x1") 0usize,  // Pass bootfs_pa in x1
             in("x2") 0usize,  // Pass bootfs_size in x2
-            in("x3") pill_pa as usize,   // Pass pill_pa in x3
-            in("x4") pill_size as usize, // Pass pill_size in x4
+            in("x3") handoff_table_pa as usize,   // Pass handoff_table_pa in x3
+            in("x4") handoff_table_size as usize, // Pass handoff_table_size in x4
             options(noreturn)
         );
     }

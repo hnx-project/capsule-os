@@ -144,13 +144,8 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
 
             crate::memory::smoke::vmo_vmar_smoke_test();
 
-            if pill_pa != 0 && pill_size > 0 {
-                let pill_va = crate::arch::mmu_facade::pa_to_kernel_va(pill_pa);
-                let pill_buf = unsafe { core::slice::from_raw_parts(pill_va as *const u8, pill_size) };
-                crate::log_info!("BOOT", "Received .pill package from bootloader at physical {:#x}", pill_pa);
-                if let Ok(pill) = crate::pillsmod::ParsedPill::parse(pill_buf) {
-                    let _ = pill.load_kext();
-                }
+            if pill_pa != 0 {
+                let _ = crate::pillsmod::load_all_from_bootloader(pill_pa);
             }
 
             match crate::loader::launch_loader() {

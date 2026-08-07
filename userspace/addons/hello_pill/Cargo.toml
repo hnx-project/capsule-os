@@ -3,7 +3,8 @@ name = "hello_pill"
 version.workspace = true
 edition.workspace = true
 
-[lib]
-crate-type = ["staticlib"]
+[[bin]]
+name = "hello_pill"
+path = "src/main.rs"
 
 [dependencies]
