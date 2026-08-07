@@ -15,6 +15,9 @@
 //!   - `probe`      – FDT `/cpus` scan + ONLINE_MASK population
 //!   - `per_core`   – Secondary entry points (`kmain_secondary`)
 //!   - `boot`       – `boot_secondary_cores()` orchestrator
+//!
+//! Why a mod.rs file: we align this module structure with other subsystems
+//! like task, memory, ipc etc. to maintain 100% consistent style.
 
 pub mod psci;
 pub mod probe;
