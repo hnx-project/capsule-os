@@ -1,5 +1,5 @@
 use std::process::{Command, Stdio};
-use crate::config::{Resolved, BUILD_TEMP_RESOURCE};
+use crate::config::{Resolved, BUILD_TEMP_RESOURCE, BUILD_TEMP_EFI, BUILD_TEMP_ROOTFS};
 use crate::platform::Platform;
 
 const BOLD_BLUE: &str = "\x1b[1;34m";
@@ -20,7 +20,8 @@ pub fn run(resolved: &Resolved, plat: &Platform, gdb: bool) -> Result<(), String
 
     // 1.5 Automatically dump/generate QEMU's dynamic DTB matching the current config dynamically
     if plat.arch == "aarch64" && (plat.qemu_bin.contains("qemu-system-aarch64") || plat.qemu_bin.contains("qemu")) {
-        let dtb_output_path = format!("{}/boot/qemu_virt.dtb", BUILD_TEMP_RESOURCE);
+        std::fs::create_dir_all(format!("{}/boot", BUILD_TEMP_ROOTFS)).unwrap();
+        let dtb_output_path = format!("{}/boot/qemu_virt.dtb", BUILD_TEMP_ROOTFS);
         let mut dtb_cmd = Command::new(&plat.qemu_bin);
         
         let mut dtb_args = Vec::new();
@@ -29,6 +30,8 @@ pub fn run(resolved: &Resolved, plat: &Platform, gdb: bool) -> Result<(), String
             let rendered = arg
                 .replace("{uefi_bios}", &uefi_bios_path)
                 .replace("{disk_dir}", BUILD_TEMP_RESOURCE)
+                .replace("{efi_dir}", BUILD_TEMP_EFI)
+                .replace("{rootfs_dir}", BUILD_TEMP_ROOTFS)
                 .replace("{smp}", &plat.qemu_smp.to_string());
             
             if rendered == "-M" {
@@ -37,6 +40,8 @@ pub fn run(resolved: &Resolved, plat: &Platform, gdb: bool) -> Result<(), String
                     let m_arg = next_arg
                         .replace("{uefi_bios}", &uefi_bios_path)
                         .replace("{disk_dir}", BUILD_TEMP_RESOURCE)
+                        .replace("{efi_dir}", BUILD_TEMP_EFI)
+                        .replace("{rootfs_dir}", BUILD_TEMP_ROOTFS)
                         .replace("{smp}", &plat.qemu_smp.to_string());
                     dtb_args.push(format!("{},dumpdtb={}", m_arg, dtb_output_path));
                 }
@@ -79,6 +84,8 @@ fn launch_qemu(_resolved: &Resolved, plat: &Platform, gdb: bool, uefi_bios: &str
         let rendered_arg = arg
             .replace("{uefi_bios}", uefi_bios)
             .replace("{disk_dir}", BUILD_TEMP_RESOURCE)
+            .replace("{efi_dir}", BUILD_TEMP_EFI)
+            .replace("{rootfs_dir}", BUILD_TEMP_ROOTFS)
             .replace("{smp}", &plat.qemu_smp.to_string());
         qemu.arg(rendered_arg);
     }

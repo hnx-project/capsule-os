@@ -21,7 +21,7 @@ bootloader = { path = 'bootloader/uefi/Cargo.toml', output = '{BUILD_TEMP_RESOUR
 kernel     = { path = 'mcore/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/boot/KERNEL' }
 
 pillsmod = [
-    { path = 'userspace/addons/hello_pill/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/extensions/*.pill' }
+    { path = 'userspace/addons/hello_pill/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/extensions/*.pillsmod' }
 ]
 
 services = [

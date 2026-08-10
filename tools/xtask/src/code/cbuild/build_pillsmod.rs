@@ -95,7 +95,8 @@ pub fn build_pillsmod(
         let raw_dest_path = Path::new(&output_resolved).join("driver");
         std::fs::write(&raw_dest_path, &payload).map_err(|e| e.to_string())?;
 
-        println!("\r  Packing ({}/{}) {}.pill... DONE\x1B[K", pack_step, total_steps, bin_name);
+        let bundle_name = Path::new(&output_resolved).file_name().and_then(|n| n.to_str()).unwrap_or(&bin_name);
+        println!("\r  Packing ({}/{}) {}... DONE\x1B[K", pack_step, total_steps, bundle_name);
     }
     Ok(())
 }

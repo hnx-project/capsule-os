@@ -472,23 +472,6 @@ pub fn do_read(session_idx: usize, fd: u32, buf: &mut [u8]) -> i32 {
             }
             return read_res as i32;
         }
-                        return actual_len as i32;
-                    }
-                }
-                let _ = syscalls::close(tty_chan);
-            }
-            // Fallback: direct kernel read from UART (Fd 0)
-            let result = libcapsule::syscall!(
-                shared::syscall_nums::SYSCALL_READ,
-                0,
-                buf.as_mut_ptr() as usize,
-                buf.len(),
-                0,
-                0,
-                0
-            );
-            return result as i32;
-        }
         let sess = match SESSIONS[session_idx].as_mut() {
             Some(s) => s,
             None => return -1,
@@ -557,21 +540,6 @@ pub fn do_write(session_idx: usize, fd: u32, data: &[u8]) -> i32 {
                 );
             }
             return write_len as i32;
-        }
-                }
-                let _ = syscalls::close(tty_chan);
-            }
-            // Fallback: direct kernel write
-            let _ = libcapsule::syscall!(
-                shared::syscall_nums::SYSCALL_WRITE,
-                1,
-                data.as_ptr() as usize,
-                data.len(),
-                0,
-                0,
-                0
-            );
-            return data.len() as i32;
         }
         let sess = match SESSIONS[session_idx].as_mut() {
             Some(s) => s,

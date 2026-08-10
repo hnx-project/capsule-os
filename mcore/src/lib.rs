@@ -112,10 +112,14 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
             arch::mmu::build_and_enable(boot.ram_base, boot.ram_size, boot.uart_base);
             crate::log_info!("MMU", "4-level page tables ACTIVE");
 
-            // Dynamically detect Services VFS size
+            // Dynamically detect Services VFS size, falling back to BOOTFS if not found
             unsafe {
                 if let Some(detected_size) = detect_vfs_size(SERVICES_PHYS_ADDR) {
                     SERVICES_PHYS_SIZE = detected_size;
+                } else {
+                    crate::log_info!("BOOT", "No separate services.img found. Sharing BootFS at physical {:#x}!", BOOTFS_PHYS_ADDR);
+                    SERVICES_PHYS_ADDR = BOOTFS_PHYS_ADDR;
+                    SERVICES_PHYS_SIZE = BOOTFS_PHYS_SIZE;
                 }
             }
 

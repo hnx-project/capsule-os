@@ -30,6 +30,7 @@ members = [
     "userspace/services/netd",
     "userspace/services/inputd",
     "userspace/services/gpud",
+    "userspace/services/touchd",
     # "userspace/services/init",
     "userspace/programs/osh",
     "userspace/programs/ls",

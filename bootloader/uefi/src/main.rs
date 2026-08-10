@@ -5,6 +5,7 @@ extern crate alloc;
 
 use uefi::prelude::*;
 use uefi::proto::media::file::File;
+use uefi::proto::media::fs::SimpleFileSystem;
 use uefi::proto::security::MemoryProtection;
 use uefi::table::boot::MemoryAttribute;
 use log::{info, error, warn};
@@ -127,36 +128,56 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     let mut payload_size: usize = 0;
     let mut handoff_table_pa: u64 = 0;
     let mut handoff_table_size: u64 = 0;
+    let mut bootfs_pa: usize = 0;
+    let mut bootfs_size: usize = 0;
 
     // Inner lexical block to contain all file loading and parsing borrows
     {
         let boot_services = system_table.boot_services();
         
-        // 1. Get LoadedImage protocol to identify the boot device handle
-        let loaded_image = match boot_services.open_protocol_exclusive::<uefi::proto::loaded_image::LoadedImage>(image_handle) {
-            Ok(li) => li,
-            Err(_) => {
-                error!("Failed to open LoadedImage protocol!");
-                return Status::LOAD_ERROR;
+        // Try to locate RootFS partition by searching all SimpleFileSystem handles first
+        let mut root = None;
+        if let Ok(handles) = boot_services.locate_handle_buffer(uefi::table::boot::SearchType::AllHandles) {
+            for &handle in &*handles {
+                if let Ok(mut fs) = boot_services.open_protocol_exclusive::<SimpleFileSystem>(handle) {
+                    if let Ok(mut vol) = fs.open_volume() {
+                        if vol.open(cstr16!("boot\\KERNEL"), FileMode::Read, FileAttribute::empty()).is_ok() {
+                            info!("  Located CapsuleOS RootFS partition via SimpleFileSystem!");
+                            root = Some(vol);
+                            break;
+                        }
+                    }
+                }
             }
-        };
-        let device = loaded_image.device();
-        
-        // 2. Open SimpleFileSystem protocol on the boot device
-        let mut fs = match boot_services.open_protocol_exclusive::<uefi::proto::media::fs::SimpleFileSystem>(device) {
-            Ok(fs) => fs,
-            Err(_) => {
-                error!("SimpleFileSystem protocol not found on boot device!");
-                return Status::LOAD_ERROR;
-            }
-        };
-        
-        // 3. Open the Root Volume
-        let mut root = match fs.open_volume() {
-            Ok(v) => v,
-            Err(_) => {
-                error!("Failed to open Root Volume of Boot Partition!");
-                return Status::LOAD_ERROR;
+        }
+
+        // Fallback: If not found via search, use the original boot device SimpleFileSystem
+        let mut root = match root {
+            Some(r) => r,
+            None => {
+                warn!("  Could not locate partition containing boot\\KERNEL via SimpleFileSystem protocol search. Falling back to boot device SimpleFileSystem.");
+                let loaded_image = match boot_services.open_protocol_exclusive::<uefi::proto::loaded_image::LoadedImage>(image_handle) {
+                    Ok(li) => li,
+                    Err(_) => {
+                        error!("Failed to open LoadedImage protocol!");
+                        return Status::LOAD_ERROR;
+                    }
+                };
+                let device = loaded_image.device();
+                let mut fs = match boot_services.open_protocol_exclusive::<SimpleFileSystem>(device) {
+                    Ok(fs) => fs,
+                    Err(_) => {
+                        error!("SimpleFileSystem protocol not found on boot device!");
+                        return Status::LOAD_ERROR;
+                    }
+                };
+                match fs.open_volume() {
+                    Ok(v) => v,
+                    Err(_) => {
+                        error!("Failed to open Root Volume of Boot Partition!");
+                        return Status::LOAD_ERROR;
+                    }
+                }
             }
         };
         
@@ -331,8 +352,8 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
                     if name_str == "." || name_str == ".." {
                         continue;
                     }
-                    if name_str.ends_with(".pill") {
-                        info!("  Discovered .pill driver bundle: {}", name_str);
+                    if name_str.ends_with(".pillsmod") {
+                        info!("  Discovered .pillsmod driver bundle: {}", name_str);
                         
                         // Parse metadata.toml inside this directory
                         let mut meta_content = String::new();
@@ -484,6 +505,104 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
                 handoff_table_size = core::mem::size_of::<DriverTableHandoff>() as u64;
             }
         }
+
+        // 8a4. Dynamically pack 9 bootstrap services from RootFS into an HNXF_VFS BootFS RAM package
+        {
+            use uefi::proto::media::file::FileInfo;
+
+            let bootstrap_files = [
+                ("system\\bin\\loader", "system/bin/loader"),
+                ("system\\bin\\servicesd", "system/bin/servicesd"),
+                ("system\\bin\\fileagent", "system/bin/fileagent"),
+                ("system\\bin\\procmgr", "system/bin/procmgr"),
+                ("system\\bin\\devmgr", "system/bin/devmgr"),
+                ("system\\bin\\netd", "system/bin/netd"),
+                ("system\\bin\\gpud", "system/bin/gpud"),
+                ("system\\bin\\inputd", "system/bin/inputd"),
+                ("system\\bin\\touchd", "system/bin/touchd"),
+            ];
+
+            let mut vfs_entries = alloc::vec::Vec::new();
+            let mut total_vfs_size = 16 + bootstrap_files.len() * 144;
+
+            info!("  Scanning for {} bootstrap services...", bootstrap_files.len());
+            for &(phys_path, virt_path) in &bootstrap_files {
+                let path_c16 = uefi::CString16::try_from(phys_path).unwrap();
+                if let Ok(file_handle) = root.open(&path_c16, FileMode::Read, FileAttribute::empty()) {
+                    if let Ok(FileType::Regular(mut file)) = file_handle.into_type() {
+                        let mut info_buf = [0u8; 256];
+                        if let Ok(file_info) = file.get_info::<FileInfo>(&mut info_buf) {
+                            let size = file_info.file_size() as usize;
+                            let aligned_size = (size + 15) & !15; // 16-byte aligned size
+                            vfs_entries.push((phys_path, virt_path, size, file));
+                            total_vfs_size += aligned_size;
+                        }
+                    }
+                } else {
+                    warn!("    Required bootstrap service '{}' not found on RootFS!", phys_path);
+                }
+            }
+
+            if vfs_entries.is_empty() {
+                error!("No bootstrap services found! Cannot build BootFS.");
+                return Status::LOAD_ERROR;
+            }
+
+            info!("    Total BootFS dynamic RAM package size: {} bytes. Allocating pages...", total_vfs_size);
+            let bootfs_pages = (total_vfs_size + 4095) / 4096;
+            if let Ok(bootfs_addr) = boot_services.allocate_pages(
+                uefi::table::boot::AllocateType::AnyPages,
+                uefi::table::boot::MemoryType::LOADER_DATA,
+                bootfs_pages
+            ) {
+                let bootfs_buf = unsafe { core::slice::from_raw_parts_mut(bootfs_addr as *mut u8, total_vfs_size) };
+                bootfs_buf.fill(0);
+
+                // 1. Superblock
+                bootfs_buf[0..8].copy_from_slice(b"HNXF_VFS");
+                let entry_count = vfs_entries.len() as u64;
+                bootfs_buf[8..16].copy_from_slice(&entry_count.to_le_bytes());
+
+                // 2. Pack files and build headers
+                let mut current_offset = 16 + vfs_entries.len() * 144;
+                for (idx, (_phys_path, virt_path, size_ref, file)) in vfs_entries.iter_mut().enumerate() {
+                    let size = *size_ref;
+                    let entry_offset = 16 + idx * 144;
+
+                    // Path (128 bytes)
+                    let virt_bytes = virt_path.as_bytes();
+                    let copy_len = virt_bytes.len().min(127);
+                    bootfs_buf[entry_offset..entry_offset + copy_len].copy_from_slice(&virt_bytes[..copy_len]);
+
+                    // Offset (8 bytes)
+                    let offset_le = (current_offset as u64).to_le_bytes();
+                    bootfs_buf[entry_offset + 128..entry_offset + 136].copy_from_slice(&offset_le);
+
+                    // Size (8 bytes)
+                    let size_le = (size as u64).to_le_bytes();
+                    bootfs_buf[entry_offset + 136..entry_offset + 144].copy_from_slice(&size_le);
+
+                    // Read file data directly into dynamic BootFS memory buffer!
+                    let data_slice = &mut bootfs_buf[current_offset..current_offset + size];
+                    if file.read(data_slice).is_err() {
+                        error!("      Failed to read data for service: {}", virt_path);
+                        return Status::LOAD_ERROR;
+                    }
+
+                    info!("    Packed service '{}' [offset: {}, size: {}]", virt_path, current_offset, size);
+
+                    let aligned_size = (size + 15) & !15;
+                    current_offset += aligned_size;
+                }
+
+                bootfs_pa = bootfs_addr as usize;
+                bootfs_size = total_vfs_size;
+                info!("  [SUCCESS] Dynamic BootFS packed successfully at physical {:#x} ({} bytes)", bootfs_pa, bootfs_size);
+            } else {
+                error!("Failed to allocate LOADER_DATA pages for dynamic BootFS!");
+                return Status::OUT_OF_RESOURCES;
+            }
+        }
         
         // 8b. Dynamically clear EXECUTE_PROTECT (NX) using standard MemoryProtection protocol
         if let Ok(handle) = boot_services.get_handle_for_protocol::<MemoryProtection>() {
@@ -575,8 +694,8 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
             "br {entry}", // Branch to kernel entry address
             entry = in(reg) entry_point,
             in("x0") dtb_ptr, // Pass DTB pointer in x0
-            in("x1") 0usize,  // Pass bootfs_pa in x1
-            in("x2") 0usize,  // Pass bootfs_size in x2
+            in("x1") bootfs_pa,  // Pass bootfs_pa in x1
+            in("x2") bootfs_size,  // Pass bootfs_size in x2
             in("x3") handoff_table_pa as usize,   // Pass handoff_table_pa in x3
             in("x4") handoff_table_size as usize, // Pass handoff_table_size in x4
             options(noreturn)

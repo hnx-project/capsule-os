@@ -4,7 +4,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::config::Resolved;
+use crate::config::{Resolved, BUILD_TEMP_EFI, BUILD_TEMP_ROOTFS, BUILD_TEMP_RESOURCE};
 use crate::platform::Platform;
 
 #[derive(Debug)]
@@ -23,7 +23,7 @@ pub fn test(resolved: &Resolved, plat: &Platform, timeout_secs: u64) -> Result<(
     // Find host standard UEFI BIOS firmware
     let uefi_bios_path = crate::code::run::find_uefi_bios_path()?;
 
-    let boot_efi_owned = format!("{}/EFI/BOOT/BOOTAA64.EFI", crate::config::BUILD_TEMP_RESOURCE);
+    let boot_efi_owned = format!("{}/EFI/BOOT/BOOTAA64.EFI", BUILD_TEMP_EFI);
     let boot_efi = std::path::Path::new(&boot_efi_owned);
 
     if !boot_efi.exists() {
@@ -38,7 +38,9 @@ pub fn test(resolved: &Resolved, plat: &Platform, timeout_secs: u64) -> Result<(
     for arg in &plat.qemu_args {
         let rendered = arg
             .replace("{uefi_bios}", &uefi_bios_path)
-            .replace("{disk_dir}", crate::config::BUILD_TEMP_RESOURCE)
+            .replace("{disk_dir}", BUILD_TEMP_RESOURCE)
+            .replace("{efi_dir}", BUILD_TEMP_EFI)
+            .replace("{rootfs_dir}", BUILD_TEMP_ROOTFS)
             .replace("{smp}", &plat.qemu_smp.to_string());
         cmd.arg(rendered);
     }

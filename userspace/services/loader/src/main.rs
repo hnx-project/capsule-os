@@ -28,8 +28,8 @@ pub fn main() -> i32 {
     //    servicesd resolves the VFS archive directly via the same primitive.
     log_info!("LOADER", "Spawning 'servicesd' service manager via ServiceLoader...");
     match bootstrap_service.spawn_service("servicesd") {
-        Ok(handle) => log_info!("LOADER", "[SUCCESS] 'servicesd' spawned, handle={}", handle),
-        Err(e) => log_error!("LOADER", "[ERROR] Failed to spawn 'servicesd': {:?}", e),
+        Ok(handle) => { log_info!("LOADER", "[SUCCESS] 'servicesd' spawned, handle={}", handle); }
+        Err(e) => { log_error!("LOADER", "[ERROR] Failed to spawn 'servicesd': {:?}", e); }
     }
 
     log_info!("LOADER", "Bootloader bootstrap hand-off to servicesd complete.");

@@ -5,6 +5,8 @@ use std::process::Command;
 
 pub const BUILD_TARGET: &str = "build/target";
 pub const BUILD_TEMP_RESOURCE: &str = "build/dist/temp_resource";
+pub const BUILD_TEMP_EFI: &str = "build/dist/temp_efi";
+pub const BUILD_TEMP_ROOTFS: &str = "build/dist/temp_rootfs";
 pub const BUILD_DIST: &str = "build/dist";
 
 #[derive(Debug, Deserialize, Clone)]
@@ -77,6 +79,8 @@ fn default_smp() -> u32 {
 pub fn resolve_path_placeholders(path: &str) -> String {
     path.replace("{BUILD_TARGET}", BUILD_TARGET)
         .replace("{BUILD_TEMP_RESOURCE}", BUILD_TEMP_RESOURCE)
+        .replace("{BUILD_TEMP_EFI}", BUILD_TEMP_EFI)
+        .replace("{BUILD_TEMP_ROOTFS}", BUILD_TEMP_ROOTFS)
         .replace("{BUILD_DIST}", BUILD_DIST)
 }
 
