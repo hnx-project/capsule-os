@@ -22,6 +22,14 @@ pub mod pillsmod;
 
 use crate::arch::ArchHardware;
 
+/// Trivial EL1 idle loop used as the scheduler's sole runnable thread when
+/// the boot proceeds in DRIVER-ONLY mode (no EL0 userspace to launch).
+extern "C" fn kernel_idle_loop() {
+    loop {
+        unsafe { crate::arch::CurrentArch::wait_for_interrupt() }
+    }
+}
+
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     let (pc, sp) = crate::arch::CurrentArch::get_current_registers();
@@ -157,7 +165,14 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
                     crate::log_info!("BOOT", "Loader process ready to schedule");
                 }
                 Err(e) => {
-                    crate::log_warn!("BOOT", "Loader skipped or failed ({:?}), falling back to kernel smoke threads", e);
+                    // DRIVER-ONLY mode: there is no EL0 userspace to spawn, so keep the
+                    // scheduler alive with a single kernel idle thread instead of dying
+                    // with "[SCHED] No threads to run at boot".
+                    crate::log_warn!("BOOT", "Loader skipped or failed ({:?}), falling back to kernel idle thread", e);
+                    if let Ok(idle) = crate::task::thread::Thread::new_kernel("pillsmod-idle", kernel_idle_loop) {
+                        unsafe { crate::task::scheduler::SCHEDULER.add(idle) };
+                        crate::log_info!("BOOT", "Kernel idle thread enqueued (driver-only mode)");
+                    }
                 }
             }
 

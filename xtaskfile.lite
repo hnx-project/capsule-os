@@ -24,28 +24,28 @@ pillsmod = [
     { path = 'userspace/addons/hello_pill/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/extensions/*.pillsmod' }
 ]
 
-services = [
-    { path = 'userspace/services/loader/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/loader' },
-    { path = 'userspace/services/servicesd/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/servicesd' },
-    { path = 'userspace/services/fileagent/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/fileagent' },
-    { path = 'userspace/services/procmgr/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/procmgr' },
-    { path = 'userspace/services/devmgr/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/devmgr' },
-    { path = 'userspace/services/netd/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/netd' },
-    { path = 'userspace/services/gpud/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/gpud' },
-    { path = 'userspace/services/inputd/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/inputd' },
-    { path = 'userspace/services/touchd/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/touchd' }
-]
+# services = [
+#     { path = 'userspace/services/loader/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/loader' },
+#     { path = 'userspace/services/servicesd/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/servicesd' },
+#     { path = 'userspace/services/fileagent/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/fileagent' },
+#     { path = 'userspace/services/procmgr/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/procmgr' },
+#     { path = 'userspace/services/devmgr/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/devmgr' },
+#     { path = 'userspace/services/netd/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/netd' },
+#     { path = 'userspace/services/gpud/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/gpud' },
+#     { path = 'userspace/services/inputd/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/inputd' },
+#     { path = 'userspace/services/touchd/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/touchd' }
+# ]
 
-apps = [
-    { path = 'userspace/programs/osh/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/osh' },
-    { path = 'userspace/programs/ls/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/ls' },
-    { path = 'userspace/programs/cat/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/cat' },
-    { path = 'userspace/programs/mkdir/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/mkdir' },
-    { path = 'userspace/programs/touch/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/touch' },
-    { path = 'userspace/programs/rm/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/rm' },
-    { path = 'userspace/programs/rmdir/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/rmdir' },
-    { path = 'userspace/programs/ps/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/ps' },
-    { path = 'userspace/programs/kill/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/kill' },
-    { path = 'userspace/programs/testall/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/testall' },
-    { path = 'userspace/programs/dmesg/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/dmesg' }
-]
+# apps = [
+#     { path = 'userspace/programs/osh/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/osh' },
+#     { path = 'userspace/programs/ls/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/ls' },
+#     { path = 'userspace/programs/cat/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/cat' },
+#     { path = 'userspace/programs/mkdir/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/mkdir' },
+#     { path = 'userspace/programs/touch/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/touch' },
+#     { path = 'userspace/programs/rm/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/rm' },
+#     { path = 'userspace/programs/rmdir/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/rmdir' },
+#     { path = 'userspace/programs/ps/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/ps' },
+#     { path = 'userspace/programs/kill/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/kill' },
+#     { path = 'userspace/programs/testall/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/testall' },
+#     { path = 'userspace/programs/dmesg/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/bin/dmesg' }
+# ]

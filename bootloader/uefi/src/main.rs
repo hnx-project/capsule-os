@@ -506,7 +506,9 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
             }
         }
 
-        // 8a4. Dynamically pack 9 bootstrap services from RootFS into an HNXF_VFS BootFS RAM package
+        // 8a4. Dynamically pack bootstrap services from RootFS into an HNXF_VFS BootFS RAM package.
+        //      Optional in DRIVER-ONLY mode: when no `system/bin/*` services exist on the U-disk,
+        //      pack a minimal empty BootFS (superblock only) so the kernel still boots gracefully.
         {
             use uefi::proto::media::file::FileInfo;
 
@@ -523,7 +525,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
             ];
 
             let mut vfs_entries = alloc::vec::Vec::new();
-            let mut total_vfs_size = 16 + bootstrap_files.len() * 144;
+            let mut total_vfs_size = 16;
 
             info!("  Scanning for {} bootstrap services...", bootstrap_files.len());
             for &(phys_path, virt_path) in &bootstrap_files {
@@ -544,8 +546,10 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
             }
 
             if vfs_entries.is_empty() {
-                error!("No bootstrap services found! Cannot build BootFS.");
-                return Status::LOAD_ERROR;
+                warn!("  No bootstrap services found on RootFS!");
+                warn!("  >>> DRIVER-ONLY MODE <<< Booting microkernel + PillsMod kexts, no EL0 userspace.");
+            } else {
+                info!("    Packing {} bootstrap services into dynamic BootFS...", vfs_entries.len());
             }
 
             info!("    Total BootFS dynamic RAM package size: {} bytes. Allocating pages...", total_vfs_size);

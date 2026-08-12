@@ -41,6 +41,17 @@ xtask code build --arch aarch64
 xtask code run --arch aarch64
 ```
 
+### Prerequisites
+
+CapsuleOS cross-compiles from a host machine. Install the required Rust targets before building:
+
+```bash
+rustup target add aarch64-unknown-none aarch64-unknown-uefi
+```
+
+- `aarch64-unknown-none` — bare-metal microkernel (`mcore`) core library.
+- `aarch64-unknown-uefi` — UEFI bootloader (`bootloader/uefi`); if missing, `xtask code build` fails with `error[E0463]: can't find crate for 'core'`.
+
 *Note: Use `xtask code check-env` to diagnose host compiler alignment issues.*
 
 ---
