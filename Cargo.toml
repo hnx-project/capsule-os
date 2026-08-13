@@ -6,6 +6,7 @@ edition = "2021"
 libc = { path = "libraries/libc" }
 libstd = { path = "libraries/libstd" }
 libcapsule = { path = "libraries/libcapsule" }
+libpillsmod = { path = "libraries/libpillsmod", default-features = false }
 
 [workspace]
 members = [
@@ -21,16 +22,17 @@ members = [
     "libraries/libstd",
     "libraries/libcapsule",
     "libraries/libtty",
+    "libraries/libpillsmod",
     # userspace | capsuleOS
     "userspace/services/devmgr",
     "userspace/services/fileagent",
     "userspace/services/loader",
     "userspace/services/procmgr",
     "userspace/services/servicesd",
-    "userspace/services/netd",
-    "userspace/services/inputd",
-    "userspace/services/gpud",
-    "userspace/services/touchd",
+    "pillsaddon/netd",
+    "pillsaddon/inputd",
+    "pillsaddon/gpud",
+    "pillsaddon/touchd",
     # "userspace/services/init",
     "userspace/programs/osh",
     "userspace/programs/ls",
@@ -42,7 +44,7 @@ members = [
     "userspace/programs/ps",
     "userspace/programs/kill",
     "userspace/programs/testall",
-    "userspace/programs/dmesg", "userspace/addons/hello_pill",
+    "userspace/programs/dmesg", "pillsmod/hello_pill",
     # testloader — 调试期间专用
     # "userspace/programs/testloader",
 ]

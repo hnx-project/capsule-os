@@ -8,8 +8,8 @@ name = "netd"
 path = "src/main.rs"
 
 [dependencies]
-libcapsule = { path = "../../../libraries/libcapsule", package = "libcapsule", features = ["runtime"] }
-shared = { path = "../../../kernel/shared" }
+libcapsule = { path = "../../libraries/libcapsule", package = "libcapsule", features = ["runtime"] }
+shared = { path = "../../kernel/shared" }
 smoltcp = { version = "0.11.0", default-features = false, features = ["medium-ethernet", "proto-ipv4", "socket-raw"] }
 
 [features]

@@ -26,6 +26,7 @@ bitflags = "1.3"
 heapless = "0.7"
 spin = "0.9"
 ohlink-format = { path = "../tools/ohlink-toolchain/crates/ohlink-format", default-features = false }
+libpillsmod = { workspace = true }
 
 [build-dependencies]
 rustc_version = "0.4"

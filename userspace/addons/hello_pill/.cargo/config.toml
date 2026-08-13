@@ -1,6 +1,0 @@
-[target.aarch64-unknown-none]
-rustflags = [
-    "-C", "link-arg=--image-base=0",
-    "-C", "link-arg=-Ttext=0",
-    "-C", "link-arg=--entry=pillsmod_init",
-]

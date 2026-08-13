@@ -1,0 +1,15 @@
+[package]
+name = "libpillsmod"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "libpillsmod"
+path = "src/lib.rs"
+
+[dependencies]
+shared = { path = "../../kernel/shared" }
+
+[features]
+default = ["panic-handler"]
+panic-handler = []

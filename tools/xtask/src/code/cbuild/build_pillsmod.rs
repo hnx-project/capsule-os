@@ -19,6 +19,17 @@ pub fn build_pillsmod(
 
         let (crate_name, bin_name) = parse_cargo_toml(&item.path)?;
 
+        // Dynamically write/update local .cargo/config.toml to use absolute path to pillsmod.ld
+        let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let ld_path = workspace_root.join("libraries/libpillsmod/pillsmod.ld");
+        let dot_cargo_dir = crate_dir.join(".cargo");
+        std::fs::create_dir_all(&dot_cargo_dir).map_err(|e| e.to_string())?;
+        let config_toml_content = format!(
+            "[build]\ntarget-dir = \"../../build/target\"\n\n[target.aarch64-unknown-none]\nlinker = \"rust-lld\"\nrustflags = [\n    \"-A\", \"warnings\",\n    \"-C\", \"link-arg=--gc-sections\",\n    \"-C\", \"link-arg=-z\",\n    \"-C\", \"link-arg=max-page-size=8\",\n    \"-C\", \"link-arg=-T{}\"\n]\n",
+            ld_path.to_str().unwrap().replace("\\", "/")
+        );
+        std::fs::write(dot_cargo_dir.join("config.toml"), config_toml_content).map_err(|e| e.to_string())?;
+
         // Step 1: Compiling
         let comp_step = *current_step;
         *current_step += 1;
@@ -43,7 +54,6 @@ pub fn build_pillsmod(
         let display_str = v.to_display_string();
         cmd.env("CAPSULEOS_BUILD_NUM", &v.patch);
         cmd.env("CAPSULEOS_VERSION", &display_str);
-        cmd.env("RUSTFLAGS", "-C link-arg=--image-base=0 -C link-arg=-Ttext=0");
 
         let result = run_silent(&mut cmd, || {});
         if !result.success {
@@ -101,6 +111,9 @@ pub fn build_pillsmod(
         // 2. Write driver inside the bundle
         let raw_dest_path = Path::new(&output_resolved).join("driver");
         std::fs::write(&raw_dest_path, &payload).map_err(|e| e.to_string())?;
+
+        // 3. Clean up the temporary raw file
+        let _ = std::fs::remove_file(&raw_path);
 
         let bundle_name = Path::new(&output_resolved).file_name().and_then(|n| n.to_str()).unwrap_or(&bin_name);
         println!("\r  Packing ({}/{}) {}... DONE\x1B[K", pack_step, total_steps, bundle_name);

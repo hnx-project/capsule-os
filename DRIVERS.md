@@ -18,6 +18,10 @@ CapsuleOS (Codename: Pangu) 为了平衡 **系统安全性 (Microkernel Isolatio
 │       ├── pillsmod/             # 🛠️ [PillsMod (Kext) 核心加载与注册管理器]
 │       └── drivers/              # 🔌 内核特权级驱动 (virtio_blk, virtio_net 等)
 │
+├── pillsmod/                     # 📂 [PillsMod 内核驱动模块] (hello_pill)
+│
+├── pillsaddon/                   # 📂 [PillsAddon 用户态安全驱动进程] (touchd, gpud, inputd, netd)
+│
 ├── libraries/                    # 📂 基础标准与运行时库 (L2)
 │   ├── libcapsule/
 │   │   └── src/
@@ -26,7 +30,7 @@ CapsuleOS (Codename: Pangu) 为了平衡 **系统安全性 (Microkernel Isolatio
 │
 └── userspace/                    # 📂 用户空间生态 (EL0, target: aarch64-unknown-capsule)
     ├── services/                 # 📂 标准系统服务 (fileagent, procmgr, servicesd)
-    └── addons/                   # 📂 [PillsAddon 用户态安全驱动进程] (touchd, gpud, inputd)
+    └── programs/                 # 📂 用户空间标准应用程序 (osh, ls, cat)
 ```
 
 ---
@@ -101,7 +105,7 @@ PillsAddon 驱动在启动时，必须向 `devmgr` (设备管理器) 注册其�
 | 维度特性 | PillsMod (内核态 kext) | PillsAddon (用户态 DriverKit) |
 | :--- | :--- | :--- |
 | **执行特权级** | **EL1** (Privileged) | **EL0** (User Sandboxed) |
-| **物理目录** | `mcore/src/pillsmod/` | `userspace/addons/` |
+| **物理目录** | `pillsmod/` | `pillsaddon/` |
 | **编译目标** | `aarch64-unknown-none` | `aarch64-unknown-capsule` |
 | **崩溃影响面** | 致命 (引起 Kernel Panic) | 隔离 (仅驱动进程崩溃，服务可热重启) |
 | **I/O 传输效率**| 极致 (直接 DMA 映射，零拷贝) | 较高 (依赖内核 MMIO 代理与 Port 唤醒) |

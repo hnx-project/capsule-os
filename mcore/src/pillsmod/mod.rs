@@ -161,32 +161,65 @@ pub fn load_all_from_bootloader(table_pa: usize) -> Result<()> {
             // Allocate a safe, distinct kernel-space virtual address base for this driver module
             // e.g. starting at 0xFFFF_8000_7000_0000 and giving each driver 1MB of space
             let drv_va_base = 0xFFFF_8000_7000_0000usize + i * 0x10_0000;
-            let num_pages = (drv_size as usize + 4095) / 4096;
+            let payload_pages = (drv_size as usize + 4095) / 4096;
+            let num_pages = payload_pages + 2; // Map 2 extra pages to safely cover uninitialized .bss
 
-            // Map each physical page to the new executable virtual address region with Kernel RWX permissions
+            // Map each physical page to the new virtual address region with Kernel RWX permissions
             let mut map_flags = crate::arch::mmu::MapFlags::kernel_rw();
             map_flags.executable = true;
 
             for page_idx in 0..num_pages {
                 let va = drv_va_base + page_idx * 4096;
-                let pa = (drv_paddr as usize) + page_idx * 4096;
-                let _ = crate::arch::mmu::map_page(va, pa, map_flags);
+                let pa = if page_idx < payload_pages {
+                    (drv_paddr as usize) + page_idx * 4096
+                } else {
+                    match crate::arch::aarch64::phys::alloc_page(crate::arch::aarch64::phys::PageTag::KernelHeap) {
+                        Ok(pa) => pa.as_usize(),
+                        Err(_) => (drv_paddr as usize) + page_idx * 4096, // Fallback contiguous page
+                    }
+                };
+
+                if let Err(e) = crate::arch::mmu::map_page(va, pa, map_flags) {
+                    crate::log_error!("PILLSMOD", "  Failed to map page! va={:#x}, pa={:#x}, err={:?}", va, pa, e);
+                } else {
+                    crate::log_info!("PILLSMOD", "  Mapped page: va={:#x} -> pa={:#x} flags: writable={:?} executable={:?}", va, pa, map_flags.writable, map_flags.executable);
+                }
             }
 
             // Flush the instruction cache to make sure the CPU fetches the newly mapped instructions
             crate::arch::mmu::sync_instruction_cache(drv_va_base, drv_size as usize);
             unsafe {
                 use crate::arch::ArchHardware;
+                crate::arch::CurrentArch::flush_tlb();
                 crate::arch::CurrentArch::invalidate_instruction_cache();
                 crate::arch::CurrentArch::memory_barrier();
                 crate::arch::CurrentArch::instruction_barrier();
             }
 
+            // Direct diagnostic read of the mapped virtual memory
+            let inst_ptr = drv_va_base as *const u32;
+            let first_inst = unsafe { core::ptr::read_volatile(inst_ptr) };
+            crate::log_info!("PILLSMOD", "  [DIAGNOSTIC] Read first instruction at {:#x}: {:#x}", drv_va_base, first_inst);
+
             crate::log_info!("PILLSMOD", "  Deploying PillsMod (Kext) payload at EL1 for driver '{}' mapped to VA {:#x}...", drv_name, drv_va_base);
             
-            // Execute the entry function of the PillsMod driver
-            let entry_fn: extern "C" fn() -> i32 = unsafe { core::mem::transmute(drv_va_base) };
-            let ret = entry_fn();
+            // Pass the active physical function pointers which are guaranteed to be executable and mapped
+            let active_log_write = unsafe { core::mem::transmute(kernel_log_write as usize) };
+            let active_alloc_pages = unsafe { core::mem::transmute(kernel_alloc_pages as usize) };
+            let active_free_pages = unsafe { core::mem::transmute(kernel_free_pages as usize) };
+
+            let relocated_table = libpillsmod::KernelImportTable {
+                log_write: active_log_write,
+                alloc_pages: active_alloc_pages,
+                free_pages: active_free_pages,
+            };
+
+            crate::log_info!("PILLSMOD", "  Active import table (stack): {:#x}", &relocated_table as *const _ as usize);
+            crate::log_info!("PILLSMOD", "  Active import fields: log_write={:#x}, alloc_pages={:#x}", relocated_table.log_write as usize, relocated_table.alloc_pages as usize);
+            
+            // Execute the entry function of the PillsMod driver, passing the KernelImportTable reference
+            let entry_fn: extern "C" fn(&libpillsmod::KernelImportTable) -> i32 = unsafe { core::mem::transmute(drv_va_base) };
+            let ret = entry_fn(&relocated_table);
             
             crate::log_info!("PILLSMOD", "  [SUCCESS] Kext payload loaded. called pillsmod_init, returned: {}", ret);
         }
@@ -194,3 +227,72 @@ pub fn load_all_from_bootloader(table_pa: usize) -> Result<()> {
 
     Ok(())
 }
+
+extern "C" fn kernel_log_write(tag_ptr: *const u8, tag_len: usize, msg_ptr: *const u8, msg_len: usize) {
+    // 1. Direct console output test at the very beginning of the callback
+    use core::fmt::Write;
+    let mut w = crate::kcore::logging::ConsoleWriter;
+    let _ = w.write_str("\n[CALLBACK ENTERED] tag_ptr=");
+    // Print tag_ptr as hex
+    let mut hex_buf = [0u8; 16];
+    let mut val = tag_ptr as usize;
+    for i in (0..16).rev() {
+        let digit = (val & 0xf) as u8;
+        hex_buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
+        val >>= 4;
+    }
+    let _ = w.write_str(unsafe { core::str::from_utf8_unchecked(&hex_buf) });
+    let _ = w.write_str(" msg_ptr=");
+    let mut val2 = msg_ptr as usize;
+    for i in (0..16).rev() {
+        let digit = (val2 & 0xf) as u8;
+        hex_buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
+        val2 >>= 4;
+    }
+    let _ = w.write_str(unsafe { core::str::from_utf8_unchecked(&hex_buf) });
+    let _ = w.write_str("\n");
+
+    let tag = unsafe {
+        core::str::from_utf8(core::slice::from_raw_parts(tag_ptr, tag_len))
+            .unwrap_or("PILL")
+    };
+    let msg = unsafe {
+        core::str::from_utf8(core::slice::from_raw_parts(msg_ptr, msg_len))
+            .unwrap_or("")
+    };
+    crate::kcore::logbuf::log_to_ring(
+        crate::kcore::logging::LEVEL_INFO,
+        tag,
+        msg.trim_end_matches('\n'),
+    );
+
+    let mut w2 = crate::kcore::logging::ConsoleWriter;
+    let _ = w2.write_str("\x1b[1;35mPILL \x1b[0m | \x1b[36m");
+    let _ = w2.write_str(tag);
+    let _ = w2.write_str(" | ");
+    let _ = w2.write_str(msg.trim_end_matches('\n'));
+    let _ = w2.write_str("\x1b[0m\n");
+}
+
+extern "C" fn kernel_alloc_pages(num_pages: usize) -> u64 {
+    if num_pages == 1 {
+        if let Ok(pa) = crate::arch::aarch64::phys::alloc_page(crate::arch::aarch64::phys::PageTag::KernelHeap) {
+            return pa.as_usize() as u64;
+        }
+    }
+    0
+}
+
+extern "C" fn kernel_free_pages(paddr: u64, num_pages: usize) -> i32 {
+    if num_pages == 1 {
+        let status = crate::arch::aarch64::phys::free_page(crate::arch::aarch64::phys::PhysAddr::new(paddr as usize));
+        return status.to_raw() as i32;
+    }
+    -1
+}
+
+static KERNEL_IMPORT_TABLE: libpillsmod::KernelImportTable = libpillsmod::KernelImportTable {
+    log_write: kernel_log_write,
+    alloc_pages: kernel_alloc_pages,
+    free_pages: kernel_free_pages,
+};

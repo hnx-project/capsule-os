@@ -8,3 +8,4 @@ name = "hello_pill"
 path = "src/main.rs"
 
 [dependencies]
+libpillsmod = { workspace = true, features = ["panic-handler"] }

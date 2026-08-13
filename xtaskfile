@@ -21,7 +21,7 @@ bootloader = { path = 'bootloader/uefi/Cargo.toml', output = '{BUILD_TEMP_RESOUR
 kernel     = { path = 'mcore/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/boot/KERNEL' }
 
 pillsmod = [
-    { path = 'userspace/addons/hello_pill/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/extensions/*.pillsmod' }
+    { path = 'pillsmod/hello_pill/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/extensions/*.pillsmod' }
 ]
 
 # services = [
@@ -30,10 +30,10 @@ pillsmod = [
 #     { path = 'userspace/services/fileagent/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/fileagent' },
 #     { path = 'userspace/services/procmgr/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/procmgr' },
 #     { path = 'userspace/services/devmgr/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/devmgr' },
-#     { path = 'userspace/services/netd/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/netd' },
-#     { path = 'userspace/services/gpud/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/gpud' },
-#     { path = 'userspace/services/inputd/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/inputd' },
-#     { path = 'userspace/services/touchd/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/touchd' }
+#     { path = 'pillsaddon/netd/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/netd' },
+#     { path = 'pillsaddon/gpud/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/gpud' },
+#     { path = 'pillsaddon/inputd/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/inputd' },
+#     { path = 'pillsaddon/touchd/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/system/bin/touchd' }
 # ]
 
 # apps = [
