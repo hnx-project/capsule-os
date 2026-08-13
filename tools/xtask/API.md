@@ -14,7 +14,7 @@ families: `clean`, `code build`, `code run`, `code test`.
 - **OHLINK toolchain** in `tools/ohlink-toolchain` (host-side).
 - **QEMU** (`qemu-system-aarch64`) for `code run --platform virt`.
 - **TOML configs**:
-  - `xtask.toml` — root metadata, gitcode, toolchain, distribution template.
+  - `xtaskfile` — root metadata, gitcode, toolchain, distribution template.
   - `xtask.build.toml` — per-arch/per-platform build addresses and
     `[[subprojects]]` table.
   - `xtask.qemu.toml` — QEMU runtime profile (consumed by `code run/test --platform virt`).
@@ -35,7 +35,7 @@ suite inside QEMU.
 | `xtask code run [--arch aarch64] [--platform virt|rpi] [--gdb] [--config <path>]` | Auto-clean + auto-build + launch QEMU. |
 | `xtask code test [--arch aarch64] [--platform virt|rpi] [--timeout <secs>] [--config <path>]` | Auto-build + boot QEMU + scrape `testall` PASS/FAIL summary. |
 | `xtask code check-env` | Verify cross-toolchain and host QEMU availability. |
-| `xtask code check-version [--sync]` | Compare `xtask.toml`/`Cargo.toml` versions across the workspace. |
+| `xtask code check-version [--sync]` | Compare `xtaskfile`/`Cargo.toml` versions across the workspace. |
 | `xtask code doc [--open]` | Generate rustdoc. |
 
 ### `xtask.qemu.toml` QEMU block (`[platform.<arch>.profiles.<name>.qemu]`)

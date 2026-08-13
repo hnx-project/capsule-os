@@ -34,9 +34,16 @@ pub fn build_pillsmod(
         ])
         .current_dir(crate_dir);
 
+        for (key, _) in std::env::vars() {
+            if key.starts_with("CARGO") {
+                cmd.env_remove(&key);
+            }
+        }
+
         let display_str = v.to_display_string();
         cmd.env("CAPSULEOS_BUILD_NUM", &v.patch);
         cmd.env("CAPSULEOS_VERSION", &display_str);
+        cmd.env("RUSTFLAGS", "-C link-arg=--image-base=0 -C link-arg=-Ttext=0");
 
         let result = run_silent(&mut cmd, || {});
         if !result.success {
@@ -60,7 +67,7 @@ pub fn build_pillsmod(
         // Extract raw binary payload from cargo-compiled ELF directly (no manual lld)
         let objcopy = find_objcopy();
         let result = run_silent(
-            Command::new(&objcopy).args(["-O", "binary", &elf_path, &raw_path]),
+            Command::new(&objcopy).args(["-O", "binary", "-R", ".eh_frame", "-R", ".eh_frame_hdr", &elf_path, &raw_path]),
             || {},
         );
         if !result.success {

@@ -113,7 +113,7 @@ bash's `config.h` (e.g. `#define HAVE_MMAP 0`).
 
 ## Integration with xtask
 
-The bash subtree will be picked up by a new `xtask.toml` schema entry:
+The bash subtree will be picked up by a new `xtaskfile` schema entry:
 
 ```toml
 [[subprojects]]

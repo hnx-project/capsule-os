@@ -55,7 +55,7 @@ All projects are integrated using **Git Subtrees** under a single repository str
 ├── tools/                 # 📂 Development Tooling
 │   ├── ohlink-toolchain/  # 📂 (Subtree) ohlink-format, ohlink-linker, ohlink-read
 │   └── xtask/             # 📂 CapsuleOS build orchestrator (Rust)
-├── xtask.toml             # 🛠️ xtask root metadata (project/version/gitcode/toolchain/distribution)
+├── xtaskfile             # 🛠️ xtask root metadata (project/version/gitcode/toolchain/distribution)
 ├── xtask.build.toml       # 🛠️ xtask build config (addresses + [[subprojects]])
 ├── xtask.qemu.toml        # 🛠️ xtask QEMU run config (machine/cpu/ram/drives/dtb_dump)
 └── xtask.rpi.toml         # 🛠️ xtask RPI run config (broadcom firmware cache + disk layout)
@@ -65,12 +65,12 @@ The **`libc/` and `libstd/`** crates are top-level OS runtime contract crates �
 
 ### 🛠️ xtask Configuration Split
 
-`xtask.toml` is intentionally split into four files so each has a single
+`xtaskfile` is intentionally split into four files so each has a single
 responsibility:
 
 | File | Responsibility | Consumed by |
 |------|----------------|-------------|
-| `xtask.toml` | Root metadata: `name`/`codename`/`version`, `gitcode` remote, `[submodules]`, `[toolchain]`, `[distribution]` template | All commands |
+| `xtaskfile` | Root metadata: `name`/`codename`/`version`, `gitcode` remote, `[submodules]`, `[toolchain]`, `[distribution]` template | All commands |
 | `xtask.build.toml` | Per-arch / per-platform build addresses + the `[[subprojects]]` table with `enable` flag | `code build`, `code run`, `code test` |
 | `xtask.qemu.toml` | QEMU-only run args: machine model, CPU, RAM, drives, DTB dump args | `code run --platform virt`, `code test --platform virt` |
 | `xtask.rpi.toml` | RPI run config: Broadcom firmware cache, disk-image stage layout | `code run --platform rpi`, `code build --platform rpi` disk arm |

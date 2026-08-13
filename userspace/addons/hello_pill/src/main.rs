@@ -3,7 +3,7 @@
 
 #[no_mangle]
 pub extern "C" fn pillsmod_init() -> i32 {
-    0
+    12345
 }
 
 #[no_mangle]

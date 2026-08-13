@@ -218,6 +218,10 @@ pub extern "C" fn kernel_main(dtb_ptr: *const u8, bootfs_pa: usize, bootfs_size:
             crate::log_info!("BOOT", "OK");
 
             crate::memory::smoke::vmo_vmar_smoke_test();
+
+            if pill_pa != 0 {
+                let _ = crate::pillsmod::load_all_from_bootloader(pill_pa);
+            }
         }
     }
 

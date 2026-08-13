@@ -154,19 +154,41 @@ pub fn load_all_from_bootloader(table_pa: usize) -> Result<()> {
         crate::log_info!("PILLSMOD", "[{}] Loading driver package '{}' from physical {:#x}...", i, drv_name, drv_paddr);
 
         if drv_paddr != 0 && drv_size > 0 {
-            let pill_va = crate::arch::mmu_facade::pa_to_kernel_va(drv_paddr as usize);
-            let pill_buf = unsafe { core::slice::from_raw_parts(pill_va as *const u8, drv_size as usize) };
+            // First, flush the dirty data cache lines from the address where the bootloader wrote the payload
+            let old_va = crate::arch::mmu_facade::pa_to_kernel_va(drv_paddr as usize);
+            crate::arch::mmu::sync_instruction_cache(old_va, drv_size as usize);
+
+            // Allocate a safe, distinct kernel-space virtual address base for this driver module
+            // e.g. starting at 0xFFFF_8000_7000_0000 and giving each driver 1MB of space
+            let drv_va_base = 0xFFFF_8000_7000_0000usize + i * 0x10_0000;
+            let num_pages = (drv_size as usize + 4095) / 4096;
+
+            // Map each physical page to the new executable virtual address region with Kernel RWX permissions
+            let mut map_flags = crate::arch::mmu::MapFlags::kernel_rw();
+            map_flags.executable = true;
+
+            for page_idx in 0..num_pages {
+                let va = drv_va_base + page_idx * 4096;
+                let pa = (drv_paddr as usize) + page_idx * 4096;
+                let _ = crate::arch::mmu::map_page(va, pa, map_flags);
+            }
+
+            // Flush the instruction cache to make sure the CPU fetches the newly mapped instructions
+            crate::arch::mmu::sync_instruction_cache(drv_va_base, drv_size as usize);
+            unsafe {
+                use crate::arch::ArchHardware;
+                crate::arch::CurrentArch::invalidate_instruction_cache();
+                crate::arch::CurrentArch::memory_barrier();
+                crate::arch::CurrentArch::instruction_barrier();
+            }
+
+            crate::log_info!("PILLSMOD", "  Deploying PillsMod (Kext) payload at EL1 for driver '{}' mapped to VA {:#x}...", drv_name, drv_va_base);
             
-            // For Directory Bundle format, we directly parse the metadata and payload
-            // directly without requiring the PillHeader since the boot loader parsed it!
-            // But wait, the boot loader loaded metadata and payload separately or loaded raw?
-            // Ah! In our UEFI boot loader, we loaded the `driver.raw` directly into the physical memory!
-            // So `drv.paddr` contains the raw `driver.raw` payload directly!
-            // And `drv.name` contains the driver's parsed name.
-            // This is incredibly, unbelievably clean! It means the kernel doesn't even need to parse PillHeader anymore!
-            // It just receives the pure `driver.raw` payload!
-            crate::log_info!("PILLSMOD", "  Deploying PillsMod (Kext) payload at EL1 for driver '{}'...", drv_name);
-            crate::log_info!("PILLSMOD", "  [SUCCESS] Kext payload loaded and verified. Ready to link!");
+            // Execute the entry function of the PillsMod driver
+            let entry_fn: extern "C" fn() -> i32 = unsafe { core::mem::transmute(drv_va_base) };
+            let ret = entry_fn();
+            
+            crate::log_info!("PILLSMOD", "  [SUCCESS] Kext payload loaded. called pillsmod_init, returned: {}", ret);
         }
     }
 

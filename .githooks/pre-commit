@@ -20,13 +20,13 @@ if [ -n "$current_branch" ] && [ "$current_branch" != "main" ] && [ "$current_br
 fi
 
 # 2. Verify version duplication against git tags
-# Extract version from xtask.toml
-if [ -f xtask.toml ]; then
-    new_version=$(grep -E '^\s*version\s*=' xtask.toml | head -n 1 | sed -E 's/.*version\s*=\s*"(.*)".*/\1/')
+# Extract version from xtaskfile
+if [ -f xtaskfile ]; then
+    new_version=$(grep -E '^\s*version\s*=' xtaskfile | head -n 1 | sed -E 's/.*version\s*=\s*"(.*)".*/\1/')
     if [ -n "$new_version" ]; then
         if git rev-parse "v$new_version" >/dev/null 2>&1; then
             echo -e "❌ ${RED}[Git Hook] Error: Version '$new_version' already exists as a Git Tag 'v$new_version'!${NC}"
-            echo -e "   Please bump the version in ${YELLOW}xtask.toml${NC} before committing."
+            echo -e "   Please bump the version in ${YELLOW}xtaskfile${NC} before committing."
             exit 1
         fi
     fi
