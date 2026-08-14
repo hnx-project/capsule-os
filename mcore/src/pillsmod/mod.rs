@@ -212,6 +212,8 @@ pub fn load_all_from_bootloader(table_pa: usize) -> Result<()> {
                 log_write: active_log_write,
                 alloc_pages: active_alloc_pages,
                 free_pages: active_free_pages,
+                clean_invalidate_cache: unsafe { core::mem::transmute(kernel_clean_invalidate_cache as usize) },
+                register_block_device: unsafe { core::mem::transmute(kernel_register_block_device as usize) },
             };
 
             crate::log_info!("PILLSMOD", "  Active import table (stack): {:#x}", &relocated_table as *const _ as usize);
@@ -275,24 +277,124 @@ extern "C" fn kernel_log_write(tag_ptr: *const u8, tag_len: usize, msg_ptr: *con
 }
 
 extern "C" fn kernel_alloc_pages(num_pages: usize) -> u64 {
-    if num_pages == 1 {
-        if let Ok(pa) = crate::arch::aarch64::phys::alloc_page(crate::arch::aarch64::phys::PageTag::KernelHeap) {
-            return pa.as_usize() as u64;
+    if num_pages == 0 {
+        return 0;
+    }
+    let mut first_pa = 0;
+    for i in 0..num_pages {
+        match crate::arch::aarch64::phys::alloc_page(crate::arch::aarch64::phys::PageTag::KernelHeap) {
+            Ok(pa) => {
+                if i == 0 {
+                    first_pa = pa.as_usize();
+                } else if pa.as_usize() != first_pa + i * 4096 {
+                    // Contiguity violation: free allocated pages and return 0
+                    for j in 0..i {
+                        let _ = crate::arch::aarch64::phys::free_page(crate::arch::aarch64::phys::PhysAddr::new(first_pa + j * 4096));
+                    }
+                    return 0;
+                }
+            }
+            Err(_) => {
+                // Out of memory: free allocated pages and return 0
+                for j in 0..i {
+                    let _ = crate::arch::aarch64::phys::free_page(crate::arch::aarch64::phys::PhysAddr::new(first_pa + j * 4096));
+                }
+                return 0;
+            }
         }
     }
-    0
+    first_pa as u64
 }
 
 extern "C" fn kernel_free_pages(paddr: u64, num_pages: usize) -> i32 {
-    if num_pages == 1 {
-        let status = crate::arch::aarch64::phys::free_page(crate::arch::aarch64::phys::PhysAddr::new(paddr as usize));
-        return status.to_raw() as i32;
+    let mut success_count = 0;
+    for i in 0..num_pages {
+        let pa = paddr as usize + i * 4096;
+        let status = crate::arch::aarch64::phys::free_page(crate::arch::aarch64::phys::PhysAddr::new(pa));
+        if status.is_ok() {
+            success_count += 1;
+        }
     }
-    -1
+    if success_count == num_pages {
+        0
+    } else {
+        -1
+    }
+}
+
+extern "C" fn kernel_clean_invalidate_cache(kva: usize, len: usize) {
+    unsafe {
+        use crate::arch::ArchHardware;
+        crate::arch::CurrentArch::clean_and_invalidate_cache_range(kva, len);
+    }
+}
+
+extern "C" fn kernel_register_block_device(ops_ptr: *const libpillsmod::BlockDeviceOps) -> i32 {
+    if ops_ptr.is_null() {
+        return -1;
+    }
+    let ops = unsafe { &*ops_ptr };
+    
+    struct PillsBlockDriverWrapper {
+        ops: &'static libpillsmod::BlockDeviceOps,
+    }
+
+    impl crate::drivers::block::BlockDriver for PillsBlockDriverWrapper {
+        fn read_sectors(&self, sector: u64, dst_pa: usize) -> shared::status::Result<()> {
+            let kva = crate::arch::mmu_facade::pa_to_kernel_va(dst_pa);
+            unsafe {
+                use crate::arch::ArchHardware;
+                crate::arch::CurrentArch::clean_and_invalidate_cache_range(kva, 512);
+            }
+
+            let ret = unsafe { (self.ops.read_sectors)(sector, dst_pa) };
+
+            unsafe {
+                use crate::arch::ArchHardware;
+                crate::arch::CurrentArch::clean_and_invalidate_cache_range(kva, 512);
+            }
+
+            if ret == 0 {
+                Ok(())
+            } else {
+                Err(shared::status::Status::from_raw(ret))
+            }
+        }
+
+        fn write_sectors(&self, sector: u64, src_pa: usize) -> shared::status::Result<()> {
+            let kva = crate::arch::mmu_facade::pa_to_kernel_va(src_pa);
+            unsafe {
+                use crate::arch::ArchHardware;
+                crate::arch::CurrentArch::clean_and_invalidate_cache_range(kva, 512);
+            }
+
+            let ret = unsafe { (self.ops.write_sectors)(sector, src_pa) };
+
+            if ret == 0 {
+                Ok(())
+            } else {
+                Err(shared::status::Status::from_raw(ret))
+            }
+        }
+
+        fn get_capacity(&self) -> u64 {
+            unsafe { (self.ops.get_capacity)() }
+        }
+    }
+
+    let wrapper = PillsBlockDriverWrapper { ops };
+    let boxed_wrapper = alloc::boxed::Box::new(wrapper);
+    let leaked_wrapper: &'static PillsBlockDriverWrapper = alloc::boxed::Box::leak(boxed_wrapper);
+    
+    *crate::drivers::block::ACTIVE_BLOCK_DEVICE.lock() = Some(leaked_wrapper);
+    crate::log_info!("PILLSMOD", "Dynamic block driver registered successfully with Kernel ACTIVE_BLOCK_DEVICE!");
+    0
 }
 
 static KERNEL_IMPORT_TABLE: libpillsmod::KernelImportTable = libpillsmod::KernelImportTable {
     log_write: kernel_log_write,
     alloc_pages: kernel_alloc_pages,
     free_pages: kernel_free_pages,
+    clean_invalidate_cache: kernel_clean_invalidate_cache,
+    register_block_device: kernel_register_block_device,
 };

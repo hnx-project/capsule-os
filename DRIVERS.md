@@ -16,9 +16,9 @@ CapsuleOS (Codename: Pangu) 为了平衡 **系统安全性 (Microkernel Isolatio
 ├── mcore/                        # 📂 特权级 HNX 混合内核核心 (EL1, target: aarch64-unknown-none)
 │   └── src/
 │       ├── pillsmod/             # 🛠️ [PillsMod (Kext) 核心加载与注册管理器]
-│       └── drivers/              # 🔌 内核特权级驱动 (virtio_blk, virtio_net 等)
+│       └── drivers/              # 🔌 内核平台无关驱动抽象与机制 (block/mod.rs 等)
 │
-├── pillsmod/                     # 📂 [PillsMod 内核驱动模块] (hello_pill)
+├── pillsmod/                     # 📂 [PillsMod 内核态动态驱动模块] (hello_pill, virtio_blk)
 │
 ├── pillsaddon/                   # 📂 [PillsAddon 用户态安全驱动进程] (touchd, gpud, inputd, netd)
 │
@@ -43,27 +43,24 @@ CapsuleOS (Codename: Pangu) 为了平衡 **系统安全性 (Microkernel Isolatio
 *   **底层访问**：允许直接使用 AArch64 汇编指令（如 `mrs` / `msr`）进行控制寄存器操作，可直接读写全局物理内存与页表（Page Table）。
 
 ### 3.2 生命周期与接口约定
-每一个 `PillsMod` 内核驱动模块必须通过标准的静态宏注册或动态加载入口定义：
+每一个 `PillsMod` 内核驱动模块必须通过标准的动态加载符号接口定义：
 
 ```rust
-// PillsMod 核心生命周期特质
-pub trait PillsMod {
-    /// 驱动模块初始化函数。
-    /// 内核引导或模块加载时首个调用，负责设备树 (FDT) 探测与 MMIO 物理分配。
-    fn pillsmod_init(&self) -> Result<(), Status>;
+use libpillsmod::KernelImportTable;
 
-    /// 驱动模块注销与卸载清理函数。
-    /// 负责释放分配的物理页面（kstack）、解绑中断向量。
-    fn pillsmod_exit(&self) -> Result<(), Status>;
+/// PillsMod 统一入口点
+#[no_mangle]
+#[link_section = ".entry"]
+pub extern "C" fn pillsmod_init(kernel: &KernelImportTable) -> i32 {
+    // 探测设备、建立队列并向内核注册：
+    // let ret = (kernel.register_block_device)(&BLOCK_DEVICE_OPS);
+    0
 }
 
-// 统一注册宏
-#[macro_export]
-macro_rules! register_pillsmod {
-    ($mod_type:ty) => {
-        #[no_mangle]
-        pub static mut ACTIVE_PILLSMOD: Option<&'static dyn PillsMod> = Some(&DRIVER_INSTANCE);
-    };
+/// PillsMod 统一卸载点
+#[no_mangle]
+pub extern "C" fn pillsmod_exit(kernel: &KernelImportTable) -> i32 {
+    0
 }
 ```
 
@@ -114,15 +111,15 @@ PillsAddon 驱动在启动时，必须向 `devmgr` (设备管理器) 注册其�
 
 ---
 
-## 📦 6. `.pill` 单文件分发格式与加载协定 (Binary Bundle Specification)
+## 📦 6. `.pillsmod` / `.pill` 单文件分发格式与加载协定 (Binary Bundle Specification)
 
 为了满足高内聚、易于分发、并支持 `xtaskfile` 全自动编译打包流的需求：
 ```toml
 pillsmod = [
-    { path = '..../Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/extensions/*.pill' }
+    { path = '..../Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/extensions/*.pillsmod' }
 ]
 ```
-CapsuleOS 制定了单一归档格式的 `.pill` 驱动文件规范。该格式可同时用于 **PillsMod (内核态)** 与 **PillsAddon (用户态)** 驱动。
+CapsuleOS 制定了单一归档格式的 `.pillsmod` (内核态) 与 `.pill` (用户态) 驱动文件规范。
 
 ### 6.1 二进制物理结构 (Binary Layout)
 
@@ -184,10 +181,10 @@ irqs = [32]                       # 申请绑定的中断向量号
 1. **编译驱动**：通过 `cargo build --release` 编译驱动（PillsMod 采用 EL1 target，PillsAddon 采用 EL0 target）。
 2. **提取负载**：利用 `objcopy -O binary` 从 ELF 提取纯净代码段 `driver.raw`。
 3. **元数据集成**：在驱动项目的根目录下自动读取 `metadata.toml` 配置文件。
-4. **合成封包**：按 `PillHeader` 规整各个偏移并拼接二进制字节流，输出并写入 `{BUILD_TEMP_RESOURCE}/extensions/name.pill`。
+4. **合成封包**：按 `PillHeader` 规整各个偏移并拼接二进制字节流，输出并写入 `{BUILD_TEMP_RESOURCE}/extensions/name.pillsmod` (或 `.pill`)。
 
 ### 7.2 动态加载自举机制 (Dynamic Loading Mechanism)
-1. **扫描设备**：自举期间，用户态 `devmgr` 或 UEFI 引导器自动扫描 U 盘中的 `/extensions/*.pill` 文件。
+1. **扫描设备**：自举期间，用户态 `devmgr` 或 UEFI 引导器自动扫描 U 盘中的 `/extensions/*.pillsmod` (或 `.pill`) 文件。
 2. **校验解析**：读入内存后，解析 `PillHeader` 校验 `"PILL"` 签名。若为 `PillsAddon`，则就地调用 `sys_spawn` 建立独立进程沙箱并注册 MMIO 地址白名单。
 3. **内核级 PillsMod 注册 (Kext Loader)**：
    - 若 class 为 `PillsMod`，则调用专用的内核系统调用。

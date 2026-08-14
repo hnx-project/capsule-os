@@ -44,7 +44,9 @@ members = [
     "userspace/programs/ps",
     "userspace/programs/kill",
     "userspace/programs/testall",
-    "userspace/programs/dmesg", "pillsmod/hello_pill",
+    "userspace/programs/dmesg",
+    "pillsmod/hello_pill",
+    "pillsmod/virtio_blk",
     # testloader — 调试期间专用
     # "userspace/programs/testloader",
 ]

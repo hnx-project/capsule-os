@@ -1,0 +1,12 @@
+[build]
+target-dir = "../../build/target"
+
+[target.aarch64-unknown-none]
+linker = "rust-lld"
+rustflags = [
+    "-A", "warnings",
+    "-C", "link-arg=--gc-sections",
+    "-C", "link-arg=-z",
+    "-C", "link-arg=max-page-size=8",
+    "-C", "link-arg=-T/Users/tianqiqin/Code/hnxproject/capsule-os/libraries/libpillsmod/pillsmod.ld"
+]

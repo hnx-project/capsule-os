@@ -12,7 +12,8 @@ args = [
     "-smp", "{smp}",
     "-m", "512M",
     "-bios", "{uefi_bios}",
-    "-drive", "file=fat:rw:{disk_dir},media=disk,format=raw",
+    "-drive", "file=fat:rw:{disk_dir},id=drv0,format=raw,if=none",
+    "-device", "virtio-blk-device,drive=drv0",
     "-nographic"
 ]
 
@@ -21,7 +22,8 @@ bootloader = { path = 'bootloader/uefi/Cargo.toml', output = '{BUILD_TEMP_RESOUR
 kernel     = { path = 'mcore/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/boot/KERNEL' }
 
 pillsmod = [
-    { path = 'pillsmod/hello_pill/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/extensions/*.pillsmod' }
+    { path = 'pillsmod/hello_pill/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/extensions/*.pillsmod' },
+    { path = 'pillsmod/virtio_blk/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/extensions/*.pillsmod' }
 ]
 
 # services = [

@@ -12,7 +12,7 @@ pub mod log;
 pub mod mmio;
 
 use core::sync::atomic::Ordering;
-pub use interfaces::{KernelImportTable, PillsMod};
+pub use interfaces::{KernelImportTable, PillsMod, BlockDeviceOps};
 pub use log::pill_print;
 
 /// Initializes the dynamic PillsMod library runtime using the kernel handoff import table.

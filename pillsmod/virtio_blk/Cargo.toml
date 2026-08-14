@@ -1,0 +1,11 @@
+[package]
+name = "virtio_blk"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "virtio_blk"
+path = "src/main.rs"
+
+[dependencies]
+libpillsmod = { workspace = true, features = ["panic-handler"] }

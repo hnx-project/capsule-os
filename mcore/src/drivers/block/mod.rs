@@ -1,5 +1,3 @@
-pub mod virtio_blk;
-
 use shared::status::Result;
 
 pub trait BlockDriver: Send + Sync {
