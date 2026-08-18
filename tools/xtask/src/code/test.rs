@@ -23,12 +23,17 @@ pub fn test(resolved: &Resolved, plat: &Platform, timeout_secs: u64) -> Result<(
     // Find host standard UEFI BIOS firmware
     let uefi_bios_path = crate::code::run::find_uefi_bios_path()?;
 
-    let boot_efi_owned = format!("{}/EFI/BOOT/BOOTAA64.EFI", BUILD_TEMP_EFI);
-    let boot_efi = std::path::Path::new(&boot_efi_owned);
+    let mut boot_efi_owned = format!("{}/EFI/BOOT/BOOTAA64.EFI", BUILD_TEMP_EFI);
+    let mut boot_efi = std::path::Path::new(&boot_efi_owned);
+
+    if !boot_efi.exists() {
+        boot_efi_owned = format!("{}/EFI/BOOT/BOOTAA64.EFI", BUILD_TEMP_RESOURCE);
+        boot_efi = std::path::Path::new(&boot_efi_owned);
+    }
 
     if !boot_efi.exists() {
         return Err(format!(
-            "missing required UEFI bootloader: {} (run `xtask code build` first)",
+            "missing required UEFI bootloader: {} or temp_resource (run `xtask code build` first)",
             boot_efi.display()
         ));
     }
@@ -110,7 +115,7 @@ pub fn test(resolved: &Resolved, plat: &Platform, timeout_secs: u64) -> Result<(
         log_tail: report_lines
             .iter()
             .rev()
-            .take(20)
+            .take(120)
             .cloned()
             .collect::<Vec<_>>()
             .into_iter()

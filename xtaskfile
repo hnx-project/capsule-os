@@ -23,7 +23,8 @@ kernel     = { path = 'mcore/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/boot/K
 
 pillsmod = [
     { path = 'pillsmod/hello_pill/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/extensions/*.pillsmod' },
-    { path = 'pillsmod/virtio_blk/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/extensions/*.pillsmod' }
+    { path = 'pillsmod/virtio_blk/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/extensions/*.pillsmod' },
+    { path = 'pillsmod/virtio_net/Cargo.toml', output = '{BUILD_TEMP_RESOURCE}/extensions/*.pillsmod' }
 ]
 
 # services = [

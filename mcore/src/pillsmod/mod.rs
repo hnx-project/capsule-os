@@ -214,6 +214,7 @@ pub fn load_all_from_bootloader(table_pa: usize) -> Result<()> {
                 free_pages: active_free_pages,
                 clean_invalidate_cache: unsafe { core::mem::transmute(kernel_clean_invalidate_cache as usize) },
                 register_block_device: unsafe { core::mem::transmute(kernel_register_block_device as usize) },
+                register_net_device: unsafe { core::mem::transmute(kernel_register_net_device as usize) },
             };
 
             crate::log_info!("PILLSMOD", "  Active import table (stack): {:#x}", &relocated_table as *const _ as usize);
@@ -391,10 +392,71 @@ extern "C" fn kernel_register_block_device(ops_ptr: *const libpillsmod::BlockDev
     0
 }
 
+extern "C" fn kernel_register_net_device(ops_ptr: *const libpillsmod::NetDeviceOps) -> i32 {
+    if ops_ptr.is_null() {
+        return -1;
+    }
+    let ops = unsafe { &*ops_ptr };
+
+    struct PillsNetDriverWrapper {
+        ops: &'static libpillsmod::NetDeviceOps,
+    }
+
+    impl crate::drivers::net::NetDriver for PillsNetDriverWrapper {
+        fn send_packet(&self, buf: &[u8]) -> shared::status::Result<()> {
+            let buf_pa = (buf.as_ptr() as usize).wrapping_sub(crate::arch::mmu_facade::KERNEL_OFFSET);
+            let kva = buf.as_ptr() as usize;
+            unsafe {
+                use crate::arch::ArchHardware;
+                crate::arch::CurrentArch::clean_and_invalidate_cache_range(kva, buf.len());
+            }
+
+            let ret = unsafe { (self.ops.send_packet)(buf_pa, buf.len()) };
+
+            if ret == 0 {
+                Ok(())
+            } else {
+                Err(shared::status::Status::from_raw(ret))
+            }
+        }
+
+        fn recv_packet(&self, buf: &mut [u8]) -> shared::status::Result<usize> {
+            let buf_pa = (buf.as_ptr() as usize).wrapping_sub(crate::arch::mmu_facade::KERNEL_OFFSET);
+            let kva = buf.as_ptr() as usize;
+            unsafe {
+                use crate::arch::ArchHardware;
+                crate::arch::CurrentArch::clean_and_invalidate_cache_range(kva, buf.len());
+            }
+
+            let ret = unsafe { (self.ops.recv_packet)(buf_pa, buf.len()) };
+
+            unsafe {
+                use crate::arch::ArchHardware;
+                crate::arch::CurrentArch::clean_and_invalidate_cache_range(kva, buf.len());
+            }
+
+            if ret >= 0 {
+                Ok(ret as usize)
+            } else {
+                Err(shared::status::Status::from_raw(ret))
+            }
+        }
+    }
+
+    let wrapper = PillsNetDriverWrapper { ops };
+    let boxed_wrapper = alloc::boxed::Box::new(wrapper);
+    let leaked_wrapper: &'static PillsNetDriverWrapper = alloc::boxed::Box::leak(boxed_wrapper);
+
+    *crate::drivers::net::ACTIVE_NET_DEVICE.lock() = Some(leaked_wrapper);
+    crate::log_info!("PILLSMOD", "Dynamic network driver registered successfully with Kernel ACTIVE_NET_DEVICE!");
+    0
+}
+
 static KERNEL_IMPORT_TABLE: libpillsmod::KernelImportTable = libpillsmod::KernelImportTable {
     log_write: kernel_log_write,
     alloc_pages: kernel_alloc_pages,
     free_pages: kernel_free_pages,
     clean_invalidate_cache: kernel_clean_invalidate_cache,
     register_block_device: kernel_register_block_device,
+    register_net_device: kernel_register_net_device,
 };

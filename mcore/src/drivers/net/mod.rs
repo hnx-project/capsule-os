@@ -1,5 +1,3 @@
-pub mod virtio_net;
-
 use shared::status::Result;
 
 pub trait NetDriver: Send + Sync {

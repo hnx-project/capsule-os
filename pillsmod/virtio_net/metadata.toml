@@ -1,0 +1,13 @@
+[driver]
+name = "virtio_net"
+version = "1.0.0-beta"
+class = "PillsMod"
+entry_symbol = "pillsmod_init"
+
+[requirements]
+kernel_version = ">=1.0.0"
+dependencies = []
+
+[resources]
+mmio_regions = []
+irqs = []
